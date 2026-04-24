@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["@cloudflare/workers-types"],
+    "paths": {
+      "@ff/types": ["../../packages/types/src/index.ts"],
+      "@ff/types/*": ["../../packages/types/src/*"],
+      "@ff/brand-rules": ["../../packages/brand-rules/src/index.ts"],
+      "@ff/brand-rules/*": ["../../packages/brand-rules/src/*"],
+      "@ff/media-clients": ["../../packages/media-clients/src/index.ts"],
+      "@ff/media-clients/*": ["../../packages/media-clients/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,45 @@
+{
+  "name": "@ff/media-clients",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./fal": {
+      "import": "./dist/fal.js",
+      "types": "./dist/fal.d.ts"
+    },
+    "./openai": {
+      "import": "./dist/openai.js",
+      "types": "./dist/openai.d.ts"
+    },
+    "./r2": {
+      "import": "./dist/r2.js",
+      "types": "./dist/r2.d.ts"
+    },
+    "./anthropic": {
+      "import": "./dist/anthropic.js",
+      "types": "./dist/anthropic.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0",
+    "@fal-ai/client": "^1.4.0",
+    "langfuse": "^3.31.0",
+    "openai": "^4.83.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250214.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

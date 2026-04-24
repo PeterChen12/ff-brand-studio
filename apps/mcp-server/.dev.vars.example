@@ -1,0 +1,25 @@
+# .dev.vars.example — copy to .dev.vars and fill in real values for local wrangler dev
+# .dev.vars is gitignored; never commit real secrets
+
+# AI provider keys
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+FAL_KEY=
+
+# Postgres connection (db: ff_brand_studio on the shared server)
+PGHOST=
+PGPORT=5433
+PGDATABASE=ff_brand_studio
+PGUSER=
+PGPASSWORD=
+
+# Langfuse observability
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+
+# Cloudflare R2 public URL for the ff-brand-studio-assets bucket
+R2_PUBLIC_URL=https://pub-REPLACE.r2.dev
+
+# Runtime environment flag
+ENVIRONMENT=development

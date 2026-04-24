@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ff-brand-studio": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://ff-brand-studio-mcp.creatorain.workers.dev/sse"
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ff-brand-studio": {
+      "command": "node",
+      "args": [],
+      "env": {},
+      "transport": {
+        "type": "sse",
+        "url": "https://ff-brand-studio-mcp.YOUR_ACCOUNT.workers.dev/sse"
+      }
+    }
+  }
+}

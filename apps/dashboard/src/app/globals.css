@@ -1,0 +1,33 @@
+:root {
+  --ff-primary: #1c3faa;
+  --ff-electric: #00a8e8;
+  --ff-gold: #c9a84c;
+  --ff-black: #0a0a0a;
+  --ff-white: #ffffff;
+  --ff-navy: #0d1b4b;
+  --ff-surface: #111827;
+  --ff-border: #1f2937;
+  --ff-muted: #6b7280;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--ff-black);
+  color: var(--ff-white);
+  font-family: Inter, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--ff-electric);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

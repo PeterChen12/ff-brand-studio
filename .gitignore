@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.next/
+build/
+.env
+.env.*
+!.env.example
+.dev.vars
+*.log
+.turbo/
+.wrangler/
+.DS_Store
+Thumbs.db
+# secrets — defense in depth
+scripts/secrets.json
+**/secrets.json

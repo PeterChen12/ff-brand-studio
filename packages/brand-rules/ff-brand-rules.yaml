@@ -1,0 +1,119 @@
+version: "1.0"
+brand: "Faraday Future"
+tagline: "Transforming the Future of Mobility"
+
+colors:
+  primary_blue: "#1C3FAA"
+  electric_blue: "#00A8E8"
+  ff_white: "#FFFFFF"
+  ff_black: "#0A0A0A"
+  accent_gold: "#C9A84C"
+  dark_navy: "#0D1B4B"
+  max_delta_e: 12
+
+typography:
+  primary_font_en: "Maison Neue"
+  fallback_font_en: "Inter"
+  primary_font_zh: "Source Han Sans SC"
+  fallback_font_zh: "PingFang SC"
+  min_logo_clear_space_px: 40
+  hierarchy:
+    h1:
+      weight: "bold"
+      min_size_pt: 32
+    h2:
+      weight: "semibold"
+      min_size_pt: 24
+    body:
+      weight: "regular"
+      min_size_pt: 14
+    caption:
+      weight: "regular"
+      min_size_pt: 11
+
+logo:
+  placement: ["top-left", "bottom-center", "bottom-right"]
+  forbidden_placements:
+    - "center-overlap-vehicle"
+    - "over-busy-background"
+    - "bottom-left-when-text-heavy"
+  min_contrast_ratio: 4.5
+  min_size_px: 80
+  lockup_variants: ["horizontal", "stacked", "icon-only"]
+
+imagery:
+  vehicle_shots:
+    required_quality: "studio-grade or location-cinematic"
+    forbidden:
+      - "blurry"
+      - "low-resolution"
+      - "visible-compression-artifacts"
+      - "amateur-lighting"
+      - "consumer-camera-bokeh"
+      - "stock-photo-feel"
+    preferred_backgrounds:
+      - "dark seamless studio"
+      - "architectural minimalism"
+      - "dramatic landscape"
+      - "urban luxury district"
+  lifestyle:
+    subject_archetypes: ["entrepreneur", "innovator", "global-traveler"]
+    forbidden: ["suburban-family", "budget-conscious-shopper"]
+  backgrounds:
+    preferred: ["dark-gradient", "architectural", "minimalist", "moody-urban"]
+    forbidden: ["stock-photo-generic", "cluttered", "competing-brand-elements", "busy-pattern"]
+
+copy:
+  forbidden_phrases_en:
+    - "cheap"
+    - "affordable"
+    - "budget"
+    - "discount"
+    - "deal"
+    - "sale"
+    - "low cost"
+    - "inexpensive"
+  required_tone: "aspirational, precise, investor-grade, future-forward"
+  max_exclamation_marks: 0
+  bilingual_alignment: true
+  technical_terms_to_preserve:
+    - "FF91"
+    - "FF81"
+    - "FF71"
+    - "FF Super One"
+    - "FFID"
+    - "FARADAY FUTURE"
+    - "aiHyper"
+    - "Emotion Internet of Vehicle"
+    - "EIoV"
+    - "SPS"
+    - "APF"
+  chinese_romanization_policy: "keep English for model names, localize brand story"
+
+scoring:
+  weights:
+    color_compliance: 0.20
+    typography_compliance: 0.20
+    logo_placement: 0.15
+    image_quality: 0.25
+    copy_tone: 0.20
+  pass_threshold: 70
+  auto_approve_threshold: 85
+  critical_violation_cap: 40
+
+campaign_formats:
+  linkedin_post:
+    max_words: 280
+    tone: "investor-grade, precise, professional"
+    hashtags_max: 3
+    call_to_action: "optional"
+  weibo_post:
+    max_chars: 140
+    tone: "conversational but premium"
+    emoji_allowed: false
+    hashtags_max: 2
+  square_infographic:
+    size_px: 1024
+    background: "dark"
+    max_text_blocks: 5
+    bilingual: true
