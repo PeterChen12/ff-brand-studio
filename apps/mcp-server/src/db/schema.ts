@@ -8,6 +8,7 @@ import {
   numeric,
   boolean,
   primaryKey,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 export const assets = pgTable("assets", {
@@ -90,29 +91,41 @@ export const productVariants = pgTable("product_variants", {
   generatedCount: integer("generated_count").default(0),
 });
 
-export const platformAssets = pgTable("platform_assets", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  variantId: uuid("variant_id")
-    .notNull()
-    .references(() => productVariants.id, { onDelete: "cascade" }),
-  platform: text("platform").notNull(),
-  slot: text("slot").notNull(),
-  r2Url: text("r2_url").notNull(),
-  width: integer("width"),
-  height: integer("height"),
-  fileSizeBytes: integer("file_size_bytes"),
-  format: text("format"),
-  complianceScore: text("compliance_score"),
-  complianceIssues: jsonb("compliance_issues"),
-  // P1 #7: default to [] so Phase 4 evaluator-optimizer appends without
-  // null-checks on every iteration.
-  refinementHistory: jsonb("refinement_history").default([]),
-  status: text("status").notNull().default("draft"),
-  modelUsed: text("model_used"),
-  costCents: integer("cost_cents"),
-  generationParams: jsonb("generation_params"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
+export const platformAssets = pgTable(
+  "platform_assets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    variantId: uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    slot: text("slot").notNull(),
+    r2Url: text("r2_url").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    fileSizeBytes: integer("file_size_bytes"),
+    format: text("format"),
+    complianceScore: text("compliance_score"),
+    complianceIssues: jsonb("compliance_issues"),
+    // P1 #7: default to [] so Phase 4 evaluator-optimizer appends without
+    // null-checks on every iteration.
+    refinementHistory: jsonb("refinement_history").default([]),
+    status: text("status").notNull().default("draft"),
+    modelUsed: text("model_used"),
+    costCents: integer("cost_cents"),
+    generationParams: jsonb("generation_params"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (t) => ({
+    // P0 #3: declare the unique index here so Drizzle's onConflictDoUpdate
+    // knows about it. Matches the SQL `platform_assets_uniq_variant_slot`.
+    uniqVariantSlot: uniqueIndex("platform_assets_uniq_variant_slot").on(
+      t.variantId,
+      t.platform,
+      t.slot
+    ),
+  })
+);
 
 export const platformSpecs = pgTable(
   "platform_specs",

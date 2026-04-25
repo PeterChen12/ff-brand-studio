@@ -7,7 +7,10 @@
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
     "type-check": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
@@ -20,6 +23,7 @@
     "hono": "^4.7.0",
     "langfuse": "^3.31.0",
     "postgres": "^3.4.5",
+    "sharp": "^0.34.5",
     "yaml": "^2.7.0",
     "zod": "^3.23.8"
   },

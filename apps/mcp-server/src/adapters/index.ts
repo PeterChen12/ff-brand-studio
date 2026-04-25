@@ -4,12 +4,13 @@
  *
  * Phase 3 implementation: read the platform_specs row, derive output
  * dimensions/format/file size from there (not hardcoded), insert the
- * platform_assets row. Actual image transformation (sharp/jimp resize +
+ * platform_assets row. Actual image transformation (sharp resize +
  * forceWhiteBackground) lands in Phase 2's image_post.ts; for now adapters
  * pass the canonical R2 URL through with the spec-derived metadata.
  *
  * Adapters must be:
- *  - idempotent: same canonical + slot → same output (use seeded transforms in Phase 2).
+ *  - idempotent: re-running yields the same row, not duplicates (DELETE+INSERT
+ *    keyed on (variant_id, platform, slot)). Functionally equivalent to upsert.
  *  - cheap: image transforms are CPU-only, no API cost (cost_cents = 0).
  *  - spec-driven: read platform_specs at runtime, no hardcoded dimensions.
  */
@@ -53,23 +54,18 @@ function deriveDimensions(
     minHeight: number | null;
     maxHeight: number | null;
   },
-  canonical: CanonicalAsset
+  _canonical: CanonicalAsset
 ): { width: number; height: number } {
-  // If the spec pins both min and max equal, that IS the dimension.
   if (spec.minWidth && spec.maxWidth && spec.minWidth === spec.maxWidth) {
     return { width: spec.minWidth, height: spec.minHeight ?? spec.maxHeight ?? spec.minWidth };
   }
-  // Otherwise, scale the canonical down to the spec's recommended size.
-  // For Amazon main: minWidth=1000 with no max → use 2000 (the recommended value
-  // baked into the seed notes). We pick max(spec.minWidth, 2000) as a heuristic.
   const targetWidth = spec.maxWidth ?? Math.max(spec.minWidth ?? 1000, 2000);
   const targetHeight = spec.maxHeight ?? Math.max(spec.minHeight ?? 1000, 2000);
   return { width: targetWidth, height: targetHeight };
 }
 
 function approxFileSize(width: number, height: number, format: string): number {
-  if (format === "MP4") return 25 * 1024 * 1024; // 25MB ballpark for 15-30s 1080p
-  // ~0.15 bytes per pixel for JPEG q=85 — close enough for capacity validation
+  if (format === "MP4") return 25 * 1024 * 1024;
   return Math.round(width * height * 0.15);
 }
 
@@ -94,30 +90,69 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterResult> {
   const { width, height } = deriveDimensions(spec, canonical);
   const fileSize = approxFileSize(width, height, format);
 
-  // Spec validation — would be a hard fail in Phase 4's evaluator-optimizer loop.
+  // ── Spec validation ──────────────────────────────────────────────────────
   const violations: string[] = [];
+
   if (spec.fileSizeMaxBytes && fileSize > spec.fileSizeMaxBytes) {
-    violations.push(
-      `file size ${fileSize}B > max ${spec.fileSizeMaxBytes}B`
-    );
+    violations.push(`file size ${fileSize}B > max ${spec.fileSizeMaxBytes}B`);
   }
   if (spec.fileSizeMinBytes && fileSize < spec.fileSizeMinBytes) {
-    violations.push(
-      `file size ${fileSize}B < min ${spec.fileSizeMinBytes}B`
-    );
+    violations.push(`file size ${fileSize}B < min ${spec.fileSizeMinBytes}B`);
   }
   if (
     spec.formatAllowlist &&
     spec.formatAllowlist.length > 0 &&
     !spec.formatAllowlist.includes(format)
   ) {
-    violations.push(`format ${format} not in allowlist ${spec.formatAllowlist.join(",")}`);
+    violations.push(
+      `format ${format} not in allowlist ${spec.formatAllowlist.join(",")}`
+    );
+  }
+
+  // P1 #5: validate canonical source dimensions clear the spec floor.
+  if (spec.minWidth && canonical.width < spec.minWidth) {
+    violations.push(
+      `canonical width ${canonical.width}px < spec minWidth ${spec.minWidth}px (would require upscale)`
+    );
+  }
+  if (spec.minHeight && canonical.height < spec.minHeight) {
+    violations.push(
+      `canonical height ${canonical.height}px < spec minHeight ${spec.minHeight}px (would require upscale)`
+    );
+  }
+
+  // P1 #6: aspect ratio validation with ±2% tolerance.
+  if (spec.aspectRatio) {
+    const m = spec.aspectRatio.match(/^([\d.]+):([\d.]+)$/);
+    if (m) {
+      const targetAspect = parseFloat(m[1]) / parseFloat(m[2]);
+      const actualAspect = width / height;
+      if (Math.abs(actualAspect - targetAspect) / targetAspect > 0.02) {
+        violations.push(
+          `aspect ${actualAspect.toFixed(3)} outside ${spec.aspectRatio} ±2%`
+        );
+      }
+    }
   }
 
   const r2Url =
     canonical.kind === "video"
       ? canonical.r2_url
-      : `${canonical.r2_url}#${platform}_${slot}`; // Phase 2 will produce a real per-slot URL.
+      : `${canonical.r2_url}#${platform}_${slot}`;
+
+  // P0 #3: DELETE+INSERT keyed on (variant_id, platform, slot). Same effect
+  // as upsert with simpler SQL — Drizzle's onConflictDoUpdate had a v0.38
+  // wire-format issue with the multi-column unique index in our integration
+  // test. DELETE+INSERT is unambiguous and idempotent.
+  await db
+    .delete(platformAssets)
+    .where(
+      and(
+        eq(platformAssets.variantId, variant_id),
+        eq(platformAssets.platform, platform),
+        eq(platformAssets.slot, slot)
+      )
+    );
 
   const inserted = await db
     .insert(platformAssets)
@@ -125,15 +160,16 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterResult> {
       variantId: variant_id,
       platform,
       slot,
-      r2Url: r2Url,
+      r2Url,
       width,
       height,
       fileSizeBytes: fileSize,
       format,
       modelUsed: "adapter:phase3",
       costCents: 0,
-      status: violations.length === 0 ? "draft" : "draft",
+      status: "draft",
       complianceIssues: violations.length > 0 ? { violations } : null,
+      refinementHistory: [],
       generationParams: {
         canonical_kind: canonical.kind,
         canonical_url: canonical.r2_url,
@@ -158,12 +194,6 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterResult> {
 
 /**
  * Pick the best-fit canonical asset for a given (platform, slot) pair.
- * Slot semantics:
- *  - main:                use white_bg
- *  - a_plus_*:            use white_bg (Phase 4 will overlay text via GPT Image 2)
- *  - lifestyle:           use first lifestyle (or fall back to white_bg)
- *  - banner (shopify):    use first lifestyle
- *  - video (amazon):      use video canonical (skip if not produced)
  */
 export function pickCanonicalForSlot(
   slot: string,
@@ -173,6 +203,5 @@ export function pickCanonicalForSlot(
   if (slot === "lifestyle" || slot === "banner" || slot === "detail") {
     return pool.lifestyles[0] ?? pool.white_bg ?? null;
   }
-  // main + a_plus_* default to white_bg
   return pool.white_bg ?? pool.lifestyles[0] ?? null;
 }
