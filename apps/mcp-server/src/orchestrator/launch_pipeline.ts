@@ -38,20 +38,28 @@ import {
   generateVideoWorker,
   type CanonicalAsset,
 } from "./workers.js";
-import { runAdapter, pickCanonicalForSlot } from "../adapters/index.js";
+import { pickCanonicalForSlot } from "../adapters/index.js";
+import { runEvaluatorOptimizer } from "./evaluator_optimizer.js";
 
 export interface LaunchPipelineInput {
   product_id: string;
   platforms: LaunchPlatform[];
   include_video: boolean;
   dry_run: boolean;
+  /** Phase 4-follow: enable Opus 4.7 vision pass per asset (~$0.02/each).
+   *  Default false to keep test cost zero. */
+  vision_pass?: boolean;
+  /** Phase 5: hard cap per launch (cents). Halt + flag if exceeded. */
+  cost_cap_cents?: number;
+  /** Anthropic key — required only if vision_pass=true. */
+  anthropic_api_key?: string;
 }
 
 export interface LaunchPipelineResult {
   run_id: string;
   product_id: string;
   product_sku: string;
-  status: "succeeded" | "failed" | "hitl_blocked";
+  status: "succeeded" | "failed" | "hitl_blocked" | "cost_capped";
   duration_ms: number;
   total_cost_cents: number;
   plan: PlannedWork;
@@ -62,7 +70,11 @@ export interface LaunchPipelineResult {
     asset_id: string;
     spec_compliant: boolean;
     spec_violations: string[];
+    final_rating?: string;
+    iterations?: number;
+    hitl_required?: boolean;
   }>;
+  hitl_count: number;
   notes: string[];
 }
 
@@ -139,6 +151,7 @@ export async function runLaunchPipeline(
       plan,
       canonicals: [],
       adapter_results: [],
+      hitl_count: 0,
       notes: [...notes, "dry_run=true — skipped workers and adapters"],
     };
   }
@@ -212,6 +225,7 @@ export async function runLaunchPipeline(
       plan,
       canonicals: [],
       adapter_results: [],
+      hitl_count: 0,
       notes: [...notes, `all ${workerSettled.length} workers failed — aborting launch`],
     };
   }
@@ -236,13 +250,19 @@ export async function runLaunchPipeline(
     notes.push(`auto-created default product_variant ${variantId}`);
   }
 
-  // ── 6. Adapters (sequential to keep DB writes ordered + observable) ────
+  // ── 6. Evaluator-optimizer per adapter target ──────────────────────────
+  // Each target runs through the loop in adapters/index.ts → score →
+  // regenerate-with-feedback (max 3 iters). HITL flag set when max reached.
   const adapterPool = {
     white_bg: whiteBg ?? undefined,
     lifestyles,
     video: video ?? undefined,
   };
   const adapterResults: LaunchPipelineResult["adapter_results"] = [];
+  let hitlCount = 0;
+  let evaluatorCostCents = 0;
+  let costCapped = false;
+
   for (const target of plan.adapter_targets) {
     const canonical = pickCanonicalForSlot(target.slot, adapterPool);
     if (!canonical) {
@@ -251,31 +271,63 @@ export async function runLaunchPipeline(
       );
       continue;
     }
-    const result = await runAdapter({
+
+    const eo = await runEvaluatorOptimizer({
       db,
       variant_id: variantId,
-      canonical,
+      product_id: product.id,
+      product_sku: product.sku,
+      initial_canonical: canonical,
       platform: target.platform,
       slot: target.slot,
+      vision_pass: input.vision_pass,
+      anthropic_api_key: input.anthropic_api_key,
     });
+
+    evaluatorCostCents += eo.total_cost_cents;
+    if (eo.hitl_required) hitlCount++;
+
     adapterResults.push({
-      platform: result.platform,
-      slot: result.slot,
-      asset_id: result.asset_id,
-      spec_compliant: result.spec_compliant,
-      spec_violations: result.spec_violations,
+      platform: eo.asset.platform,
+      slot: eo.asset.slot,
+      asset_id: eo.asset.asset_id,
+      spec_compliant: eo.asset.spec_compliant,
+      spec_violations: eo.asset.spec_violations,
+      final_rating: eo.final_score.rating,
+      iterations: eo.iterations,
+      hitl_required: eo.hitl_required,
     });
+
+    if (
+      input.cost_cap_cents &&
+      workerCostCents + evaluatorCostCents > input.cost_cap_cents
+    ) {
+      costCapped = true;
+      notes.push(
+        `cost cap ${input.cost_cap_cents}c hit at total ${
+          workerCostCents + evaluatorCostCents
+        }c — halting remaining adapter targets`
+      );
+      break;
+    }
   }
 
   // ── 7. Finalize launch_runs ─────────────────────────────────────────────
   const durationMs = Date.now() - startedAt;
-  const totalCostCents = workerCostCents; // Phase 4 adds evaluator/scorer cost.
+  const totalCostCents = workerCostCents + evaluatorCostCents;
+  const finalStatus: LaunchPipelineResult["status"] = costCapped
+    ? "cost_capped"
+    : hitlCount > 0
+      ? "hitl_blocked"
+      : "succeeded";
+
   await db
     .update(launchRuns)
     .set({
-      status: "succeeded",
+      status: finalStatus,
       durationMs,
       totalCostCents,
+      hitlInterventions: hitlCount,
     })
     .where(eq(launchRuns.id, runId));
 
@@ -283,12 +335,13 @@ export async function runLaunchPipeline(
     run_id: runId,
     product_id: product.id,
     product_sku: product.sku,
-    status: "succeeded",
+    status: finalStatus,
     duration_ms: durationMs,
     total_cost_cents: totalCostCents,
     plan,
     canonicals,
     adapter_results: adapterResults,
+    hitl_count: hitlCount,
     notes,
   };
 }

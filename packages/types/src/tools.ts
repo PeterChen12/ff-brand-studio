@@ -135,7 +135,21 @@ export const LaunchProductSkuInput = z.object({
     .boolean()
     .default(true)
     .describe(
-      "When true (default in Phase 1), inserts the launch_runs row with status='pending' and returns the run_id without doing any generation. Phases 2-5 wire in the real fan-out."
+      "When true, returns the run_id without running workers/adapters. Set false for the full orchestrator path."
+    ),
+  vision_pass: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Phase 4-follow: enable Opus 4.7 vision second-pass scorer per asset. Adds ~$0.02/each."
+    ),
+  cost_cap_cents: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Phase 5 cost circuit breaker: max cents to spend in one run. Halt + flag if exceeded."
     ),
 });
 export type LaunchProductSkuInputType = z.infer<typeof LaunchProductSkuInput>;

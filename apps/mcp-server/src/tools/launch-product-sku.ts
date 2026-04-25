@@ -28,6 +28,9 @@ export function registerLaunchProductSku(
           platforms: params.platforms,
           include_video: params.include_video,
           dry_run: params.dry_run,
+          vision_pass: params.vision_pass,
+          cost_cap_cents: params.cost_cap_cents,
+          anthropic_api_key: env.ANTHROPIC_API_KEY,
         });
 
         return {

@@ -26,15 +26,28 @@ export interface CanonicalAsset {
 const PLACEHOLDER_BUCKET_BASE =
   "https://pub-db3f39e3386347d58359ba96517eec84.r2.dev/_phase3_stub";
 
+export interface WorkerFeedback {
+  /** Issues from the previous evaluator iteration to incorporate into the
+   *  next regeneration prompt. Empty means first attempt. */
+  prior_issues: string[];
+  /** Iteration number (1-indexed). Phase 2 generators may use this to pick
+   *  alternative prompts or fall back to a different model. */
+  iteration: number;
+}
+
 export async function generateWhiteBgWorker(input: {
   product_id: string;
   product_sku: string;
+  feedback?: WorkerFeedback;
 }): Promise<CanonicalAsset> {
   // TODO Phase 2: call falFluxKontextPro with reference images, run
   // forceWhiteBackground() post-processor, scale to 88% fill, upload to R2.
+  // When feedback.iteration > 1, the prompt should incorporate prior_issues
+  // (e.g., "ensure background is pure white, fill ≥85%").
+  const iter = input.feedback?.iteration ?? 1;
   return {
     kind: "white_bg",
-    r2_url: `${PLACEHOLDER_BUCKET_BASE}/${input.product_sku}/canonical_white_bg.jpg`,
+    r2_url: `${PLACEHOLDER_BUCKET_BASE}/${input.product_sku}/canonical_white_bg_iter${iter}.jpg`,
     width: 3000,
     height: 3000,
     model_used: "flux-kontext-pro:stub",
@@ -48,13 +61,15 @@ export async function generateLifestyleWorker(input: {
   product_sku: string;
   scene_hint: string;
   aspect: "1:1" | "3:4" | "16:9";
+  feedback?: WorkerFeedback;
 }): Promise<CanonicalAsset> {
   // TODO Phase 2: call falNanoBananaPro with up to 14 reference images.
   const dims =
     input.aspect === "1:1" ? [3840, 3840] : input.aspect === "3:4" ? [2880, 3840] : [3840, 2160];
+  const iter = input.feedback?.iteration ?? 1;
   return {
     kind: "lifestyle",
-    r2_url: `${PLACEHOLDER_BUCKET_BASE}/${input.product_sku}/lifestyle_${input.scene_hint}.jpg`,
+    r2_url: `${PLACEHOLDER_BUCKET_BASE}/${input.product_sku}/lifestyle_${input.scene_hint}_iter${iter}.jpg`,
     width: dims[0],
     height: dims[1],
     model_used: "nano-banana-pro:stub",

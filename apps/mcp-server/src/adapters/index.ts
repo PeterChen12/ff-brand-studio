@@ -154,6 +154,21 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterResult> {
       )
     );
 
+  // Phase 5: provenance metadata for EU AI Act Art. 50 (binding 2026-08).
+  // Captured per-asset so a future audit can reconstruct generation chain.
+  // SynthID/C2PA fields populate when upstream models provide them (Nano Banana
+  // Pro images carry SynthID natively; Phase 2 wrapper will surface it).
+  const provenance = {
+    model: canonical.model_used,
+    canonical_kind: canonical.kind,
+    canonical_url: canonical.r2_url,
+    canonical_dims: { width: canonical.width, height: canonical.height },
+    adapter_version: "v2-phase3",
+    generated_at: new Date().toISOString(),
+    synthid_present: false, // Phase 2: set true when Nano Banana Pro returns it
+    c2pa_manifest_url: null as string | null,
+  };
+
   const inserted = await db
     .insert(platformAssets)
     .values({
@@ -174,6 +189,7 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterResult> {
         canonical_kind: canonical.kind,
         canonical_url: canonical.r2_url,
         spec_source: { platform, slot },
+        provenance,
       },
     })
     .returning();
