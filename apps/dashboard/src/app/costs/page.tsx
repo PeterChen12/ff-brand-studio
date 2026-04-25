@@ -1,36 +1,38 @@
-import { getDb } from "@/db/client";
-import { runCosts } from "@/db/schema";
-import { desc, sql } from "drizzle-orm";
+"use client";
+
+import { useEffect, useState } from "react";
+import { MCP_URL } from "@/lib/config";
+import type { RunCostRow } from "@/db/schema";
 
 const COST_RATES = {
   fluxCalls: 0.055,
   gptImage2Calls: 0.09,
   klingCalls: 0.18,
-  claudeInputPer1k: 0.003,
-  claudeOutputPer1k: 0.015,
 };
 
-async function getCostData() {
-  try {
-    const db = getDb();
-    const rows = await db.select().from(runCosts).orderBy(desc(runCosts.runAt)).limit(30);
-    const [summary] = await db
-      .select({
-        totalSpend: sql<string>`coalesce(sum(total_cost_usd), 0)::text`,
-        totalFlux: sql<number>`coalesce(sum(flux_calls), 0)::int`,
-        totalGpt: sql<number>`coalesce(sum(gpt_image_2_calls), 0)::int`,
-        totalKling: sql<number>`coalesce(sum(kling_calls), 0)::int`,
-        runs: sql<number>`count(*)::int`,
-      })
-      .from(runCosts);
-    return { rows, summary };
-  } catch {
-    return { rows: [], summary: null };
-  }
+interface CostSummary {
+  totalSpend: number;
+  runs: number;
+  totalFlux: number;
+  totalGpt: number;
+  totalKling: number;
 }
 
-export default async function CostsPage() {
-  const { rows, summary } = await getCostData();
+export default function CostsPage() {
+  const [summary, setSummary] = useState<CostSummary | null>(null);
+  const [rows, setRows] = useState<RunCostRow[]>([]);
+
+  useEffect(() => {
+    Promise.all([fetch(`${MCP_URL}/api/costs`), fetch(`${MCP_URL}/api/runs`)])
+      .then(async ([s, r]) => {
+        setSummary((await s.json()) as CostSummary);
+        const runsData = (await r.json()) as { runs: RunCostRow[] };
+        setRows(runsData.runs);
+      })
+      .catch(() => {
+        setSummary({ totalSpend: 0, runs: 0, totalFlux: 0, totalGpt: 0, totalKling: 0 });
+      });
+  }, []);
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto" }}>
@@ -39,7 +41,6 @@ export default async function CostsPage() {
         <p style={{ color: "#6b7280", fontSize: 14 }}>Per-run AI generation costs</p>
       </div>
 
-      {/* Summary row */}
       <div
         style={{
           display: "grid",
@@ -49,11 +50,7 @@ export default async function CostsPage() {
         }}
       >
         {[
-          {
-            label: "Total Spend",
-            value: `$${parseFloat(summary?.totalSpend ?? "0").toFixed(2)}`,
-            color: "#c9a84c",
-          },
+          { label: "Total Spend", value: `$${(summary?.totalSpend ?? 0).toFixed(2)}`, color: "#c9a84c" },
           { label: "Campaigns", value: summary?.runs ?? 0, color: "#00a8e8" },
           {
             label: "Flux Calls",
@@ -83,15 +80,7 @@ export default async function CostsPage() {
               padding: "16px 20px",
             }}
           >
-            <div
-              style={{
-                fontSize: 11,
-                color: "#6b7280",
-                textTransform: "uppercase",
-                letterSpacing: 1,
-                marginBottom: 6,
-              }}
-            >
+            <div style={{ fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
               {card.label}
             </div>
             <div style={{ fontSize: 24, fontWeight: 700, color: card.color }}>{card.value}</div>
@@ -102,42 +91,13 @@ export default async function CostsPage() {
         ))}
       </div>
 
-      {/* Cost rate table */}
-      <div
-        style={{
-          background: "#111827",
-          border: "1px solid #1f2937",
-          borderRadius: 8,
-          padding: 20,
-          marginBottom: 24,
-        }}
-      >
-        <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Cost Rates</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-          {[
-            { service: "fal.ai Flux Pro (hero image)", rate: "$0.055 / call" },
-            { service: "OpenAI GPT Image 2 (infographic)", rate: "$0.09 / call" },
-            { service: "fal.ai Kling 2.6 (video)", rate: "$0.18 / call" },
-            { service: "Claude Sonnet input tokens", rate: "$0.003 / 1K" },
-            { service: "Claude Sonnet output tokens", rate: "$0.015 / 1K" },
-            { service: "Claude Opus input tokens", rate: "$0.015 / 1K" },
-          ].map((r) => (
-            <div key={r.service} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "6px 0", borderBottom: "1px solid #1f2937" }}>
-              <span style={{ color: "#9ca3af" }}>{r.service}</span>
-              <span style={{ color: "#e5e7eb", fontWeight: 500 }}>{r.rate}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Run log table */}
       <div style={{ background: "#111827", border: "1px solid #1f2937", borderRadius: 8, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid #1f2937" }}>
           <h2 style={{ fontSize: 14, fontWeight: 600 }}>Recent Runs</h2>
         </div>
         {rows.length === 0 ? (
           <div style={{ padding: 40, textAlign: "center", color: "#6b7280", fontSize: 14 }}>
-            No runs recorded yet. Run a campaign to see cost data.
+            {summary === null ? "Loading…" : "No runs recorded yet."}
           </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -177,15 +137,9 @@ export default async function CostsPage() {
                         })
                       : "—"}
                   </td>
-                  <td style={{ padding: "10px 16px", fontSize: 13, color: "#9ca3af" }}>
-                    {row.fluxCalls ?? 0}
-                  </td>
-                  <td style={{ padding: "10px 16px", fontSize: 13, color: "#9ca3af" }}>
-                    {row.gptImage2Calls ?? 0}
-                  </td>
-                  <td style={{ padding: "10px 16px", fontSize: 13, color: "#9ca3af" }}>
-                    {row.klingCalls ?? 0}
-                  </td>
+                  <td style={{ padding: "10px 16px", fontSize: 13, color: "#9ca3af" }}>{row.fluxCalls ?? 0}</td>
+                  <td style={{ padding: "10px 16px", fontSize: 13, color: "#9ca3af" }}>{row.gptImage2Calls ?? 0}</td>
+                  <td style={{ padding: "10px 16px", fontSize: 13, color: "#9ca3af" }}>{row.klingCalls ?? 0}</td>
                   <td style={{ padding: "10px 16px", fontSize: 13, fontWeight: 600, color: "#c9a84c" }}>
                     ${parseFloat(row.totalCostUsd ?? "0").toFixed(3)}
                   </td>

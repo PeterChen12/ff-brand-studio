@@ -1,12 +1,14 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
-  // Note: no output: "standalone" — Amplify uses its own SSR packager, and standalone
-  // requires symlink perms that Windows dev lacks without admin rights.
+  // Static export — all pages prerendered, all data fetched client-side from the Worker.
+  // Lets us deploy to Cloudflare Pages without Node runtime.
+  output: "export",
   images: {
+    unoptimized: true,
     remotePatterns: [
+      { protocol: "https", hostname: "*.r2.dev" },
       { protocol: "https", hostname: "*.r2.cloudflarestorage.com" },
-      { protocol: "https", hostname: "*.cloudflare.com" },
     ],
   },
 };

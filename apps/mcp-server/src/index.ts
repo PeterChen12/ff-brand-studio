@@ -5,6 +5,9 @@ import { registerAllTools } from "./tools/index.js";
 import { RunCampaignInput } from "@ff/types";
 import { runCampaignWorkflow, setScoreFn } from "./workflows/campaign.workflow.js";
 import { scoreBrandCompliance } from "./guardian/index.js";
+import { createDbClient } from "./db/client.js";
+import { assets, runCosts } from "./db/schema.js";
+import { desc, sql } from "drizzle-orm";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
@@ -78,6 +81,54 @@ app.post("/messages", async (c) => {
   const body = await c.req.json<JSONRPCMessage>();
   transport.onmessage?.(body);
   return c.text("ok");
+});
+
+// Public read-only HTTP endpoints — used by the dashboard UI to fetch DAM data
+app.get("/api/assets", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const rows = await db.select().from(assets).orderBy(desc(assets.createdAt)).limit(50);
+    return c.json({ assets: rows });
+  } catch (err) {
+    console.error("[/api/assets]", err);
+    return c.json({ assets: [] });
+  }
+});
+
+app.get("/api/costs", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const [row] = await db
+      .select({
+        totalSpend: sql<string>`coalesce(sum(total_cost_usd), 0)`,
+        runs: sql<string>`count(*)`,
+        totalFlux: sql<string>`coalesce(sum(flux_calls), 0)`,
+        totalGpt: sql<string>`coalesce(sum(gpt_image_2_calls), 0)`,
+        totalKling: sql<string>`coalesce(sum(kling_calls), 0)`,
+      })
+      .from(runCosts);
+    return c.json({
+      totalSpend: Number(row?.totalSpend ?? 0),
+      runs: Number(row?.runs ?? 0),
+      totalFlux: Number(row?.totalFlux ?? 0),
+      totalGpt: Number(row?.totalGpt ?? 0),
+      totalKling: Number(row?.totalKling ?? 0),
+    });
+  } catch (err) {
+    console.error("[/api/costs]", err);
+    return c.json({ totalSpend: 0, runs: 0, totalFlux: 0, totalGpt: 0, totalKling: 0 });
+  }
+});
+
+app.get("/api/runs", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const rows = await db.select().from(runCosts).orderBy(desc(runCosts.runAt)).limit(30);
+    return c.json({ runs: rows });
+  } catch (err) {
+    console.error("[/api/runs]", err);
+    return c.json({ runs: [] });
+  }
 });
 
 // Demo HTTP endpoint — simulates the run_campaign tool call for testing without Claude Desktop

@@ -1,43 +1,53 @@
-import { getDb } from "@/db/client";
-import { assets, runCosts } from "@/db/schema";
-import { sql } from "drizzle-orm";
+"use client";
 
-async function getStats() {
-  try {
-    const db = getDb();
-    const [assetCount] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(assets);
-    const [costSum] = await db
-      .select({ total: sql<string>`coalesce(sum(total_cost_usd), 0)::text` })
-      .from(runCosts);
-    const [avgScore] = await db
-      .select({ avg: sql<number>`coalesce(avg(brand_score), 0)::int` })
-      .from(assets);
-    const [campaignCount] = await db
-      .select({ count: sql<number>`count(distinct campaign)::int` })
-      .from(assets);
+import { useEffect, useState } from "react";
+import { MCP_URL } from "@/lib/config";
 
-    return {
-      assetCount: assetCount?.count ?? 0,
-      totalCost: parseFloat(costSum?.total ?? "0").toFixed(2),
-      avgScore: avgScore?.avg ?? 0,
-      campaignCount: campaignCount?.count ?? 0,
-    };
-  } catch {
-    return { assetCount: 0, totalCost: "0.00", avgScore: 0, campaignCount: 0 };
-  }
+interface Stats {
+  assetCount: number;
+  totalCost: number;
+  avgScore: number;
+  campaignCount: number;
 }
 
-export default async function DashboardPage() {
-  const stats = await getStats();
+export default function DashboardPage() {
+  const [stats, setStats] = useState<Stats | null>(null);
 
-  const statCards = [
-    { label: "Total Assets", value: stats.assetCount, color: "#00a8e8" },
-    { label: "Campaigns Run", value: stats.campaignCount, color: "#c9a84c" },
-    { label: "Avg Brand Score", value: `${stats.avgScore}/100`, color: stats.avgScore >= 70 ? "#22c55e" : "#ef4444" },
-    { label: "Total Spend", value: `$${stats.totalCost}`, color: "#9ca3af" },
-  ];
+  useEffect(() => {
+    Promise.all([fetch(`${MCP_URL}/api/assets`), fetch(`${MCP_URL}/api/costs`)])
+      .then(async ([a, c]) => {
+        const aData = (await a.json()) as { assets: Array<{ brandScore?: number; campaign?: string }> };
+        const cData = (await c.json()) as { totalSpend: number; runs: number };
+        const scores = aData.assets.map((x) => x.brandScore ?? 0).filter((s) => s > 0);
+        const avgScore = scores.length > 0 ? Math.round(scores.reduce((s, x) => s + x, 0) / scores.length) : 0;
+        const campaigns = new Set(aData.assets.map((x) => x.campaign).filter(Boolean));
+        setStats({
+          assetCount: aData.assets.length,
+          totalCost: cData.totalSpend,
+          avgScore,
+          campaignCount: campaigns.size,
+        });
+      })
+      .catch(() => setStats({ assetCount: 0, totalCost: 0, avgScore: 0, campaignCount: 0 }));
+  }, []);
+
+  const statCards = stats
+    ? [
+        { label: "Total Assets", value: stats.assetCount, color: "#00a8e8" },
+        { label: "Campaigns Run", value: stats.campaignCount, color: "#c9a84c" },
+        {
+          label: "Avg Brand Score",
+          value: `${stats.avgScore}/100`,
+          color: stats.avgScore >= 70 ? "#22c55e" : "#ef4444",
+        },
+        { label: "Total Spend", value: `$${stats.totalCost.toFixed(2)}`, color: "#9ca3af" },
+      ]
+    : [
+        { label: "Total Assets", value: "—", color: "#6b7280" },
+        { label: "Campaigns Run", value: "—", color: "#6b7280" },
+        { label: "Avg Brand Score", value: "—", color: "#6b7280" },
+        { label: "Total Spend", value: "—", color: "#6b7280" },
+      ];
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto" }}>
@@ -57,7 +67,15 @@ export default async function DashboardPage() {
               padding: "20px 24px",
             }}
           >
-            <div style={{ fontSize: 12, color: "#6b7280", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: "#6b7280",
+                textTransform: "uppercase",
+                letterSpacing: 1,
+                marginBottom: 8,
+              }}
+            >
               {card.label}
             </div>
             <div style={{ fontSize: 32, fontWeight: 700, color: card.color }}>{card.value}</div>

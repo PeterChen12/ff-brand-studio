@@ -1,19 +1,27 @@
-import { getDb } from "@/db/client";
-import { assets } from "@/db/schema";
-import { desc } from "drizzle-orm";
+"use client";
+
+import { useEffect, useState } from "react";
 import { AssetCard } from "@/components/asset-card";
+import { MCP_URL } from "@/lib/config";
+import type { AssetRow } from "@/db/schema";
 
-async function getAssets() {
-  try {
-    const db = getDb();
-    return await db.select().from(assets).orderBy(desc(assets.createdAt)).limit(50);
-  } catch {
-    return [];
+export default function AssetsPage() {
+  const [assetList, setAssetList] = useState<AssetRow[] | null>(null);
+
+  useEffect(() => {
+    fetch(`${MCP_URL}/api/assets`)
+      .then((r) => r.json())
+      .then((data: { assets: AssetRow[] }) => setAssetList(data.assets))
+      .catch(() => setAssetList([]));
+  }, []);
+
+  if (assetList === null) {
+    return (
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "40px 24px", textAlign: "center", color: "#6b7280" }}>
+        Loading assets…
+      </div>
+    );
   }
-}
-
-export default async function AssetsPage() {
-  const assetList = await getAssets();
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto" }}>
@@ -34,12 +42,11 @@ export default async function AssetsPage() {
             borderRadius: 8,
           }}
         >
-          <div style={{ fontSize: 40, marginBottom: 16 }}>🎨</div>
           <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: "#9ca3af" }}>
             No assets yet
           </div>
           <div style={{ fontSize: 14 }}>
-            Run a campaign via Claude Desktop to generate your first asset.
+            Run a campaign via Claude Desktop or the New Campaign page.
           </div>
         </div>
       ) : (
