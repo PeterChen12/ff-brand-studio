@@ -7,15 +7,34 @@
  */
 import { eq, and } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
-import { platformAssets, platformSpecs } from "../db/schema.js";
+import { platformAssets, platformSpecs, productVariants, products } from "../db/schema.js";
 import type {
   PlatformComplianceRatingType,
   PlatformComplianceResultType,
 } from "@ff/types";
+import { visionScoreAmazonMain } from "./vision_scorer.js";
+
+export interface ScoreAmazonComplianceOptions {
+  /**
+   * Phase 4-follow: opt in to the Opus 4.7 vision second pass. Default false.
+   * Adds ~$0.02 per call; catches text/logos/watermarks/props.
+   */
+  vision?: boolean;
+  /** Anthropic API key (required if vision=true). */
+  anthropic_api_key?: string;
+}
+
+const RATING_RANK: Record<PlatformComplianceRatingType, number> = {
+  EXCELLENT: 4,
+  GOOD: 3,
+  FAIR: 2,
+  POOR: 1,
+};
 
 export async function scoreAmazonCompliance(
   db: DbClient,
-  asset_id: string
+  asset_id: string,
+  opts: ScoreAmazonComplianceOptions = {}
 ): Promise<PlatformComplianceResultType> {
   const issues: string[] = [];
   const suggestions: string[] = [];
@@ -147,8 +166,43 @@ export async function scoreAmazonCompliance(
     }
   }
 
-  const rating: PlatformComplianceRatingType =
+  let rating: PlatformComplianceRatingType =
     issues.length === 0 ? "EXCELLENT" : issues.length <= 2 ? "FAIR" : "POOR";
+
+  // ── Optional Opus 4.7 vision pass ────────────────────────────────────────
+  if (opts.vision) {
+    if (!opts.anthropic_api_key) {
+      issues.push("vision pass requested but anthropic_api_key not provided");
+      return { rating: "POOR", issues, suggestions, metrics };
+    }
+
+    // Look up category for the rubric hint via the product table chain
+    const productRow = await db
+      .select({ category: products.category })
+      .from(platformAssets)
+      .innerJoin(productVariants, eq(productVariants.id, platformAssets.variantId))
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(eq(platformAssets.id, asset_id))
+      .limit(1);
+    const category = productRow[0]?.category;
+
+    const visionResult = await visionScoreAmazonMain({
+      asset_url: a.r2Url,
+      category,
+      api_key: opts.anthropic_api_key,
+    });
+
+    metrics.vision_rating = visionResult.rating;
+    metrics.vision_cost_cents = visionResult.cost_cents;
+    metrics.vision_issues = visionResult.issues;
+
+    // Merge vision findings — vision can downgrade but not upgrade the rating
+    for (const v of visionResult.issues) issues.push(`vision: ${v}`);
+    for (const s of visionResult.suggestions) suggestions.push(`vision: ${s}`);
+    if (RATING_RANK[visionResult.rating] < RATING_RANK[rating]) {
+      rating = visionResult.rating;
+    }
+  }
 
   return { rating, issues, suggestions, metrics };
 }

@@ -61,6 +61,12 @@ export type PlatformComplianceResultType = z.infer<typeof PlatformComplianceResu
 
 export const ScoreAmazonComplianceInput = z.object({
   asset_id: z.string().uuid(),
+  /**
+   * Phase 4-follow: opt in to the Opus 4.7 vision second pass. Default false
+   * to keep the deterministic path cost-zero. Vision pass adds ~$0.02/call
+   * but catches text/logos/watermarks/props the deterministic scorer can't see.
+   */
+  vision: z.boolean().default(false),
 });
 export type ScoreAmazonComplianceInputType = z.infer<typeof ScoreAmazonComplianceInput>;
 

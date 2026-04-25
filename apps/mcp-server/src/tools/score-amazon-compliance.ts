@@ -9,11 +9,14 @@ export function registerScoreAmazonCompliance(
 ): void {
   server.tool(
     "score_amazon_compliance",
-    "v2 Phase 4: score one platform_assets row against the Amazon US main-image / A+ rubric. Returns rating + issues + suggestions.",
+    "v2 Phase 4: score one platform_assets row against the Amazon US main-image / A+ rubric. Set vision=true for the Opus 4.7 second pass that catches text/logos/watermarks/props (~$0.02/call).",
     ScoreAmazonComplianceInput.shape,
     async (params) => {
       const db = createDbClient(env);
-      const result = await scoreAmazonCompliance(db, params.asset_id);
+      const result = await scoreAmazonCompliance(db, params.asset_id, {
+        vision: params.vision,
+        anthropic_api_key: env.ANTHROPIC_API_KEY,
+      });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
