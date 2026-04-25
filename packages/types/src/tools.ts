@@ -46,6 +46,94 @@ export const ScoreBrandComplianceInput = z.object({
 });
 export type ScoreBrandComplianceInputType = z.infer<typeof ScoreBrandComplianceInput>;
 
+// ── v2 ecommerce-imagery tool inputs ────────────────────────────────────────
+
+export const PlatformComplianceRating = z.enum(["EXCELLENT", "GOOD", "FAIR", "POOR"]);
+export type PlatformComplianceRatingType = z.infer<typeof PlatformComplianceRating>;
+
+export const PlatformComplianceResult = z.object({
+  rating: PlatformComplianceRating,
+  issues: z.array(z.string()),
+  suggestions: z.array(z.string()),
+  metrics: z.record(z.string(), z.unknown()),
+});
+export type PlatformComplianceResultType = z.infer<typeof PlatformComplianceResult>;
+
+export const ScoreAmazonComplianceInput = z.object({
+  asset_id: z.string().uuid(),
+});
+export type ScoreAmazonComplianceInputType = z.infer<typeof ScoreAmazonComplianceInput>;
+
+export const ScoreShopifyComplianceInput = z.object({
+  asset_id: z.string().uuid(),
+});
+export type ScoreShopifyComplianceInputType = z.infer<typeof ScoreShopifyComplianceInput>;
+
+export const TranscreateZhToEnUsInput = z.object({
+  zh_source: z.string().min(1).max(4000),
+  surface: z.enum([
+    "amazon_title",
+    "amazon_bullet",
+    "amazon_description",
+    "a_plus_callout",
+    "shopify_description",
+    "image_overlay",
+  ]),
+  brand_voice: z
+    .object({
+      tone: z.string().optional(),
+      banned_words: z.array(z.string()).optional(),
+      must_use_phrases: z.array(z.string()).optional(),
+    })
+    .optional(),
+});
+export type TranscreateZhToEnUsInputType = z.infer<typeof TranscreateZhToEnUsInput>;
+
+export const FlagUsAdContentInput = z.object({
+  text: z.string().min(1),
+  surface: z.enum([
+    "amazon_title",
+    "amazon_bullet",
+    "amazon_description",
+    "a_plus_callout",
+    "shopify_description",
+    "image_overlay",
+    "social_post",
+  ]),
+});
+export type FlagUsAdContentInputType = z.infer<typeof FlagUsAdContentInput>;
+
+
+
+// Single source of truth for product categories — also enforced as a CHECK
+// constraint at the DB layer (P1 #8).
+export const ProductCategory = z.enum([
+  "apparel",
+  "drinkware",
+  "tech-acc",
+  "bag",
+  "hat",
+  "other",
+]);
+export type ProductCategoryType = z.infer<typeof ProductCategory>;
+
+export const LaunchProductSkuInput = z.object({
+  product_id: z.string().uuid().describe("UUID of the product row to launch"),
+  platforms: z
+    .array(z.enum(["amazon", "shopify"]))
+    .min(1)
+    .default(["amazon", "shopify"])
+    .describe("Marketplaces to fan out to. Tmall/JD intentionally out of v2 scope."),
+  include_video: z.boolean().default(false),
+  dry_run: z
+    .boolean()
+    .default(true)
+    .describe(
+      "When true (default in Phase 1), inserts the launch_runs row with status='pending' and returns the run_id without doing any generation. Phases 2-5 wire in the real fan-out."
+    ),
+});
+export type LaunchProductSkuInputType = z.infer<typeof LaunchProductSkuInput>;
+
 export const PublishToDAMInput = z.object({
   r2_key: z.string().min(1),
   asset_type: z.enum(["hero_image", "infographic", "video", "copy"]),
