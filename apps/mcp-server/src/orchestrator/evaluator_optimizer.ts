@@ -20,7 +20,7 @@ import {
   generateVideoWorker,
   type CanonicalAsset,
   type WorkerFeedback,
-} from "./workers.js";
+} from "./workers/index.js";
 import { scoreAmazonCompliance } from "../compliance/amazon_scorer.js";
 import { scoreShopifyCompliance } from "../compliance/shopify_scorer.js";
 import type { PlatformComplianceResultType } from "@ff/types";

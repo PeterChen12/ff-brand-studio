@@ -18,7 +18,7 @@
 import { eq, and } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
 import { platformSpecs, platformAssets } from "../db/schema.js";
-import type { CanonicalAsset } from "../orchestrator/workers.js";
+import type { CanonicalAsset } from "../orchestrator/workers/index.js";
 
 export interface AdapterContext {
   db: DbClient;

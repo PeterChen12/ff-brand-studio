@@ -37,7 +37,7 @@ import {
   generateVariantWorker,
   generateVideoWorker,
   type CanonicalAsset,
-} from "./workers.js";
+} from "./workers/index.js";
 import { pickCanonicalForSlot } from "../adapters/index.js";
 import { runEvaluatorOptimizer } from "./evaluator_optimizer.js";
 

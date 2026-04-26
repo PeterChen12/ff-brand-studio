@@ -11,18 +11,27 @@ import { registerScoreShopifyCompliance } from "./score-shopify-compliance.js";
 import { registerFlagUsAdContent } from "./flag-us-ad-content.js";
 import { registerTranscreateZhToEnUs } from "./transcreate-zh-to-en-us.js";
 
+/**
+ * Single registration array. Add new tools by importing the registrar above
+ * and adding it here — keeps the "did I forget to register a new tool?"
+ * question to one grep target. v1 tools first, then v2 (separated by comment).
+ */
+const REGISTRARS: Array<(server: McpServer, env: CloudflareBindings) => void> = [
+  // v1 — single-agent ReAct social-content path
+  registerGenerateBrandHero,
+  registerGenerateBilingualInfographic,
+  registerLocalizeToZh,
+  registerScoreBrandCompliance,
+  registerPublishToDAM,
+  registerRunCampaign,
+  // v2 — multi-model ecommerce-imagery path (Chinese sellers → American platforms)
+  registerLaunchProductSku,
+  registerScoreAmazonCompliance,
+  registerScoreShopifyCompliance,
+  registerFlagUsAdContent,
+  registerTranscreateZhToEnUs,
+];
+
 export function registerAllTools(server: McpServer, env: CloudflareBindings): void {
-  // v1
-  registerGenerateBrandHero(server, env);
-  registerGenerateBilingualInfographic(server, env);
-  registerLocalizeToZh(server, env);
-  registerScoreBrandCompliance(server, env);
-  registerPublishToDAM(server, env);
-  registerRunCampaign(server, env);
-  // v2
-  registerLaunchProductSku(server, env);
-  registerScoreAmazonCompliance(server, env);
-  registerScoreShopifyCompliance(server, env);
-  registerFlagUsAdContent(server, env);
-  registerTranscreateZhToEnUs(server, env);
+  for (const r of REGISTRARS) r(server, env);
 }
