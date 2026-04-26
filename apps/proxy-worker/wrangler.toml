@@ -1,0 +1,18 @@
+name = "ff-brand-studio-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+account_id = "40595082727ca8581658c1f562d5f1ff"
+
+# Route this Worker to creatorain.com/product-image-generation/*
+# Requires creatorain.com to be on Cloudflare DNS (which the user must confirm).
+# If yes, deploy with `npx wrangler deploy`; the route is bound automatically.
+[[routes]]
+pattern = "creatorain.com/product-image-generation/*"
+zone_name = "creatorain.com"
+
+# Optional: also bind the bare prefix without trailing slash
+# [[routes]]
+# pattern = "creatorain.com/product-image-generation"
+# zone_name = "creatorain.com"
+
+# No bindings needed — pure HTTP proxy, no KV/R2/secrets.

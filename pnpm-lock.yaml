@@ -122,6 +122,18 @@ importers:
         specifier: ^3.114.0
         version: 3.114.17(@cloudflare/workers-types@4.20260424.1)
 
+  apps/proxy-worker:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250214.0
+        version: 4.20260424.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      wrangler:
+        specifier: ^3.114.0
+        version: 3.114.17(@cloudflare/workers-types@4.20260424.1)
+
   packages/brand-rules:
     devDependencies:
       '@types/node':
