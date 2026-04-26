@@ -1,34 +1,22 @@
 /**
- * Plain TS types for the v1 dashboard's read-only views.
+ * Dashboard re-exports the API contract types from the shared @ff/types
+ * package. The schema definitions live in packages/types/src/api.ts and
+ * are the single source of truth for the dashboard ↔ Worker boundary.
  *
- * Was previously inferred from drizzle pgTable definitions; switched to
- * hand-written types so the dashboard package can drop drizzle-orm,
- * postgres, and drizzle-kit (the static-export build never executes them).
- *
- * Shape MUST stay in sync with apps/mcp-server/src/db/schema.ts assets +
- * runCosts. Phase C (API contract) will pin this via shared Zod schemas.
+ * If we ever split this into a separate repo, @ff/types becomes a
+ * published npm package and this file is the only consumer that needs
+ * to flip its import.
  */
-
-export interface AssetRow {
-  id: string;
-  r2Key: string;
-  assetType: string;
-  campaign: string | null;
-  platform: string | null;
-  locale: string | null;
-  brandScore: number | null;
-  metadata: unknown;
-  createdAt: string | null;
-}
-
-export interface RunCostRow {
-  id: string;
-  campaign: string | null;
-  runAt: string | null;
-  gptImage2Calls: number | null;
-  fluxCalls: number | null;
-  klingCalls: number | null;
-  claudeInputTokens: number | null;
-  claudeOutputTokens: number | null;
-  totalCostUsd: string | null;
-}
+export type { AssetRow, RunCostRow } from "@ff/types";
+export {
+  AssetRowSchema,
+  RunCostRowSchema,
+  ApiAssetsResponseSchema,
+  ApiRunsResponseSchema,
+  ApiCostsResponseSchema,
+} from "@ff/types";
+export type {
+  ApiAssetsResponse,
+  ApiRunsResponse,
+  ApiCostsResponse,
+} from "@ff/types";

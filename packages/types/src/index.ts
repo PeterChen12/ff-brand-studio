@@ -39,3 +39,19 @@ export type {
   PlannerOutputType,
   GeneratedAssetType,
 } from "./tools.js";
+
+// v2 Phase C — public dashboard ↔ Worker API contract
+export {
+  AssetRowSchema,
+  RunCostRowSchema,
+  ApiAssetsResponseSchema,
+  ApiRunsResponseSchema,
+  ApiCostsResponseSchema,
+} from "./api.js";
+export type {
+  AssetRow,
+  RunCostRow,
+  ApiAssetsResponse,
+  ApiRunsResponse,
+  ApiCostsResponse,
+} from "./api.js";
