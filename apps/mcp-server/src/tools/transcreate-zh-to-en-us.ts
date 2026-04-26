@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { TranscreateZhToEnUsInput } from "@ff/types";
 import { flagUsAdContent } from "../compliance/us_ad_flagger.js";
+import { withToolErrorBoundary } from "../lib/tool_boundary.js";
 
 /**
  * v2 Phase 4 — reverse transcreation: Chinese seller copy → American-English
@@ -47,7 +48,7 @@ export function registerTranscreateZhToEnUs(
     "transcreate_zh_to_en_us",
     "v2 Phase 4: Sonnet 4.6 reverse transcreation of Chinese seller copy to American-audience English with cached system prompt + automatic US ad-content flagging.",
     TranscreateZhToEnUsInput.shape,
-    async (params) => {
+    withToolErrorBoundary("transcreate_zh_to_en_us", async (params) => {
       const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
       const surfaceHint = SURFACE_HINT[params.surface] ?? "";
@@ -136,6 +137,6 @@ export function registerTranscreateZhToEnUs(
           },
         ],
       };
-    }
+    })
   );
 }

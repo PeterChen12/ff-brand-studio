@@ -18,13 +18,50 @@ app.use("*", cors({ origin: "*" }));
 // Transport registry — keyed by sessionId so GET /sse and POST /messages share state
 const transports = new Map<string, Transport>();
 
-app.get("/health", (c) => {
-  return c.json({
-    status: "ok",
-    server: "ff-brand-studio-mcp",
-    version: "0.1.0",
-    environment: c.env.ENVIRONMENT,
-  });
+app.get("/health", async (c) => {
+  // Phase B2 enriched health check — pings the dependencies so production
+  // diagnosis is one curl. DB ping has a 1s budget; on timeout we report
+  // status=degraded (not error) so a hung Postgres doesn't fail Cloudflare's
+  // health check and trigger noisy alerts.
+  const startedAt = Date.now();
+
+  let dbStatus: "ok" | "timeout" | "error" = "error";
+  try {
+    const db = createDbClient(c.env);
+    await Promise.race([
+      db.execute(sql`select 1 as ping`),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("db ping > 1s")), 1000)),
+    ]);
+    dbStatus = "ok";
+  } catch (err) {
+    dbStatus = (err instanceof Error && err.message.includes("> 1s")) ? "timeout" : "error";
+  }
+
+  const checks = {
+    db: dbStatus,
+    anthropic_key: c.env.ANTHROPIC_API_KEY ? "set" : "missing",
+    fal_key: c.env.FAL_KEY ? "set" : "missing",
+    openai_key: c.env.OPENAI_API_KEY ? "set" : "missing",
+    langfuse_public_key: c.env.LANGFUSE_PUBLIC_KEY ? "set" : "missing",
+    r2_public_url: c.env.R2_PUBLIC_URL ? "set" : "missing",
+  } as const;
+
+  const anyMissing = Object.values(checks).some((v) => v === "missing" || v === "error");
+  const status: "ok" | "degraded" | "error" =
+    dbStatus === "error" ? "error" : anyMissing || dbStatus === "timeout" ? "degraded" : "ok";
+
+  return c.json(
+    {
+      status,
+      server: "ff-brand-studio-mcp",
+      version: "0.2.0",
+      environment: c.env.ENVIRONMENT,
+      checks,
+      ping_ms: Date.now() - startedAt,
+      timestamp: new Date().toISOString(),
+    },
+    status === "error" ? 503 : 200
+  );
 });
 
 // SSE endpoint — Claude Desktop connects here for MCP communication

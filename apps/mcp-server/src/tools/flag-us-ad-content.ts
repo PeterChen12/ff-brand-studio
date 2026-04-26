@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { FlagUsAdContentInput } from "@ff/types";
 import { flagUsAdContent } from "../compliance/us_ad_flagger.js";
+import { withToolErrorBoundary } from "../lib/tool_boundary.js";
 
 export function registerFlagUsAdContent(
   server: McpServer,
@@ -10,7 +11,7 @@ export function registerFlagUsAdContent(
     "flag_us_ad_content",
     "v2 Phase 4: pattern-based US ad-content flagger (Amazon ToS + FTC + health-claims). Returns matched flags grouped by category. Free, deterministic; Phase 4 follow-up upgrades to Sonnet 4.6 LLM call for nuance.",
     FlagUsAdContentInput.shape,
-    async (params) => {
+    withToolErrorBoundary("flag_us_ad_content", async (params) => {
       const flags = flagUsAdContent(params.text);
       return {
         content: [
@@ -29,6 +30,6 @@ export function registerFlagUsAdContent(
           },
         ],
       };
-    }
+    })
   );
 }
