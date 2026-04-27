@@ -144,6 +144,7 @@ function PlatformAssetTile({ item }: { item: PlatformAssetRow }) {
     item.format === "webp" ||
     item.format === null;
   const ratingVariant = scoreToVariant(item.complianceScore);
+  const isReference = item.status === "reference";
   return (
     <div className="md-surface-container-low border ff-hairline rounded-m3-md overflow-hidden flex flex-col group">
       <div className="relative aspect-[4/3] bg-surface-container">
@@ -160,6 +161,13 @@ function PlatformAssetTile({ item }: { item: PlatformAssetRow }) {
             {item.format ?? "asset"}
           </div>
         )}
+        {/* Top-left: reference flag (pre-loaded baseline, not orchestrator output) */}
+        {isReference && (
+          <div className="absolute top-3 left-3 px-2 py-0.5 rounded-m3-sm bg-surface/90 backdrop-blur-sm border ff-hairline">
+            <span className="ff-stamp-label">reference · 参考</span>
+          </div>
+        )}
+        {/* Top-right: compliance score */}
         {item.complianceScore && (
           <div className="absolute top-3 right-3 animate-stamp-in">
             <Badge variant={ratingVariant} size="sm">
