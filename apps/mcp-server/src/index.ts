@@ -957,7 +957,24 @@ app.get("/api/assets", async (c) => {
       .where(inArray(platformAssets.tenantId, tids))
       .orderBy(desc(platformAssets.createdAt))
       .limit(100);
-    return c.json({ legacy: [], platformAssets: v2Rows });
+
+    // Phase J4 — derive a 250×250 thumb URL when a CF-zone-bound R2 host
+    // is configured (R2_THUMB_HOST). Falls back to the original r2Url so
+    // the dashboard still renders without the binding.
+    const thumbHost = c.env.R2_THUMB_HOST?.replace(/\/$/, "");
+    const withThumbs = v2Rows.map((row) => {
+      let thumbUrl: string | null = row.r2Url;
+      if (thumbHost) {
+        try {
+          const u = new URL(row.r2Url);
+          thumbUrl = `${thumbHost}/cdn-cgi/image/width=250,height=250,fit=cover,quality=80${u.pathname}`;
+        } catch {
+          thumbUrl = row.r2Url;
+        }
+      }
+      return { ...row, thumbUrl };
+    });
+    return c.json({ legacy: [], platformAssets: withThumbs });
   } catch (err) {
     console.error("[/api/assets]", err);
     return c.json({ legacy: [], platformAssets: [] });

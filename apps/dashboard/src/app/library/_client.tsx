@@ -31,6 +31,7 @@ import {
   type DateRangePreset,
 } from "@/components/library/filter-bar";
 import { AuditTab } from "@/components/library/audit-tab";
+import { VirtualSkuList } from "@/components/library/virtual-sku-list";
 
 interface LibraryResponse {
   platformAssets: PlatformAssetRow[];
@@ -192,16 +193,17 @@ export default function LibraryPage() {
             {items === null ? (
               <SkuGroupSkeleton />
             ) : skuGroups && skuGroups.length > 0 ? (
-              <div className="space-y-7">
-                {skuGroups.map((g, i) => (
+              <VirtualSkuList
+                groups={skuGroups}
+                renderGroup={(g, i) => (
                   <SkuGroup
                     key={g.sku}
                     group={g}
                     delay={Math.min(i * 70, 280)}
                     onOpenAt={(idx) => openLightbox(g, idx)}
                   />
-                ))}
-              </div>
+                )}
+              />
             ) : items.length === 0 ? (
               <EmptyState />
             ) : (
@@ -345,7 +347,12 @@ function PlatformAssetTile({
     <div className="md-surface-container-low border ff-hairline rounded-m3-md overflow-hidden flex flex-col group">
       <div className="relative aspect-[4/3] bg-surface-container">
         {isImage ? (
-          <ZoomTile src={item.r2Url} alt={`${item.platform} ${item.slot}`} onClick={onOpen} />
+          <ZoomTile
+            src={item.r2Url}
+            thumbSrc={item.thumbUrl ?? null}
+            alt={`${item.platform} ${item.slot}`}
+            onClick={onOpen}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center md-typescale-label-small text-on-surface-variant/70">
             {item.format ?? "asset"}

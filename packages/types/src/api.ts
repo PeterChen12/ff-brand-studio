@@ -35,6 +35,7 @@ export const PlatformAssetRowSchema = z.object({
   platform: z.string(),
   slot: z.string(),
   r2Url: z.string(),
+  thumbUrl: z.string().nullable().optional(),
   width: z.number().int().nullable(),
   height: z.number().int().nullable(),
   format: z.string().nullable(),

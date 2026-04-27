@@ -6,6 +6,7 @@ interface CloudflareBindings {
   // Env vars (set as wrangler secrets)
   ENVIRONMENT: string;
   R2_PUBLIC_URL: string;
+  R2_THUMB_HOST?: string;
 
   // Model providers
   ANTHROPIC_API_KEY: string;

@@ -4,6 +4,8 @@ import { useCallback, useState } from "react";
 
 interface ZoomTileProps {
   src: string;
+  /** Optional smaller URL used for the static <img>; falls back to src. */
+  thumbSrc?: string | null;
   alt: string;
   className?: string;
   zoom?: number;
@@ -12,6 +14,7 @@ interface ZoomTileProps {
 
 export function ZoomTile({
   src,
+  thumbSrc,
   alt,
   className,
   zoom = 250,
@@ -47,7 +50,7 @@ export function ZoomTile({
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={src}
+        src={thumbSrc ?? src}
         alt={alt}
         className={[
           "w-full h-full object-cover transition-transform duration-700",
@@ -55,6 +58,7 @@ export function ZoomTile({
           hover ? "scale-[1.02]" : "",
         ].join(" ")}
         loading="lazy"
+        decoding="async"
       />
       {hover && !isTouch && (
         <div
