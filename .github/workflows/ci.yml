@@ -15,8 +15,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        # No `version:` — action reads from package.json#packageManager (pnpm@10.33.2),
+        # the Node 20+ canonical source of truth. Specifying both errors out
+        # with ERR_PNPM_BAD_PM_VERSION (see commit history 2026-04-25 → -26 for proof).
 
       - uses: actions/setup-node@v4
         with:
@@ -44,8 +45,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        # No `version:` — action reads from package.json#packageManager (pnpm@10.33.2),
+        # the Node 20+ canonical source of truth. Specifying both errors out
+        # with ERR_PNPM_BAD_PM_VERSION (see commit history 2026-04-25 → -26 for proof).
 
       - uses: actions/setup-node@v4
         with:
