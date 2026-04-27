@@ -102,6 +102,9 @@ importers:
       '@ff/media-clients':
         specifier: workspace:*
         version: link:../../packages/media-clients
+      '@ff/seo-clients':
+        specifier: workspace:*
+        version: link:../../packages/seo-clients
       '@ff/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -188,6 +191,16 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/seo-clients:
+    dependencies:
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

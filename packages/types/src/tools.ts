@@ -95,6 +95,38 @@ export const TranscreateZhToEnUsInput = z.object({
 });
 export type TranscreateZhToEnUsInputType = z.infer<typeof TranscreateZhToEnUsInput>;
 
+export const ClusterKeywordsInput = z.object({
+  phrases: z.array(z.string().min(1)).min(2).max(1000),
+  threshold: z
+    .number()
+    .min(0.5)
+    .max(0.95)
+    .default(0.78)
+    .describe("Cosine similarity to merge into an existing cluster (default 0.78)."),
+});
+export type ClusterKeywordsInputType = z.infer<typeof ClusterKeywordsInput>;
+
+export const ExpandSeedInput = z.object({
+  seed: z.string().min(1).max(200),
+  market: z.enum(["amazon-us", "google-us", "google-cn", "tmall"]).default("amazon-us"),
+  alphabetTrick: z.boolean().default(true).describe(
+    "Fan out 36 queries (seed + each a-z 0-9). Default true; disable for rate-limit recovery."
+  ),
+  maxResults: z.number().int().min(10).max(500).default(200),
+});
+export type ExpandSeedInputType = z.infer<typeof ExpandSeedInput>;
+
+export const ResearchKeywordsInput = z.object({
+  seed: z.string().min(1).max(200).describe("Seed keyword to research"),
+  market: z
+    .enum(["amazon-us", "google-us", "google-cn", "baidu"])
+    .default("amazon-us"),
+  maxResults: z.number().int().min(5).max(200).default(50),
+  /** Include search-volume snapshot for each result (adds DataForSEO cost). */
+  includeVolumes: z.boolean().default(true),
+});
+export type ResearchKeywordsInputType = z.infer<typeof ResearchKeywordsInput>;
+
 export const FlagUsAdContentInput = z.object({
   text: z.string().min(1),
   surface: z.enum([

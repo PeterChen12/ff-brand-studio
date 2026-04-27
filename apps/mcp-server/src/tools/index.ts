@@ -10,6 +10,9 @@ import { registerScoreAmazonCompliance } from "./score-amazon-compliance.js";
 import { registerScoreShopifyCompliance } from "./score-shopify-compliance.js";
 import { registerFlagUsAdContent } from "./flag-us-ad-content.js";
 import { registerTranscreateZhToEnUs } from "./transcreate-zh-to-en-us.js";
+import { registerResearchKeywords } from "./research-keywords.js";
+import { registerExpandSeed } from "./expand-seed.js";
+import { registerClusterKeywords } from "./cluster-keywords.js";
 
 /**
  * Single registration array. Add new tools by importing the registrar above
@@ -30,6 +33,10 @@ const REGISTRARS: Array<(server: McpServer, env: CloudflareBindings) => void> = 
   registerScoreShopifyCompliance,
   registerFlagUsAdContent,
   registerTranscreateZhToEnUs,
+  // v2 SEO Layer (D1+)
+  registerResearchKeywords,
+  registerExpandSeed,
+  registerClusterKeywords,
 ];
 
 export function registerAllTools(server: McpServer, env: CloudflareBindings): void {
