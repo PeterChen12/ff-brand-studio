@@ -58,12 +58,12 @@ export default function OverviewPage() {
     <>
       <PageHeader
         eyebrow="Overview · 总览"
-        title="The atelier ledger"
-        description="Every campaign that crossed the bench, every dollar logged, every brand score stamped — laid out for the operator to read at a glance."
+        title="Product images and listings, at scale"
+        description="High-quality product images and bilingual descriptions for Amazon US and Shopify DTC. Built for marketing agencies launching Chinese-seller catalogs into American marketplaces."
         action={
-          <Link href="/campaigns/new">
+          <Link href="/launch">
             <Button variant="accent" size="lg">
-              New Campaign →
+              Launch a SKU →
             </Button>
           </Link>
         }
@@ -149,45 +149,39 @@ export default function OverviewPage() {
         {/* ── Operator console — two cards side by side, asymmetric weight ─ */}
         <div className="grid grid-cols-12 gap-6">
           <Card
-            className="col-span-12 md:col-span-7 md-fade-in"
+            className="col-span-12 md:col-span-8 md-fade-in"
             style={{ animationDelay: "200ms" }}
           >
             <CardHeader>
               <div>
-                <CardEyebrow>Quick actions · 快速操作</CardEyebrow>
-                <CardTitle className="mt-1.5">Step onto the bench</CardTitle>
+                <CardEyebrow>Get started · 快速开始</CardEyebrow>
+                <CardTitle className="mt-1.5">What would you like to do?</CardTitle>
               </div>
             </CardHeader>
             <CardContent className="space-y-1">
               <ActionRow
-                href="/campaigns/new"
+                href="/launch"
                 index="01"
-                title="Run a new campaign"
-                hint="EN brief in → bilingual copy + hero + scorecard out · ~30–45s · ~$0.06"
+                title="Launch a SKU"
+                hint="Pick a product → get per-platform images + bilingual SEO copy + compliance scoring · ~10–50¢"
               />
               <ActionRow
-                href="/seo"
+                href="/library"
                 index="02"
-                title="Draft bilingual SEO listings"
-                hint="Sonnet 4.6 · per-platform copy + 广告法 / Amazon ToS gating · ~10–25¢"
-              />
-              <ActionRow
-                href="/assets"
-                index="03"
-                title="Inspect the asset manifest"
-                hint="Most-recent 50 generated assets with brand-score stamps"
+                title="Browse the library"
+                hint="Every asset shipped, grouped by SKU + platform slot"
               />
               <ActionRow
                 href="/costs"
-                index="04"
-                title="Audit the cost ledger"
-                hint="Per-run breakdowns · Flux / GPT Image 2 / Kling / Claude tokens"
+                index="03"
+                title="Review costs"
+                hint="Per-run breakdowns across Sonnet, Flux, GPT Image 2, DataForSEO, Kling"
               />
             </CardContent>
             <CardFooter>
               <span className="md-typescale-label-small">v0.2.0 · live</span>
               <Link
-                href="/campaigns/new"
+                href="/launch"
                 className="md-typescale-label-small text-ff-vermilion-deep hover:text-primary transition-colors"
               >
                 start —→
@@ -196,37 +190,27 @@ export default function OverviewPage() {
           </Card>
 
           <Card
-            className="col-span-12 md:col-span-5 md-fade-in"
+            className="col-span-12 md:col-span-4 md-fade-in"
             style={{ animationDelay: "280ms" }}
+            variant="outlined"
           >
             <CardHeader>
               <div>
-                <CardEyebrow>Compliance rubric · 评分基准</CardEyebrow>
-                <CardTitle className="mt-1.5">Brand-score thresholds</CardTitle>
+                <CardEyebrow>Reference · 参考</CardEyebrow>
+                <CardTitle className="mt-1.5">Compliance bands</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <ScoreRow
-                band="85—100"
-                label="Auto-approved"
-                hint="Goes straight to DAM publish, no human gate"
-                variant="passed"
-              />
-              <ScoreRow
-                band="70—84"
-                label="Passes review"
-                hint="Default human eyeball before scheduling"
-                variant="pending"
-              />
-              <ScoreRow
-                band="< 70"
-                label="HITL required"
-                hint="Held in queue · evaluator-optimizer retries up to 3×"
-                variant="flagged"
-              />
+            <CardContent>
+              <p className="md-typescale-body-small text-on-surface-variant leading-relaxed">
+                Per-platform scores band into{" "}
+                <span className="text-tertiary">EXCELLENT</span> / GOOD (publish-ready),{" "}
+                <span className="text-ff-amber">FAIR</span> (HITL review), and{" "}
+                <span className="text-error">POOR</span> (regenerate). The orchestrator retries up
+                to 3× before holding for human review.
+              </p>
             </CardContent>
             <CardFooter>
-              <span>Opus 4.7 vision (opt-in) · ~$0.02/asset</span>
+              <span>Optional Opus 4.7 vision pass · ~$0.02/asset</span>
             </CardFooter>
           </Card>
         </div>
@@ -273,33 +257,3 @@ function ActionRow({
   );
 }
 
-function ScoreRow({
-  band,
-  label,
-  hint,
-  variant,
-}: {
-  band: string;
-  label: string;
-  hint: string;
-  variant: "passed" | "pending" | "flagged";
-}) {
-  return (
-    <div className="flex items-baseline gap-3 py-2 border-b ff-hairline last:border-0">
-      <span className="font-mono text-[0.8125rem] text-on-surface tabular-nums shrink-0 w-20">
-        {band}
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="md-typescale-title-small text-on-surface">{label}</span>
-          <Badge variant={variant} size="sm">
-            {variant}
-          </Badge>
-        </div>
-        <div className="md-typescale-body-small text-on-surface-variant/70 font-mono mt-0.5">
-          {hint}
-        </div>
-      </div>
-    </div>
-  );
-}

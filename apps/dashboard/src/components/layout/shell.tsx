@@ -21,10 +21,9 @@ import { MCP_URL } from "@/lib/config";
  */
 const NAV: { href: string; label: string; sub: string; index: string }[] = [
   { href: "/", label: "Overview", sub: "总览", index: "01" },
-  { href: "/assets", label: "Asset Manifest", sub: "资产清单", index: "02" },
-  { href: "/campaigns/new", label: "New Campaign", sub: "新活动", index: "03" },
-  { href: "/seo", label: "SEO Atelier", sub: "文案工坊", index: "04" },
-  { href: "/costs", label: "Cost Ledger", sub: "成本台账", index: "05" },
+  { href: "/launch", label: "Launch SKU", sub: "上线产品", index: "02" },
+  { href: "/library", label: "Library", sub: "资产库", index: "03" },
+  { href: "/costs", label: "Costs", sub: "成本", index: "04" },
 ];
 
 type HealthState = "ok" | "degraded" | "error" | "loading";
@@ -84,11 +83,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 aria-hidden
               />
             </div>
-            <div className="md-typescale-title-medium italic text-on-surface-variant mt-1">
+            <div className="md-typescale-title-medium text-on-surface-variant mt-1">
               Brand Studio
             </div>
-            <div className="md-typescale-label-small text-ff-vermilion-deep mt-3">
-              成 — chéng / shipping ops
+            <div className="md-typescale-label-small text-on-surface-variant/70 mt-2.5 leading-relaxed">
+              Product images + listings, at scale
             </div>
           </Link>
         </div>
@@ -149,32 +148,27 @@ export function Shell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* Health probe footer — M3 chip-like surface */}
-        <div className="px-5 pt-6 pb-7 border-t ff-hairline mt-auto">
-          <div className="md-typescale-label-small text-on-surface-variant mb-2.5">
-            Service Status
-          </div>
-          <div className="flex items-center gap-2.5">
+        {/* Footer — single-line service indicator. Detailed metrics live
+            on hover (title attribute) so the sidebar stays focused on nav. */}
+        <div
+          className="px-5 py-4 border-t ff-hairline mt-auto"
+          title={`MCP Worker: ${health}${pingMs !== null ? ` · ${pingMs}ms` : ""}`}
+        >
+          <div className="flex items-center gap-2 md-typescale-body-small text-on-surface-variant/80">
             <span
               className={cn(
-                "inline-block h-2 w-2 rounded-full transition-colors",
-                dotClass,
-                health === "ok" && "ring-2 ring-tertiary/25 ring-offset-1 ring-offset-surface-container-low"
+                "inline-block h-1.5 w-1.5 rounded-full transition-colors",
+                dotClass
               )}
             />
-            <span className="md-typescale-label-medium uppercase tracking-stamp">
-              {health === "loading" ? "checking" : health}
-            </span>
+            <span>API</span>
+            <span className="text-on-surface-variant/50">·</span>
+            <span className="text-on-surface-variant/60">{health === "loading" ? "checking" : health}</span>
             {pingMs !== null && (
-              <span className="font-mono text-[0.625rem] text-on-surface-variant/70 ml-auto">
+              <span className="font-mono text-[0.625rem] text-on-surface-variant/50 ml-auto">
                 {pingMs}ms
               </span>
             )}
-          </div>
-          <div className="font-mono text-[0.625rem] text-on-surface-variant/60 mt-3 leading-relaxed">
-            ff-brand-studio-mcp
-            <br />
-            <span className="text-on-surface-variant/50">v0.2.0 · prod</span>
           </div>
         </div>
       </aside>
@@ -232,8 +226,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 className="px-4 pb-6 block"
               >
                 <span className="font-brand text-2xl font-semibold">FF</span>
-                <span className="md-typescale-label-small text-ff-vermilion-deep block mt-1">
-                  Brand Studio · 文案工坊
+                <span className="md-typescale-label-small text-on-surface-variant/70 block mt-1">
+                  Brand Studio · Product images + listings
                 </span>
               </Link>
               {NAV.map((n) => {
