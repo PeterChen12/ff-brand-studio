@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -120,10 +121,13 @@ const ratingVariant: Record<Rating, "passed" | "pending" | "flagged"> = {
 };
 
 export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
+  void mcpUrl; // tenant-scoped /v1/launches now uses apiFetch; mcpUrl no longer needed
   const apiFetch = useApiFetch();
+  const searchParams = useSearchParams();
+  const seedProductId = searchParams.get("product_id");
   const [products, setProducts] = useState<ProductRow[] | null>(null);
   const [productErr, setProductErr] = useState<string | null>(null);
-  const [productId, setProductId] = useState<string | null>(null);
+  const [productId, setProductId] = useState<string | null>(seedProductId);
   const [platforms, setPlatforms] = useState<("amazon" | "shopify")[]>([
     "amazon",
     "shopify",
@@ -163,13 +167,11 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
     const startTime = Date.now();
     const timer = setInterval(() => setElapsedMs(Date.now() - startTime), 250);
     try {
-      // Phase G note: /demo/launch-sku is open today. Phase L will move
-      // this to /v1/launches under the requireTenant middleware. Once
-      // that ships, apiFetch attaches the Bearer JWT and the tenant
-      // context comes from there instead of the synth-tenant default.
-      const res = await fetch(`${mcpUrl}/demo/launch-sku`, {
+      // Phase H4 — go through the auth-gated, wallet-aware /v1/launches.
+      // apiFetch attaches the Clerk JWT; the Worker charges the wallet
+      // up-front, runs the pipeline, and refunds the difference.
+      const data = await apiFetch<LaunchResult>("/v1/launches", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           product_id: productId,
           platforms,
@@ -177,11 +179,6 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
           include_seo: true,
         }),
       });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`${res.status}: ${errText.slice(0, 300)}`);
-      }
-      const data = (await res.json()) as LaunchResult;
       setResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

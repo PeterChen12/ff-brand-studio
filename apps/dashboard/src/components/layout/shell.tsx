@@ -27,9 +27,11 @@ import { MCP_URL } from "@/lib/config";
  */
 const NAV: { href: string; label: string; sub: string; index: string }[] = [
   { href: "/", label: "Overview", sub: "总览", index: "01" },
-  { href: "/launch", label: "Launch SKU", sub: "上线产品", index: "02" },
-  { href: "/library", label: "Library", sub: "资产库", index: "03" },
-  { href: "/costs", label: "Costs", sub: "成本", index: "04" },
+  { href: "/products/new", label: "Add product", sub: "添加产品", index: "02" },
+  { href: "/launch", label: "Launch SKU", sub: "上线产品", index: "03" },
+  { href: "/library", label: "Library", sub: "资产库", index: "04" },
+  { href: "/costs", label: "Costs", sub: "成本", index: "05" },
+  { href: "/billing", label: "Billing", sub: "账户", index: "06" },
 ];
 
 type HealthState = "ok" | "degraded" | "error" | "loading";
@@ -70,6 +72,7 @@ function ShellInner({
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [walletCents, setWalletCents] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -91,6 +94,43 @@ function ShellInner({
       clearInterval(id);
     };
   }, []);
+
+  // Phase H4 — wallet pill in the sidebar. Polls /v1/me/state every
+  // 60s OR after a successful launch (TODO: emit event from launch wizard).
+  useEffect(() => {
+    let alive = true;
+    async function poll() {
+      try {
+        // Read the Clerk session token off the cookie. This duplicates a
+        // bit of logic from useApiFetch but Shell sits above that hook
+        // tree and hooking up an apiFetch here would require routing
+        // through ClerkProvider's auth state in two places.
+        // Worker is permissive on /v1/me/state (it's behind requireTenant
+        // so a missing token returns 401 and we just hide the pill).
+        const cookieMatch = document.cookie.match(/(?:^|;\s*)__session=([^;]+)/);
+        const token = cookieMatch?.[1];
+        if (!token) return;
+        const res = await fetch(`${MCP_URL}/v1/me/state`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          tenant?: { wallet_balance_cents?: number };
+        };
+        if (alive && typeof data.tenant?.wallet_balance_cents === "number") {
+          setWalletCents(data.tenant.wallet_balance_cents);
+        }
+      } catch {
+        // ignore — wallet pill is best-effort UI
+      }
+    }
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [pathname]);
 
   const dotClass = {
     ok: "bg-tertiary",
@@ -185,9 +225,39 @@ function ShellInner({
           })}
         </nav>
 
+        {/* Wallet pill — clickable, routes to /billing. Color shifts
+            amber under $1 and red under $0.50 per ADR-0005. */}
+        <Link
+          href="/billing"
+          className={cn(
+            "mx-3 mb-2 mt-auto px-4 py-3 rounded-m3-md",
+            "transition-colors hover:bg-surface-container-high",
+            "border ff-hairline flex items-center justify-between"
+          )}
+          title="Wallet · click to top up"
+        >
+          <span className="ff-stamp-label">Wallet · 余额</span>
+          <span
+            className={cn(
+              "font-brand tabular-nums text-lg",
+              walletCents === null
+                ? "text-on-surface-variant/60"
+                : walletCents < 50
+                  ? "text-error"
+                  : walletCents < 100
+                    ? "text-ff-amber"
+                    : "text-ff-vermilion-deep"
+            )}
+          >
+            {walletCents === null
+              ? "—"
+              : `$${(walletCents / 100).toFixed(2)}`}
+          </span>
+        </Link>
+
         {/* Tenant + identity — Clerk OrganizationSwitcher acts as the
             tenant picker; the avatar opens the standard Clerk user menu. */}
-        <div className="px-5 py-4 border-t ff-hairline mt-auto flex items-center gap-3">
+        <div className="px-5 py-4 border-t ff-hairline flex items-center gap-3">
           <OrganizationSwitcher
             hidePersonal
             afterCreateOrganizationUrl="/"

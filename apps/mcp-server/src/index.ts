@@ -12,10 +12,13 @@ import {
   runCosts,
   products,
   productVariants,
+  productReferences,
   platformAssets,
   platformListings,
   sellerProfiles,
   launchRuns,
+  walletLedger,
+  tenants,
   SAMPLE_TENANT_ID,
   type Product,
   type Tenant,
@@ -24,10 +27,16 @@ import { and, desc, sql, eq, inArray } from "drizzle-orm";
 import { runSeoPipeline, type SeoSurfaceSpec } from "./orchestrator/seo_pipeline.js";
 import { runLaunchPipeline } from "./orchestrator/launch_pipeline.js";
 import type { LaunchPlatform } from "./orchestrator/planner.js";
+import { predictLaunchCost, PRODUCT_ONBOARD_CENTS } from "./orchestrator/cost.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { requireTenant, type AuthVars } from "./lib/auth.js";
 import { handleClerkWebhook } from "./lib/clerk-webhook.js";
+import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
+import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
+import { auditEvent } from "./lib/audit.js";
+import { getStripe, priceIdForAmount, checkWebhookIdempotency } from "./lib/stripe.js";
+import { nanoid } from "nanoid";
 
 const app = new Hono<{
   Bindings: CloudflareBindings;
@@ -62,13 +71,637 @@ app.use(
 // svix signature, not a Bearer JWT).
 app.post("/v1/clerk-webhook", handleClerkWebhook);
 
+// Phase H3 — Stripe webhook. Open route (Stripe-signature-verified).
+app.post("/v1/stripe-webhook", async (c) => {
+  const sig = c.req.header("stripe-signature");
+  if (!sig) return c.json({ error: "missing_signature" }, 400);
+
+  const rawBody = await c.req.text();
+  const stripe = getStripe(c.env);
+
+  let event;
+  try {
+    event = await stripe.webhooks.constructEventAsync(
+      rawBody,
+      sig,
+      c.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("[stripe-webhook] signature verification failed", err);
+    return c.json({ error: "invalid_signature" }, 401);
+  }
+
+  // Idempotency — Stripe retries every webhook for up to 3 days; KV
+  // 24h TTL is enough since by then the original delivery has succeeded
+  // and the event_id is no longer in their retry queue.
+  const fresh = await checkWebhookIdempotency(c.env, event.id);
+  if (!fresh) return c.json({ ok: true, idempotent: true });
+
+  const db = createDbClient(c.env);
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object as {
+          id: string;
+          metadata?: Record<string, string> | null;
+          amount_total?: number | null;
+        };
+        const tenantId = session.metadata?.tenant_id;
+        const topUpCents =
+          Number(session.metadata?.top_up_cents) || session.amount_total || 0;
+        if (!tenantId || !topUpCents) {
+          return c.json({ ok: true, ignored: "missing_metadata" });
+        }
+        const result = await creditWallet(db, {
+          tenantId,
+          cents: topUpCents,
+          reason: "stripe_topup",
+          referenceType: "stripe_session",
+          referenceId: session.id,
+        });
+        await auditEvent(db, {
+          tenantId,
+          actor: null,
+          action: "billing.stripe_topup",
+          targetType: "stripe_session",
+          metadata: {
+            session_id: session.id,
+            cents: topUpCents,
+            balance_after: result.balanceAfterCents,
+          },
+        });
+        return c.json({ ok: true, balance_after: result.balanceAfterCents });
+      }
+      case "payment_intent.payment_failed":
+        // Log only; nothing to revert (Checkout session never completed).
+        console.warn("[stripe-webhook] payment_intent.payment_failed", event.id);
+        return c.json({ ok: true });
+      case "customer.deleted": {
+        const customer = event.data.object as { id: string };
+        await db
+          .update(tenants)
+          .set({ stripeCustomerId: null })
+          .where(eq(tenants.stripeCustomerId, customer.id));
+        return c.json({ ok: true });
+      }
+      default:
+        return c.json({ ok: true, ignored: event.type });
+    }
+  } catch (err) {
+    console.error(`[stripe-webhook ${event.type}]`, err);
+    return c.json(
+      {
+        error: "handler_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      },
+      500
+    );
+  }
+});
+
 // Apply auth middleware to /api/* and /v1/* (except open routes already
 // declared above). /health, /sse, /messages, /demo/* stay open for now —
 // /demo/* will be removed by the inbox cleanup agent once dashboard
 // migrates fully to /v1/launches.
 app.use("/api/*", requireTenant);
+app.use("/v1/launches", requireTenant);
 app.use("/v1/launches/*", requireTenant);
 app.use("/v1/listings/*", requireTenant);
+app.use("/v1/products", requireTenant);
+app.use("/v1/products/*", requireTenant);
+app.use("/v1/me/*", requireTenant);
+app.use("/v1/billing/*", requireTenant);
+
+// ── Phase H1 — self-serve product upload ─────────────────────────────────
+
+const UploadIntentInput = z.object({
+  extensions: z
+    .array(z.enum(["jpg", "jpeg", "png", "webp"]))
+    .min(1)
+    .max(10),
+});
+
+app.post("/v1/products/upload-intent", async (c) => {
+  const body = await c.req.json();
+  const parsed = UploadIntentInput.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+  const tenant = c.get("tenant") as Tenant;
+  const intentId = nanoid(16);
+  const urls = await Promise.all(
+    parsed.data.extensions.map((ext, i) =>
+      presignPutUrl({
+        env: c.env,
+        tenantId: tenant.id,
+        intentId,
+        index: i,
+        ext,
+      })
+    )
+  );
+
+  // Stash intent metadata in KV for the finalize step to look up.
+  await c.env.SESSION_KV.put(
+    `upload_intent:${intentId}`,
+    JSON.stringify({
+      tenant_id: tenant.id,
+      keys: urls.map((u) => u.key),
+      created_at: Date.now(),
+    }),
+    { expirationTtl: 3600 } // 1h — generous buffer past the 10-min PUT signature
+  );
+
+  return c.json({ intent_id: intentId, urls });
+});
+
+const ProductCreateInput = z.object({
+  intent_id: z.string().min(1),
+  sku: z.string().min(2).max(64).optional(),
+  name_en: z.string().min(2).max(200),
+  name_zh: z.string().max(200).optional(),
+  category: z.string().min(2).max(80),
+  kind: z.string().min(2).max(40).optional(),
+  dimensions: z.record(z.unknown()).optional(),
+  materials: z.array(z.string()).optional(),
+  colors_hex: z.array(z.string()).optional(),
+  uploaded_keys: z.array(z.string()).min(1).max(10),
+});
+
+app.post("/v1/products", async (c) => {
+  const body = await c.req.json();
+  const parsed = ProductCreateInput.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+  const p = parsed.data;
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+
+  // 1. Verify intent matches tenant
+  const intentRaw = await c.env.SESSION_KV.get(`upload_intent:${p.intent_id}`);
+  if (!intentRaw) return c.json({ error: "intent_expired_or_unknown" }, 400);
+  const intent = JSON.parse(intentRaw) as { tenant_id: string; keys: string[] };
+  if (intent.tenant_id !== tenant.id) {
+    return c.json({ error: "intent_tenant_mismatch" }, 403);
+  }
+  for (const key of p.uploaded_keys) {
+    if (!intent.keys.includes(key)) {
+      return c.json({ error: "uploaded_key_not_in_intent", key }, 400);
+    }
+  }
+
+  // 2. HEAD each uploaded key to confirm it actually landed in R2
+  for (const key of p.uploaded_keys) {
+    const v = await verifyR2Object(c.env, key);
+    if (!v.exists) {
+      return c.json({ error: "uploaded_object_missing", key }, 400);
+    }
+    if (v.contentLength !== null && v.contentLength > 5_000_000) {
+      return c.json(
+        { error: "uploaded_object_too_large", key, size: v.contentLength },
+        413
+      );
+    }
+  }
+
+  const db = createDbClient(c.env);
+
+  // 3. Charge the wallet (rejects on insufficient funds)
+  try {
+    await chargeWallet(db, {
+      tenantId: tenant.id,
+      cents: PRODUCT_ONBOARD_CENTS,
+      reason: "image_gen", // closest existing reason; "product_onboard" added Phase L
+      referenceType: "product",
+    });
+  } catch (err) {
+    if (err instanceof InsufficientFundsError) {
+      return c.json(
+        { error: "wallet_insufficient", balance_cents: err.balanceCents, required_cents: err.requestedCents },
+        402
+      );
+    }
+    throw err;
+  }
+
+  // 4. Ensure seller_profiles row exists for the tenant
+  let sellerId: string;
+  const [existingSeller] = await db
+    .select({ id: sellerProfiles.id })
+    .from(sellerProfiles)
+    .where(eq(sellerProfiles.tenantId, tenant.id))
+    .limit(1);
+
+  if (existingSeller) {
+    sellerId = existingSeller.id;
+  } else {
+    const [newSeller] = await db
+      .insert(sellerProfiles)
+      .values({
+        tenantId: tenant.id,
+        orgNameEn: tenant.name,
+        contactEmail: null,
+      })
+      .returning({ id: sellerProfiles.id });
+    sellerId = newSeller.id;
+  }
+
+  // 5. Create product + default variant + reference rows in one go
+  const sku = p.sku ?? `${tenant.id.slice(0, 6).toUpperCase()}-${nanoid(8).toUpperCase()}`;
+
+  const [product] = await db
+    .insert(products)
+    .values({
+      tenantId: tenant.id,
+      sellerId,
+      sku,
+      nameEn: p.name_en,
+      nameZh: p.name_zh ?? null,
+      category: p.category,
+      dimensions: p.dimensions ?? null,
+      materials: p.materials ?? null,
+      colorsHex: p.colors_hex ?? null,
+    })
+    .returning();
+
+  const [variant] = await db
+    .insert(productVariants)
+    .values({
+      tenantId: tenant.id,
+      productId: product.id,
+      color: null,
+      pattern: null,
+    })
+    .returning();
+
+  const PUBLIC_HOST = "https://pub-db3f39e3386347d58359ba96517eec84.r2.dev";
+  await db.insert(productReferences).values(
+    p.uploaded_keys.map((key) => ({
+      tenantId: tenant.id,
+      productId: product.id,
+      r2Url: `${PUBLIC_HOST}/${key}`,
+      kind: "uploaded",
+      uploadedBy: actor ?? null,
+    }))
+  );
+
+  await auditEvent(db, {
+    tenantId: tenant.id,
+    actor: actor ?? null,
+    action: "product.create",
+    targetType: "product",
+    targetId: product.id,
+    metadata: {
+      sku,
+      reference_count: p.uploaded_keys.length,
+      onboard_cents: PRODUCT_ONBOARD_CENTS,
+    },
+  });
+
+  // Clean up the intent (best-effort)
+  c.env.SESSION_KV.delete(`upload_intent:${p.intent_id}`).catch(() => {});
+
+  return c.json({
+    product_id: product.id,
+    sku: product.sku,
+    variant_id: variant.id,
+    references_created: p.uploaded_keys.length,
+  });
+});
+
+// ── Phase H2 — onboarding state ──────────────────────────────────────────
+
+app.get("/v1/me/state", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+  const db = createDbClient(c.env);
+
+  const [productCountRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(products)
+    .where(eq(products.tenantId, tenant.id));
+  const [launchCountRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(launchRuns)
+    .where(eq(launchRuns.tenantId, tenant.id));
+
+  const features = (tenant.features ?? {}) as Record<string, boolean>;
+  return c.json({
+    tenant: {
+      id: tenant.id,
+      name: tenant.name,
+      plan: tenant.plan,
+      wallet_balance_cents: tenant.walletBalanceCents,
+      features,
+    },
+    actor: actor ?? null,
+    onboarding: {
+      has_first_product: (productCountRow?.n ?? 0) > 0,
+      has_first_launch: (launchCountRow?.n ?? 0) > 0,
+      skipped: features.skipped_onboarding === true,
+    },
+  });
+});
+
+// ── Phase H3 — Stripe top-up checkout session ────────────────────────────
+
+const CheckoutInput = z.object({
+  amount_cents: z
+    .number()
+    .int()
+    .min(500) // $5 minimum
+    .max(50_000), // $500 max per call
+});
+
+app.post("/v1/billing/checkout-session", async (c) => {
+  const body = await c.req.json();
+  const parsed = CheckoutInput.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+  const tenant = c.get("tenant") as Tenant;
+
+  if (!c.env.STRIPE_SECRET_KEY) {
+    return c.json(
+      {
+        error: "stripe_not_configured",
+        hint:
+          "Set STRIPE_SECRET_KEY + STRIPE_PRICE_TOPUP_* via wrangler secret put",
+      },
+      503
+    );
+  }
+
+  const stripe = getStripe(c.env);
+  const priceId = priceIdForAmount(c.env, parsed.data.amount_cents);
+
+  const session = await stripe.checkout.sessions.create({
+    // Stripe SDK v22+ renamed "embedded" → "embedded_page" but the
+    // dashboard's <EmbeddedCheckout /> component still consumes the
+    // returned client_secret identically.
+    ui_mode: "embedded_page",
+    mode: "payment",
+    line_items: priceId
+      ? [{ price: priceId, quantity: 1 }]
+      : [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: { name: "FF wallet top-up" },
+              unit_amount: parsed.data.amount_cents,
+            },
+            quantity: 1,
+          },
+        ],
+    metadata: {
+      tenant_id: tenant.id,
+      top_up_cents: String(parsed.data.amount_cents),
+    },
+    customer: tenant.stripeCustomerId ?? undefined,
+    return_url: `${new URL(c.req.url).origin.replace(
+      "ff-brand-studio-mcp.creatorain.workers.dev",
+      "image-generation.buyfishingrod.com"
+    )}/billing?session_id={CHECKOUT_SESSION_ID}`,
+  });
+
+  return c.json({ client_secret: session.client_secret });
+});
+
+app.get("/v1/billing/ledger", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const db = createDbClient(c.env);
+  const rows = await db
+    .select()
+    .from(walletLedger)
+    .where(eq(walletLedger.tenantId, tenant.id))
+    .orderBy(desc(walletLedger.at))
+    .limit(100);
+  return c.json({
+    ledger: rows,
+    balance_cents: tenant.walletBalanceCents,
+  });
+});
+
+// ── Phase H4 — launch preview + versioned launch endpoint ────────────────
+
+const LaunchPreviewInput = z.object({
+  platforms: z
+    .array(z.enum(["amazon", "shopify"]))
+    .min(1)
+    .default(["amazon", "shopify"]),
+  include_seo: z.boolean().default(true),
+  include_video: z.boolean().default(false),
+});
+
+app.post("/v1/launches/preview", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = LaunchPreviewInput.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+  const tenant = c.get("tenant") as Tenant;
+
+  const prediction = predictLaunchCost({
+    platforms: parsed.data.platforms as LaunchPlatform[],
+    include_seo: parsed.data.include_seo,
+    include_video: parsed.data.include_video,
+  });
+
+  return c.json({
+    prediction,
+    wallet: {
+      balance_cents: tenant.walletBalanceCents,
+      balance_after_cents: tenant.walletBalanceCents - prediction.total_cents,
+      sufficient: tenant.walletBalanceCents >= prediction.total_cents,
+    },
+  });
+});
+
+const LaunchInput = z.object({
+  product_id: z.string().uuid(),
+  platforms: z
+    .array(z.enum(["amazon", "shopify"]))
+    .min(1)
+    .default(["amazon", "shopify"]),
+  dry_run: z.boolean().default(false),
+  include_seo: z.boolean().default(true),
+  seo_cost_cap_cents: z.number().int().positive().max(500).default(50),
+  cost_cap_cents: z.number().int().positive().max(2000).optional(),
+});
+
+app.post("/v1/launches", async (c) => {
+  const body = await c.req.json();
+  const parsed = LaunchInput.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+  const p = parsed.data;
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+  const db = createDbClient(c.env);
+
+  // 1. Verify product belongs to tenant (or is a Sample SKU)
+  const [product] = await db
+    .select()
+    .from(products)
+    .where(
+      and(
+        eq(products.id, p.product_id),
+        inArray(products.tenantId, visibleTenantIds(tenant))
+      )
+    )
+    .limit(1);
+  if (!product) return c.json({ error: "product_not_found_or_forbidden" }, 404);
+
+  // 2. Pre-flight cost prediction + wallet charge
+  const prediction = predictLaunchCost({
+    platforms: p.platforms as LaunchPlatform[],
+    include_seo: p.include_seo,
+  });
+
+  if (!p.dry_run) {
+    try {
+      await chargeWallet(db, {
+        tenantId: tenant.id,
+        cents: prediction.total_cents,
+        reason: "launch_run",
+        referenceType: "launch_run",
+      });
+    } catch (err) {
+      if (err instanceof InsufficientFundsError) {
+        return c.json(
+          {
+            error: "wallet_insufficient",
+            balance_cents: err.balanceCents,
+            required_cents: err.requestedCents,
+          },
+          402
+        );
+      }
+      throw err;
+    }
+  }
+
+  await auditEvent(db, {
+    tenantId: tenant.id,
+    actor: actor ?? null,
+    action: "launch.start",
+    targetType: "product",
+    targetId: product.id,
+    metadata: {
+      platforms: p.platforms,
+      predicted_cents: prediction.total_cents,
+      dry_run: p.dry_run,
+    },
+  });
+
+  try {
+    const result = await runLaunchPipeline(db, {
+      product_id: p.product_id,
+      platforms: p.platforms as LaunchPlatform[],
+      include_video: false,
+      dry_run: p.dry_run,
+      include_seo: p.include_seo,
+      seo_cost_cap_cents: p.seo_cost_cap_cents,
+      cost_cap_cents: p.cost_cap_cents,
+      anthropic_api_key: c.env.ANTHROPIC_API_KEY,
+      openai_api_key: c.env.OPENAI_API_KEY,
+      dataforseo_login: c.env.DATAFORSEO_LOGIN,
+      dataforseo_password: c.env.DATAFORSEO_PASSWORD,
+    });
+
+    // Refund the difference between predicted and actual cost (we charged
+    // `prediction.total_cents` up-front; if the run produced fewer assets
+    // or finished cheaper, refund the difference).
+    if (!p.dry_run) {
+      const actualCents = result.total_cost_cents;
+      // Convert seo cents (which the pipeline counts as cost-of-goods, not
+      // billable) — for now, refund the entire difference between our
+      // predicted billable amount and what would have been charged at full
+      // adapter completion. Phase L tightens this with per-asset billing.
+      const billedDelta = prediction.total_cents - actualCents;
+      if (billedDelta > 0) {
+        await creditWallet(db, {
+          tenantId: tenant.id,
+          cents: billedDelta,
+          reason: "refund",
+          referenceType: "launch_run",
+          referenceId: result.run_id,
+        });
+      }
+    }
+
+    await auditEvent(db, {
+      tenantId: tenant.id,
+      actor: actor ?? null,
+      action: result.status === "succeeded" ? "launch.complete" : "launch.failed",
+      targetType: "launch_run",
+      targetId: result.run_id,
+      metadata: {
+        status: result.status,
+        actual_cents: result.total_cost_cents,
+        duration_ms: result.duration_ms,
+        hitl_count: result.hitl_count,
+      },
+    });
+
+    return c.json(result);
+  } catch (err) {
+    // Refund the entire pre-charge if the pipeline itself crashed.
+    if (!p.dry_run) {
+      try {
+        await creditWallet(db, {
+          tenantId: tenant.id,
+          cents: prediction.total_cents,
+          reason: "refund",
+          referenceType: "launch_failure",
+        });
+      } catch {
+        // best effort
+      }
+    }
+    await auditEvent(db, {
+      tenantId: tenant.id,
+      actor: actor ?? null,
+      action: "launch.failed",
+      targetType: "product",
+      targetId: product.id,
+      metadata: { error: err instanceof Error ? err.message : String(err) },
+    });
+    return c.json(
+      {
+        error: "launch_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      },
+      500
+    );
+  }
+});
+
+app.get("/v1/launches/:runId", async (c) => {
+  const runId = c.req.param("runId");
+  const tenant = c.get("tenant") as Tenant;
+  const db = createDbClient(c.env);
+
+  const [run] = await db
+    .select()
+    .from(launchRuns)
+    .where(
+      and(
+        eq(launchRuns.id, runId),
+        inArray(launchRuns.tenantId, visibleTenantIds(tenant))
+      )
+    )
+    .limit(1);
+  if (!run) return c.json({ error: "not_found" }, 404);
+
+  const assetsRows = await db
+    .select()
+    .from(platformAssets)
+    .leftJoin(productVariants, eq(platformAssets.variantId, productVariants.id))
+    .where(eq(productVariants.productId, run.productId));
+
+  const listings = await db
+    .select()
+    .from(platformListings)
+    .leftJoin(productVariants, eq(platformListings.variantId, productVariants.id))
+    .where(eq(productVariants.productId, run.productId));
+
+  return c.json({ run, assets: assetsRows, listings });
+});
 
 // G3 — read endpoint for persisted SEO copy. Tenant-scoped.
 app.get("/v1/listings", async (c) => {
