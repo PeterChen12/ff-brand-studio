@@ -33,21 +33,47 @@ export default function OverviewPage() {
     Promise.all([fetch(`${MCP_URL}/api/assets`), fetch(`${MCP_URL}/api/costs`)])
       .then(async ([a, c]) => {
         const aData = (await a.json()) as {
-          assets: Array<{ brandScore?: number | null; campaign?: string | null }>;
+          legacy?: Array<{ brandScore?: number | null; campaign?: string | null }>;
+          platformAssets?: Array<{ complianceScore?: string | null; sku?: string | null }>;
         };
         const cData = (await c.json()) as { totalSpend: number; runs: number };
-        const scored = aData.assets.map((x) => x.brandScore ?? 0).filter((s) => s > 0);
-        const avgScore = scored.length
-          ? Math.round(scored.reduce((s, x) => s + x, 0) / scored.length)
+        const legacy = aData.legacy ?? [];
+        const v2 = aData.platformAssets ?? [];
+
+        // Compliance signal: blend v1 numeric brandScore with v2 string ratings
+        const v1Scores = legacy.map((x) => x.brandScore ?? 0).filter((s) => s > 0);
+        const v2Scores = v2
+          .map((x) => x.complianceScore)
+          .filter((s): s is string => !!s)
+          .map((s) => {
+            const u = s.toUpperCase();
+            if (u === "EXCELLENT") return 95;
+            if (u === "GOOD") return 80;
+            if (u === "FAIR") return 65;
+            if (u === "POOR") return 40;
+            const n = parseInt(s, 10);
+            return Number.isFinite(n) ? n : 0;
+          })
+          .filter((n) => n > 0);
+        const allScores = [...v1Scores, ...v2Scores];
+        const avgScore = allScores.length
+          ? Math.round(allScores.reduce((s, x) => s + x, 0) / allScores.length)
           : 0;
-        const passing = scored.filter((s) => s >= 70).length;
-        const passRate = scored.length ? Math.round((passing / scored.length) * 100) : 0;
-        const campaigns = new Set(aData.assets.map((x) => x.campaign).filter(Boolean));
+        const passing = allScores.filter((s) => s >= 70).length;
+        const passRate = allScores.length
+          ? Math.round((passing / allScores.length) * 100)
+          : 0;
+
+        // Campaign count is now SKU count (v2) — legacy campaigns counted separately
+        const v2Skus = new Set(v2.map((x) => x.sku).filter(Boolean));
+        const v1Campaigns = new Set(
+          legacy.map((x) => x.campaign).filter(Boolean)
+        );
         setStats({
-          assetCount: aData.assets.length,
+          assetCount: legacy.length + v2.length,
           totalSpend: cData.totalSpend,
           avgScore,
-          campaignCount: campaigns.size,
+          campaignCount: v2Skus.size + v1Campaigns.size,
           passRate,
         });
       })

@@ -7,7 +7,15 @@ import { RunCampaignInput } from "@ff/types";
 import { runCampaignWorkflow, setScoreFn } from "./workflows/campaign.workflow.js";
 import { scoreBrandCompliance } from "./guardian/index.js";
 import { createDbClient } from "./db/client.js";
-import { assets, runCosts, products, sellerProfiles, type Product } from "./db/schema.js";
+import {
+  assets,
+  runCosts,
+  products,
+  productVariants,
+  platformAssets,
+  sellerProfiles,
+  type Product,
+} from "./db/schema.js";
 import { desc, sql, eq } from "drizzle-orm";
 import { runSeoPipeline, type SeoSurfaceSpec } from "./orchestrator/seo_pipeline.js";
 import { runLaunchPipeline } from "./orchestrator/launch_pipeline.js";
@@ -124,15 +132,49 @@ app.post("/messages", async (c) => {
   return c.text("ok");
 });
 
-// Public read-only HTTP endpoints — used by the dashboard UI to fetch DAM data
+// Public read-only HTTP endpoints — used by the dashboard UI to fetch DAM data.
+// Returns BOTH v1 social heroes (assets table) and v2 launch platform-assets
+// (platform_assets joined to product_variants → products → seller_profiles).
+// Frontend buckets them differently: v2 assets group by SKU, v1 fall through
+// to a "legacy" section.
 app.get("/api/assets", async (c) => {
   try {
     const db = createDbClient(c.env);
-    const rows = await db.select().from(assets).orderBy(desc(assets.createdAt)).limit(50);
-    return c.json({ assets: rows });
+    const [legacyRows, v2Rows] = await Promise.all([
+      db.select().from(assets).orderBy(desc(assets.createdAt)).limit(50),
+      db
+        .select({
+          id: platformAssets.id,
+          variantId: platformAssets.variantId,
+          platform: platformAssets.platform,
+          slot: platformAssets.slot,
+          r2Url: platformAssets.r2Url,
+          width: platformAssets.width,
+          height: platformAssets.height,
+          format: platformAssets.format,
+          complianceScore: platformAssets.complianceScore,
+          status: platformAssets.status,
+          modelUsed: platformAssets.modelUsed,
+          costCents: platformAssets.costCents,
+          createdAt: platformAssets.createdAt,
+          productId: products.id,
+          sku: products.sku,
+          productNameEn: products.nameEn,
+          productNameZh: products.nameZh,
+          category: products.category,
+          sellerNameEn: sellerProfiles.orgNameEn,
+        })
+        .from(platformAssets)
+        .leftJoin(productVariants, eq(platformAssets.variantId, productVariants.id))
+        .leftJoin(products, eq(productVariants.productId, products.id))
+        .leftJoin(sellerProfiles, eq(products.sellerId, sellerProfiles.id))
+        .orderBy(desc(platformAssets.createdAt))
+        .limit(100),
+    ]);
+    return c.json({ legacy: legacyRows, platformAssets: v2Rows });
   } catch (err) {
     console.error("[/api/assets]", err);
-    return c.json({ assets: [] });
+    return c.json({ legacy: [], platformAssets: [] });
   }
 });
 

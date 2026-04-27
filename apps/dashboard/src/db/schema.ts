@@ -7,9 +7,10 @@
  * published npm package and this file is the only consumer that needs
  * to flip its import.
  */
-export type { AssetRow, RunCostRow } from "@ff/types";
+export type { AssetRow, PlatformAssetRow, RunCostRow } from "@ff/types";
 export {
   AssetRowSchema,
+  PlatformAssetRowSchema,
   RunCostRowSchema,
   ApiAssetsResponseSchema,
   ApiRunsResponseSchema,

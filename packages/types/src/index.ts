@@ -51,6 +51,7 @@ export type {
 // v2 Phase C — public dashboard ↔ Worker API contract
 export {
   AssetRowSchema,
+  PlatformAssetRowSchema,
   RunCostRowSchema,
   ApiAssetsResponseSchema,
   ApiRunsResponseSchema,
@@ -58,6 +59,7 @@ export {
 } from "./api.js";
 export type {
   AssetRow,
+  PlatformAssetRow,
   RunCostRow,
   ApiAssetsResponse,
   ApiRunsResponse,

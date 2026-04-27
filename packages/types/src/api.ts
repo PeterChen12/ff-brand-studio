@@ -11,7 +11,7 @@
  */
 import { z } from "zod";
 
-// ── /api/assets — list of asset rows (most-recent 50) ────────────────────────
+// ── /api/assets — v1 legacy heroes + v2 platform assets joined to SKUs ────
 
 export const AssetRowSchema = z.object({
   id: z.string().uuid(),
@@ -26,8 +26,36 @@ export const AssetRowSchema = z.object({
 });
 export type AssetRow = z.infer<typeof AssetRowSchema>;
 
+// v2 platform asset row — joined with the parent product so the dashboard
+// can render meaningful titles like "FF-DEMO-ROD-12FT · Amazon · Main"
+// instead of raw R2 keys.
+export const PlatformAssetRowSchema = z.object({
+  id: z.string().uuid(),
+  variantId: z.string().uuid(),
+  platform: z.string(),
+  slot: z.string(),
+  r2Url: z.string(),
+  width: z.number().int().nullable(),
+  height: z.number().int().nullable(),
+  format: z.string().nullable(),
+  complianceScore: z.string().nullable(),
+  status: z.string(),
+  modelUsed: z.string().nullable(),
+  costCents: z.number().int().nullable(),
+  createdAt: z.string().datetime().nullable(),
+  // Joined product/seller info — null when the join doesn't resolve
+  productId: z.string().uuid().nullable(),
+  sku: z.string().nullable(),
+  productNameEn: z.string().nullable(),
+  productNameZh: z.string().nullable(),
+  category: z.string().nullable(),
+  sellerNameEn: z.string().nullable(),
+});
+export type PlatformAssetRow = z.infer<typeof PlatformAssetRowSchema>;
+
 export const ApiAssetsResponseSchema = z.object({
-  assets: z.array(AssetRowSchema),
+  legacy: z.array(AssetRowSchema),
+  platformAssets: z.array(PlatformAssetRowSchema),
 });
 export type ApiAssetsResponse = z.infer<typeof ApiAssetsResponseSchema>;
 
