@@ -18,6 +18,10 @@ import {
 } from "@/components/library/asset-lightbox";
 import { ZoomTile } from "@/components/library/zoom-tile";
 import { isImageFormat, type SkuGroupShape } from "@/components/library/types";
+import {
+  BundleSkuButton,
+  DownloadAssetButton,
+} from "@/components/library/asset-actions";
 
 interface LibraryResponse {
   platformAssets: PlatformAssetRow[];
@@ -150,15 +154,19 @@ function SkuGroup({
             </div>
           )}
         </div>
-        <Badge variant="neutral" size="sm">
-          {group.items.length} slot{group.items.length === 1 ? "" : "s"}
-        </Badge>
+        <div className="flex items-center gap-3 shrink-0">
+          <Badge variant="neutral" size="sm">
+            {group.items.length} slot{group.items.length === 1 ? "" : "s"}
+          </Badge>
+          <BundleSkuButton group={group} />
+        </div>
       </CardHeader>
       <div className="px-6 pb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {group.items.map((item, idx) => (
           <PlatformAssetTile
             key={item.id}
             item={item}
+            sku={group.sku}
             onOpen={() => onOpenAt(idx)}
           />
         ))}
@@ -169,9 +177,11 @@ function SkuGroup({
 
 function PlatformAssetTile({
   item,
+  sku,
   onOpen,
 }: {
   item: PlatformAssetRow;
+  sku: string;
   onOpen: () => void;
 }) {
   const isImage = isImageFormat(item.format);
@@ -200,7 +210,7 @@ function PlatformAssetTile({
           </div>
         )}
       </div>
-      <div className="px-4 py-3 flex flex-col gap-1.5">
+      <div className="px-4 py-3 flex flex-col gap-2">
         <CardEyebrow>
           {item.platform} · {item.slot}
         </CardEyebrow>
@@ -212,6 +222,11 @@ function PlatformAssetTile({
             {item.costCents !== null ? `${item.costCents}¢` : "—"}
           </span>
         </div>
+        {isImage && (
+          <div className="pt-1">
+            <DownloadAssetButton item={item} sku={sku} />
+          </div>
+        )}
       </div>
     </div>
   );
