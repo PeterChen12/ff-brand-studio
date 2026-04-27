@@ -15,3 +15,9 @@ Thumbs.db
 # secrets — defense in depth
 scripts/secrets.json
 **/secrets.json
+
+# Hard-queue inbox — queued tasks not tracked
+inbox/*.md
+inbox/processed/*.md
+!inbox/.gitkeep
+!inbox/processed/.gitkeep
