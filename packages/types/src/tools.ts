@@ -200,6 +200,20 @@ export const LaunchProductSkuInput = z.object({
     .describe(
       "Phase 5 cost circuit breaker: max cents to spend in one run. Halt + flag if exceeded."
     ),
+  include_seo: z
+    .boolean()
+    .default(true)
+    .describe(
+      "SEO Layer · D6: also run bilingual SEO description pipeline (expand_seed → cluster → research → generate × score). Adds ~10–25¢/run."
+    ),
+  seo_cost_cap_cents: z
+    .number()
+    .int()
+    .positive()
+    .default(50)
+    .describe(
+      "Hard cap on the SEO sub-pipeline (cents). Default 50¢. Independent of the run-level cost_cap_cents."
+    ),
 });
 export type LaunchProductSkuInputType = z.infer<typeof LaunchProductSkuInput>;
 

@@ -31,6 +31,11 @@ export function registerLaunchProductSku(
         vision_pass: params.vision_pass,
         cost_cap_cents: params.cost_cap_cents,
         anthropic_api_key: env.ANTHROPIC_API_KEY,
+        include_seo: params.include_seo,
+        seo_cost_cap_cents: params.seo_cost_cap_cents,
+        openai_api_key: env.OPENAI_API_KEY,
+        dataforseo_login: env.DATAFORSEO_LOGIN,
+        dataforseo_password: env.DATAFORSEO_PASSWORD,
       });
 
       return {

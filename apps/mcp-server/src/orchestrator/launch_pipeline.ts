@@ -40,6 +40,11 @@ import {
 } from "./workers/index.js";
 import { pickCanonicalForSlot } from "../adapters/index.js";
 import { runEvaluatorOptimizer } from "./evaluator_optimizer.js";
+import {
+  runSeoPipeline,
+  type SeoPipelineResult,
+  type SeoSurfaceSpec,
+} from "./seo_pipeline.js";
 
 export interface LaunchPipelineInput {
   product_id: string;
@@ -51,8 +56,19 @@ export interface LaunchPipelineInput {
   vision_pass?: boolean;
   /** Phase 5: hard cap per launch (cents). Halt + flag if exceeded. */
   cost_cap_cents?: number;
-  /** Anthropic key — required only if vision_pass=true. */
+  /** Anthropic key — required for vision_pass and SEO description generation. */
   anthropic_api_key?: string;
+  /** SEO Layer · D6: run bilingual SEO description pipeline after image gen.
+   *  Default true. Halts gracefully on missing OPENAI_API_KEY/DataForSEO. */
+  include_seo?: boolean;
+  /** SEO sub-pipeline cost cap in cents. Default 50¢. */
+  seo_cost_cap_cents?: number;
+  /** Override surfaces — defaults to platforms→en mapping. */
+  seo_surfaces?: SeoSurfaceSpec[];
+  /** SEO secrets — passed through from env. */
+  openai_api_key?: string;
+  dataforseo_login?: string;
+  dataforseo_password?: string;
 }
 
 export interface LaunchPipelineResult {
@@ -76,6 +92,8 @@ export interface LaunchPipelineResult {
   }>;
   hitl_count: number;
   notes: string[];
+  /** SEO Layer · D6 — present when include_seo=true. */
+  seo?: SeoPipelineResult;
 }
 
 export async function runLaunchPipeline(
@@ -312,9 +330,49 @@ export async function runLaunchPipeline(
     }
   }
 
+  // ── 6b. SEO sub-pipeline (Layer D6) ─────────────────────────────────────
+  // Runs after image adapters so we have a stable canonical pool to point
+  // copy at, but before launch_runs is finalized so the cost ledger sums in.
+  let seoResult: SeoPipelineResult | undefined;
+  let seoCostCents = 0;
+  if (input.include_seo !== false && !costCapped && input.anthropic_api_key) {
+    try {
+      seoResult = await runSeoPipeline({
+        product,
+        platforms: input.platforms,
+        surfaces: input.seo_surfaces,
+        cost_cap_cents: input.seo_cost_cap_cents,
+        anthropic_api_key: input.anthropic_api_key,
+        openai_api_key: input.openai_api_key,
+        dataforseo_login: input.dataforseo_login,
+        dataforseo_password: input.dataforseo_password,
+      });
+      seoCostCents = seoResult.total_cost_cents;
+      notes.push(
+        `seo_pipeline → ${seoResult.surfaces.length}/${input.platforms.length} surfaces, ${seoResult.total_cost_cents}¢ (${seoResult.status})`
+      );
+      // Honor the run-level cost cap retroactively.
+      if (
+        input.cost_cap_cents &&
+        workerCostCents + evaluatorCostCents + seoCostCents > input.cost_cap_cents
+      ) {
+        costCapped = true;
+        notes.push(
+          `cost cap ${input.cost_cap_cents}¢ exceeded after SEO pipeline (total ${
+            workerCostCents + evaluatorCostCents + seoCostCents
+          }¢)`
+        );
+      }
+    } catch (e) {
+      notes.push(`seo_pipeline failed: ${String(e).slice(0, 200)}`);
+    }
+  } else if (!input.anthropic_api_key && input.include_seo !== false) {
+    notes.push("seo_pipeline skipped (no ANTHROPIC_API_KEY)");
+  }
+
   // ── 7. Finalize launch_runs ─────────────────────────────────────────────
   const durationMs = Date.now() - startedAt;
-  const totalCostCents = workerCostCents + evaluatorCostCents;
+  const totalCostCents = workerCostCents + evaluatorCostCents + seoCostCents;
   const finalStatus: LaunchPipelineResult["status"] = costCapped
     ? "cost_capped"
     : hitlCount > 0
@@ -343,5 +401,6 @@ export async function runLaunchPipeline(
     adapter_results: adapterResults,
     hitl_count: hitlCount,
     notes,
+    seo: seoResult,
   };
 }
