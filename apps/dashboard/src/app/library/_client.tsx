@@ -22,19 +22,80 @@ import {
   BundleSkuButton,
   DownloadAssetButton,
 } from "@/components/library/asset-actions";
+import {
+  FilterBar,
+  applyFilters,
+  DEFAULT_FILTERS,
+  type LibraryFilters,
+  type PlatformFilter,
+  type DateRangePreset,
+} from "@/components/library/filter-bar";
+import { AuditTab } from "@/components/library/audit-tab";
 
 interface LibraryResponse {
   platformAssets: PlatformAssetRow[];
 }
 
+type Tab = "assets" | "audit";
+
+function readFiltersFromUrl(): { tab: Tab; filters: LibraryFilters } {
+  if (typeof window === "undefined") {
+    return { tab: "assets", filters: DEFAULT_FILTERS };
+  }
+  const sp = new URLSearchParams(window.location.search);
+  const tab: Tab = sp.get("tab") === "audit" ? "audit" : "assets";
+  const platform = sp.get("platform");
+  const range = sp.get("range");
+  return {
+    tab,
+    filters: {
+      q: sp.get("q") ?? "",
+      platform:
+        platform === "amazon" || platform === "shopify" ? platform : "all",
+      slot: sp.get("slot") ?? "all",
+      status: sp.get("status") ?? "all",
+      range:
+        range === "today" || range === "7d" || range === "30d"
+          ? (range as DateRangePreset)
+          : "all",
+    },
+  };
+}
+
+function writeFiltersToUrl(tab: Tab, f: LibraryFilters) {
+  if (typeof window === "undefined") return;
+  const sp = new URLSearchParams();
+  if (tab !== "assets") sp.set("tab", tab);
+  if (f.q) sp.set("q", f.q);
+  if (f.platform !== "all") sp.set("platform", f.platform);
+  if (f.slot !== "all") sp.set("slot", f.slot);
+  if (f.status !== "all") sp.set("status", f.status);
+  if (f.range !== "all") sp.set("range", f.range);
+  const qs = sp.toString();
+  const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  window.history.replaceState({}, "", url);
+}
+
 export default function LibraryPage() {
   const apiFetch = useApiFetch();
   const [items, setItems] = useState<PlatformAssetRow[] | null>(null);
+  const [tab, setTab] = useState<Tab>("assets");
+  const [filters, setFilters] = useState<LibraryFilters>(DEFAULT_FILTERS);
   const [lightbox, setLightbox] = useState<{
     open: boolean;
     slides: AssetSlide[];
     index: number;
   }>({ open: false, slides: [], index: 0 });
+
+  useEffect(() => {
+    const init = readFiltersFromUrl();
+    setTab(init.tab);
+    setFilters(init.filters);
+  }, []);
+
+  useEffect(() => {
+    writeFiltersToUrl(tab, filters);
+  }, [tab, filters]);
 
   useEffect(() => {
     apiFetch<LibraryResponse>("/api/assets")
@@ -44,10 +105,15 @@ export default function LibraryPage() {
       .catch(() => setItems([]));
   }, [apiFetch]);
 
+  const filteredItems = useMemo(
+    () => (items ? applyFilters(items, filters) : null),
+    [items, filters]
+  );
+
   const skuGroups = useMemo<SkuGroupShape[] | null>(() => {
-    if (!items) return null;
+    if (!filteredItems) return null;
     const map = new Map<string, SkuGroupShape>();
-    for (const row of items) {
+    for (const row of filteredItems) {
       const key = row.sku ?? row.productId ?? "unattributed";
       const existing = map.get(key);
       if (existing) {
@@ -68,10 +134,20 @@ export default function LibraryPage() {
       const bLatest = b.items[0]?.createdAt ?? "";
       return bLatest.localeCompare(aLatest);
     });
+  }, [filteredItems]);
+
+  const distinctSlots = useMemo(() => {
+    if (!items) return [];
+    return Array.from(new Set(items.map((r) => r.slot))).sort();
+  }, [items]);
+
+  const distinctStatuses = useMemo(() => {
+    if (!items) return [];
+    return Array.from(new Set(items.map((r) => r.status))).sort();
   }, [items]);
 
   const skuCount = skuGroups?.length ?? 0;
-  const totalAssets = items?.length ?? 0;
+  const totalAssets = filteredItems?.length ?? 0;
 
   function openLightbox(group: SkuGroupShape, startIdx: number) {
     const slides: AssetSlide[] = group.items
@@ -101,22 +177,39 @@ export default function LibraryPage() {
         description={`${totalAssets} asset${totalAssets === 1 ? "" : "s"} across ${skuCount} SKU${skuCount === 1 ? "" : "s"}. Latest launches first.`}
       />
 
-      <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto">
-        {items === null ? (
-          <SkuGroupSkeleton />
-        ) : skuGroups && skuGroups.length > 0 ? (
-          <div className="space-y-7">
-            {skuGroups.map((g, i) => (
-              <SkuGroup
-                key={g.sku}
-                group={g}
-                delay={Math.min(i * 70, 280)}
-                onOpenAt={(idx) => openLightbox(g, idx)}
-              />
-            ))}
-          </div>
+      <section className="px-6 md:px-12 pt-8 pb-12 max-w-7xl mx-auto">
+        <Tabs tab={tab} setTab={setTab} />
+
+        {tab === "assets" ? (
+          <>
+            <FilterBar
+              value={filters}
+              onChange={setFilters}
+              slots={distinctSlots}
+              statuses={distinctStatuses}
+            />
+
+            {items === null ? (
+              <SkuGroupSkeleton />
+            ) : skuGroups && skuGroups.length > 0 ? (
+              <div className="space-y-7">
+                {skuGroups.map((g, i) => (
+                  <SkuGroup
+                    key={g.sku}
+                    group={g}
+                    delay={Math.min(i * 70, 280)}
+                    onOpenAt={(idx) => openLightbox(g, idx)}
+                  />
+                ))}
+              </div>
+            ) : items.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <NoMatchState onClear={() => setFilters(DEFAULT_FILTERS)} />
+            )}
+          </>
         ) : (
-          <EmptyState />
+          <AuditTab />
         )}
       </section>
 
@@ -127,6 +220,67 @@ export default function LibraryPage() {
         onClose={() => setLightbox((l) => ({ ...l, open: false }))}
       />
     </>
+  );
+}
+
+function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
+  return (
+    <div role="tablist" className="flex items-center gap-1 mb-6 border-b ff-hairline">
+      <TabButton active={tab === "assets"} onClick={() => setTab("assets")}>
+        Assets
+      </TabButton>
+      <TabButton active={tab === "audit"} onClick={() => setTab("audit")}>
+        Audit log
+      </TabButton>
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={[
+        "h-10 px-4 md-typescale-label-large border-b-2 -mb-px transition-colors",
+        active
+          ? "border-primary text-on-surface"
+          : "border-transparent text-on-surface-variant hover:text-on-surface",
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
+
+function NoMatchState({ onClear }: { onClear: () => void }) {
+  return (
+    <div className="rounded-m3-lg border border-dashed border-outline-variant py-16 px-8 text-center md-fade-in">
+      <div className="ff-stamp-label mb-3">No matches</div>
+      <h3 className="md-typescale-headline-medium text-on-surface mb-2">
+        Nothing matches those filters
+      </h3>
+      <p className="md-typescale-body-medium text-on-surface-variant max-w-md mx-auto mb-4">
+        Try clearing one filter or broadening the date range.
+      </p>
+      <button
+        type="button"
+        onClick={onClear}
+        className="px-4 h-9 rounded-m3-full bg-surface-container border ff-hairline md-typescale-label-medium hover:bg-surface-container-high"
+      >
+        Clear filters
+      </button>
+    </div>
   );
 }
 
@@ -304,3 +458,6 @@ function SkuGroupSkeleton() {
     </div>
   );
 }
+
+// Suppress unused-import warning when PlatformFilter is referenced indirectly.
+export type { PlatformFilter };

@@ -18,6 +18,7 @@ import {
   sellerProfiles,
   launchRuns,
   walletLedger,
+  auditEvents,
   tenants,
   SAMPLE_TENANT_ID,
   type Product,
@@ -172,6 +173,7 @@ app.use("/v1/products", requireTenant);
 app.use("/v1/products/*", requireTenant);
 app.use("/v1/me/*", requireTenant);
 app.use("/v1/billing/*", requireTenant);
+app.use("/v1/audit", requireTenant);
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -757,6 +759,56 @@ app.get("/v1/listings", async (c) => {
   } catch (err) {
     console.error("[/v1/listings]", err);
     return c.json({ listings: [], error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase J3 — paginated audit log for the current tenant.
+app.get("/v1/audit", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const tids = visibleTenantIds(tenant);
+
+    const limit = Math.min(
+      Math.max(parseInt(c.req.query("limit") ?? "100", 10) || 100, 1),
+      500
+    );
+    const offset = Math.max(parseInt(c.req.query("offset") ?? "0", 10) || 0, 0);
+    const actionsParam = c.req.query("actions");
+    const actorParam = c.req.query("actor");
+
+    const filters = [inArray(auditEvents.tenantId, tids)];
+    if (actionsParam) {
+      const list = actionsParam
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (list.length > 0) filters.push(inArray(auditEvents.action, list));
+    }
+    if (actorParam) {
+      filters.push(eq(auditEvents.actor, actorParam));
+    }
+
+    const rows = await db
+      .select()
+      .from(auditEvents)
+      .where(and(...filters))
+      .orderBy(desc(auditEvents.at))
+      .limit(limit + 1)
+      .offset(offset);
+
+    const hasMore = rows.length > limit;
+    return c.json({
+      events: rows.slice(0, limit),
+      hasMore,
+      nextOffset: hasMore ? offset + limit : null,
+    });
+  } catch (err) {
+    console.error("[/v1/audit]", err);
+    return c.json(
+      { events: [], error: err instanceof Error ? err.message : String(err) },
+      500
+    );
   }
 });
 
