@@ -14,6 +14,7 @@ import { registerResearchKeywords } from "./research-keywords.js";
 import { registerExpandSeed } from "./expand-seed.js";
 import { registerClusterKeywords } from "./cluster-keywords.js";
 import { registerGenerateSeoDescription } from "./generate-seo-description.js";
+import { registerScoreSeoCompliance } from "./score-seo-compliance.js";
 
 /**
  * Single registration array. Add new tools by importing the registrar above
@@ -39,6 +40,7 @@ const REGISTRARS: Array<(server: McpServer, env: CloudflareBindings) => void> = 
   registerExpandSeed,
   registerClusterKeywords,
   registerGenerateSeoDescription,
+  registerScoreSeoCompliance,
 ];
 
 export function registerAllTools(server: McpServer, env: CloudflareBindings): void {

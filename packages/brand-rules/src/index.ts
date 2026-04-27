@@ -12,6 +12,13 @@ export {
   buildUserPrompt,
 } from "./seo-prompts.js";
 
+// v2 SEO compliance scorer
+export {
+  type SeoRating,
+  type SeoComplianceResult,
+  scoreSeoCompliance,
+} from "./seo-rubric.js";
+
 export interface BrandRules {
   version: string;
   brand: string;

@@ -95,6 +95,23 @@ export const TranscreateZhToEnUsInput = z.object({
 });
 export type TranscreateZhToEnUsInputType = z.infer<typeof TranscreateZhToEnUsInput>;
 
+export const ScoreSeoComplianceInput = z.object({
+  surface: z.enum(["amazon-us", "tmall", "jd", "shopify"]),
+  language: z.enum(["en", "zh"]),
+  copy: z.record(z.string(), z.unknown()).nullable(),
+  violations: z.array(z.string()).optional(),
+  flags: z
+    .array(
+      z.object({
+        category: z.string(),
+        matched: z.string(),
+        severity: z.string().optional(),
+      })
+    )
+    .optional(),
+});
+export type ScoreSeoComplianceInputType = z.infer<typeof ScoreSeoComplianceInput>;
+
 export const ClusterKeywordsInput = z.object({
   phrases: z.array(z.string().min(1)).min(2).max(1000),
   threshold: z
