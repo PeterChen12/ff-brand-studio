@@ -1,7 +1,12 @@
 name: Deploy
 
+# Runs after CI succeeds on master. Path-filters which deploy job to run so
+# Worker-only changes don't redeploy the dashboard and vice versa.
+
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [master]
   workflow_dispatch:
 
@@ -12,6 +17,7 @@ concurrency:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     outputs:
       worker: ${{ steps.filter.outputs.worker }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
@@ -22,6 +28,7 @@ jobs:
       - id: filter
         uses: dorny/paths-filter@v3
         with:
+          base: HEAD~1
           filters: |
             worker:
               - 'apps/mcp-server/**'
@@ -40,20 +47,19 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.worker == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        # version from package.json#packageManager
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter ff-mcp-server run type-check
       - name: Deploy Worker
         working-directory: apps/mcp-server
-        run: npx wrangler deploy
+        run: pnpm exec wrangler deploy
         env:
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
@@ -63,21 +69,21 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.dashboard == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        # version from package.json#packageManager
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter ff-dashboard run type-check
-      - run: pnpm --filter ff-dashboard run build
+      - name: Build dashboard (static export)
+        run: pnpm --filter ff-dashboard run build
       - name: Deploy to Cloudflare Pages
         working-directory: apps/mcp-server
-        run: npx wrangler pages deploy ../dashboard/out --project-name ff-brand-studio --branch master --commit-dirty=true
+        run: pnpm exec wrangler pages deploy ../dashboard/out --project-name ff-brand-studio --branch master --commit-dirty=true
         env:
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
