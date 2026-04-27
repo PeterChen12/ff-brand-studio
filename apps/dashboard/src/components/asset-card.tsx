@@ -26,18 +26,22 @@ export function AssetCard({ asset }: { asset: AssetRow }) {
   const url = `${PUB_URL}/${asset.r2Key}`;
 
   return (
-    <Card className="group overflow-hidden flex flex-col">
-      <div className={cn("relative bg-paper-dim/40 border-b border-mist overflow-hidden aspect-[4/3]")}>
+    <Card className="group flex flex-col">
+      <div
+        className={cn(
+          "relative bg-surface-container/60 border-b ff-hairline overflow-hidden aspect-[4/3]"
+        )}
+      >
         {isImage ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={url}
             alt={asset.r2Key}
-            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.02]"
+            className="w-full h-full object-cover transition-transform duration-700 ease-m3-emphasized group-hover:scale-[1.03]"
             loading="lazy"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-ink-mute font-mono text-xs uppercase tracking-stamp">
+          <div className="w-full h-full flex items-center justify-center md-typescale-label-small text-on-surface-variant/70">
             {asset.assetType ?? "asset"}
           </div>
         )}
@@ -50,21 +54,26 @@ export function AssetCard({ asset }: { asset: AssetRow }) {
 
       <div className="px-4 pt-3 pb-4 flex flex-col gap-2">
         <div className="flex items-baseline justify-between gap-3">
-          <CardEyebrow className="text-vermilion-deep">{asset.assetType ?? "asset"}</CardEyebrow>
-          <span className="font-mono text-2xs text-ink-mute uppercase tracking-stamp">
+          <CardEyebrow>{asset.assetType ?? "asset"}</CardEyebrow>
+          <span className="md-typescale-label-small text-on-surface-variant/70">
             {asset.locale ?? "—"}
           </span>
         </div>
-        <div className="text-sm font-medium text-ink leading-snug truncate" title={asset.campaign ?? ""}>
-          {asset.campaign ?? <span className="text-ink-mute italic">untitled campaign</span>}
+        <div
+          className="md-typescale-title-small text-on-surface leading-snug truncate"
+          title={asset.campaign ?? ""}
+        >
+          {asset.campaign ?? (
+            <span className="text-on-surface-variant/60 italic">untitled campaign</span>
+          )}
         </div>
-        <div className="flex items-center gap-2 text-2xs text-ink-mute font-mono pt-1">
+        <div className="flex items-center gap-2 md-typescale-body-small text-on-surface-variant/70 font-mono pt-1">
           <span className="truncate" title={asset.r2Key}>
             {asset.r2Key.split("/").slice(-1)[0]}
           </span>
           {asset.platform && (
             <>
-              <span className="text-mist">·</span>
+              <span className="text-outline-variant">·</span>
               <span className="uppercase">{asset.platform}</span>
             </>
           )}

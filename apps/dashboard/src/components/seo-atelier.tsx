@@ -163,20 +163,20 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
   return (
     <div className="grid grid-cols-12 gap-6">
       {/* ── Brief column ───────────────────────────────────────────────── */}
-      <Card className="col-span-12 lg:col-span-7 animate-fade-up">
+      <Card className="col-span-12 lg:col-span-7 md-fade-in">
         <CardHeader>
           <div>
             <CardEyebrow>Step 01 · 草稿</CardEyebrow>
             <CardTitle className="mt-1">Brief the SEO bench</CardTitle>
           </div>
-          <span className="font-mono text-2xs uppercase tracking-stamp text-ink-mute">
+          <span className="font-mono text-[0.6875rem] uppercase tracking-stamp text-on-surface-variant/70">
             ~2¢/surface · cap 50¢
           </span>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-7">
             <div>
-              <div className="stamp-label mb-2">Demo SKUs · 一键填充</div>
+              <div className="ff-stamp-label mb-2">Demo SKUs · 一键填充</div>
               <div className="flex flex-wrap gap-2">
                 {DEMO_PRESETS.map((d) => (
                   <button
@@ -189,8 +189,8 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
                     }}
                     className={cn(
                       "inline-flex items-center gap-2 px-3 py-1.5 transition-colors",
-                      "font-mono text-2xs uppercase tracking-stamp border",
-                      "bg-paper-deep/40 text-ink-soft border-mist hover:border-vermilion-deep hover:text-vermilion-deep"
+                      "font-mono text-[0.6875rem] uppercase tracking-stamp border",
+                      "md-surface-container-low text-on-surface-variant border-outline-variant hover:border-primary hover:text-primary"
                     )}
                   >
                     {d.label}
@@ -200,7 +200,7 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
             </div>
 
             <div>
-              <div className="stamp-label mb-2">Product name (EN)</div>
+              <div className="ff-stamp-label mb-2">Product name (EN)</div>
               <input
                 value={productNameEn}
                 onChange={(e) => setProductNameEn(e.target.value)}
@@ -208,30 +208,30 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
                 minLength={2}
                 maxLength={200}
                 className={cn(
-                  "w-full px-4 py-2.5 bg-paper border border-mist text-ink",
-                  "font-display text-base",
+                  "w-full px-4 py-2.5 md-surface-container-lowest border border-outline-variant text-on-surface",
+                  "font-brand text-base",
                   "focus:outline-none focus:border-ink"
                 )}
               />
             </div>
 
             <div>
-              <div className="stamp-label mb-2">Product name (ZH · optional)</div>
+              <div className="ff-stamp-label mb-2">Product name (ZH · optional)</div>
               <input
                 value={productNameZh}
                 onChange={(e) => setProductNameZh(e.target.value)}
                 maxLength={200}
                 placeholder="Used for tmall/jd surfaces only"
                 className={cn(
-                  "w-full px-4 py-2.5 bg-paper border border-mist text-ink",
-                  "font-display text-base",
+                  "w-full px-4 py-2.5 md-surface-container-lowest border border-outline-variant text-on-surface",
+                  "font-brand text-base",
                   "focus:outline-none focus:border-ink"
                 )}
               />
             </div>
 
             <div>
-              <div className="stamp-label mb-3">Category · 品类</div>
+              <div className="ff-stamp-label mb-3">Category · 品类</div>
               <div className="flex flex-wrap gap-2">
                 {CATEGORIES.map((c) => {
                   const active = category === c.id;
@@ -242,16 +242,16 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
                       onClick={() => setCategory(c.id)}
                       className={cn(
                         "inline-flex items-center gap-2 px-3.5 py-1.5 transition-all",
-                        "font-mono text-2xs uppercase tracking-stamp border",
+                        "font-mono text-[0.6875rem] uppercase tracking-stamp border",
                         active
-                          ? "bg-ink text-paper border-ink"
-                          : "bg-paper-deep/40 text-ink-soft border-mist hover:border-ink hover:text-ink"
+                          ? "bg-on-surface text-surface border-ink"
+                          : "md-surface-container-low text-on-surface-variant border-outline-variant hover:border-ink hover:text-on-surface"
                       )}
                     >
                       <span
                         className={cn(
                           "inline-block h-1.5 w-1.5",
-                          active ? "bg-vermilion" : "bg-mist"
+                          active ? "bg-primary" : "bg-outline-variant"
                         )}
                       />
                       {c.label}
@@ -262,7 +262,7 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
             </div>
 
             <div>
-              <div className="stamp-label mb-3">Platforms · 平台</div>
+              <div className="ff-stamp-label mb-3">Platforms · 平台</div>
               <div className="flex flex-wrap gap-2">
                 {PLATFORMS.map((p) => {
                   const active = platforms.includes(p.id);
@@ -273,16 +273,16 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
                       onClick={() => togglePlatform(p.id)}
                       className={cn(
                         "inline-flex items-center gap-2 px-4 py-2 transition-all",
-                        "font-mono text-2xs uppercase tracking-stamp border",
+                        "font-mono text-[0.6875rem] uppercase tracking-stamp border",
                         active
-                          ? "bg-ink text-paper border-ink"
-                          : "bg-paper-deep/40 text-ink-soft border-mist hover:border-ink hover:text-ink"
+                          ? "bg-on-surface text-surface border-ink"
+                          : "md-surface-container-low text-on-surface-variant border-outline-variant hover:border-ink hover:text-on-surface"
                       )}
                     >
                       <span
                         className={cn(
                           "inline-block h-1.5 w-1.5",
-                          active ? "bg-vermilion" : "bg-mist"
+                          active ? "bg-primary" : "bg-outline-variant"
                         )}
                       />
                       {p.label}
@@ -305,9 +305,9 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
                   ? `Drafting · ${(elapsedMs / 1000).toFixed(1)}s`
                   : "Draft listings →"}
               </Button>
-              <span className="text-2xs font-mono text-ink-mute">
-                hits <span className="text-vermilion-deep">/demo/seo-preview</span> on{" "}
-                <span className="text-ink-soft">{new URL(mcpUrl).hostname}</span>
+              <span className="text-[0.6875rem] font-mono text-on-surface-variant/70">
+                hits <span className="text-ff-vermilion-deep">/demo/seo-preview</span> on{" "}
+                <span className="text-on-surface-variant">{new URL(mcpUrl).hostname}</span>
               </span>
             </div>
           </form>
@@ -315,14 +315,14 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
       </Card>
 
       {/* ── Pipeline guide ─────────────────────────────────────────────── */}
-      <Card className="col-span-12 lg:col-span-5 animate-fade-up [animation-delay:160ms]">
+      <Card className="col-span-12 lg:col-span-5 md-fade-in ">
         <CardHeader>
           <div>
             <CardEyebrow>Pipeline · 流水线</CardEyebrow>
             <CardTitle className="mt-1">SEO sub-flow, end-to-end</CardTitle>
           </div>
         </CardHeader>
-        <CardContent className="text-sm text-ink-soft leading-relaxed space-y-3">
+        <CardContent className="text-sm text-on-surface-variant leading-relaxed space-y-3">
           <PipelineStep
             n="01"
             label="expand_seed"
@@ -356,9 +356,9 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
 
       {/* ── Error ──────────────────────────────────────────────────────── */}
       {error && (
-        <div className="col-span-12 border border-vermilion bg-vermilion/5 px-6 py-5 animate-fade-up">
-          <div className="stamp-label text-vermilion-deep mb-2">Pipeline error</div>
-          <pre className="font-mono text-xs text-ink-soft whitespace-pre-wrap">
+        <div className="col-span-12 border border-error bg-primary/5 px-6 py-5 md-fade-in">
+          <div className="ff-stamp-label text-ff-vermilion-deep mb-2">Pipeline error</div>
+          <pre className="font-mono text-xs text-on-surface-variant whitespace-pre-wrap">
             {error}
           </pre>
         </div>
@@ -366,16 +366,16 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
 
       {/* ── Result summary ─────────────────────────────────────────────── */}
       {result && (
-        <Card className="col-span-12 animate-fade-up">
+        <Card className="col-span-12 md-fade-in">
           <CardHeader>
             <div>
               <CardEyebrow
                 className={
                   result.status === "succeeded"
-                    ? "text-jade-deep"
+                    ? "text-ff-jade-deep"
                     : result.status === "cost_capped"
-                      ? "text-amber"
-                      : "text-vermilion-deep"
+                      ? "text-ff-amber"
+                      : "text-ff-vermilion-deep"
                 }
               >
                 ✓ pipeline {result.status} · {result.total_cost_cents}¢
@@ -417,12 +417,12 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
 
             {result.keyword_summary.top_reps.length > 0 && (
               <div>
-                <div className="stamp-label mb-2">Top keyword reps</div>
+                <div className="ff-stamp-label mb-2">Top keyword reps</div>
                 <div className="flex flex-wrap gap-1.5">
                   {result.keyword_summary.top_reps.map((kw) => (
                     <span
                       key={kw}
-                      className="inline-block px-2 py-0.5 bg-paper-deep border border-mist font-mono text-2xs text-ink-soft"
+                      className="inline-block px-2 py-0.5 md-surface-container-low border border-outline-variant font-mono text-[0.6875rem] text-on-surface-variant"
                     >
                       {kw}
                     </span>
@@ -433,11 +433,11 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
 
             {/* Notes (failures / skips) */}
             {result.notes.length > 0 && (
-              <details className="bg-paper-deep/40 border border-mist">
-                <summary className="px-3 py-2 cursor-pointer font-mono text-2xs uppercase tracking-stamp text-ink-mute hover:text-ink">
+              <details className="md-surface-container-low border border-outline-variant">
+                <summary className="px-3 py-2 cursor-pointer font-mono text-[0.6875rem] uppercase tracking-stamp text-on-surface-variant/70 hover:text-on-surface">
                   pipeline notes ({result.notes.length})
                 </summary>
-                <ul className="px-4 pb-3 pt-1 font-mono text-2xs text-ink-soft space-y-1">
+                <ul className="px-4 pb-3 pt-1 font-mono text-[0.6875rem] text-on-surface-variant space-y-1">
                   {result.notes.map((n, i) => (
                     <li key={i}>· {n}</li>
                   ))}
@@ -456,7 +456,7 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
             <div className="flex items-center justify-between gap-4 w-full">
               <a
                 href="/costs"
-                className="font-mono text-2xs uppercase tracking-stamp text-ink-mute hover:text-ink"
+                className="font-mono text-[0.6875rem] uppercase tracking-stamp text-on-surface-variant/70 hover:text-on-surface"
               >
                 In ledger →
               </a>
@@ -464,10 +464,10 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
                 type="button"
                 disabled={!allGood}
                 className={cn(
-                  "px-4 py-2 font-mono text-2xs uppercase tracking-stamp border transition-colors",
+                  "px-4 py-2 font-mono text-[0.6875rem] uppercase tracking-stamp border transition-colors",
                   allGood
-                    ? "border-jade text-jade-deep hover:bg-jade hover:text-paper"
-                    : "border-mist text-ink-mute cursor-not-allowed"
+                    ? "border-tertiary text-ff-jade-deep hover:bg-tertiary hover:text-tertiary-on"
+                    : "border-outline-variant text-on-surface-variant/70 cursor-not-allowed"
                 )}
                 title={
                   allGood
@@ -491,13 +491,13 @@ function SurfaceCard({ s }: { s: SurfaceResult }) {
     (f) => f.severity === "block" || !f.severity
   );
   return (
-    <div className="border border-mist bg-paper-deep/40 flex flex-col">
-      <div className="px-4 py-3 border-b border-mist flex items-center justify-between gap-2">
+    <div className="border border-outline-variant md-surface-container-low flex flex-col">
+      <div className="px-4 py-3 border-b border-outline-variant flex items-center justify-between gap-2">
         <div>
-          <CardEyebrow className="text-vermilion-deep">
+          <CardEyebrow className="text-ff-vermilion-deep">
             {s.surface} · {s.language}
           </CardEyebrow>
-          <div className="font-mono text-2xs text-ink-mute mt-1">
+          <div className="font-mono text-[0.6875rem] text-on-surface-variant/70 mt-1">
             iter {s.iterations} · {s.cost_cents}¢
           </div>
         </div>
@@ -507,10 +507,10 @@ function SurfaceCard({ s }: { s: SurfaceResult }) {
         {s.copy ? (
           <CopyPreview copy={s.copy} />
         ) : (
-          <div className="font-mono text-2xs text-vermilion-deep">
+          <div className="font-mono text-[0.6875rem] text-ff-vermilion-deep">
             ⚠ LLM did not return parseable JSON
             {s.raw_output && (
-              <pre className="mt-2 whitespace-pre-wrap text-ink-mute">
+              <pre className="mt-2 whitespace-pre-wrap text-on-surface-variant/70">
                 {s.raw_output.slice(0, 500)}
               </pre>
             )}
@@ -518,13 +518,13 @@ function SurfaceCard({ s }: { s: SurfaceResult }) {
         )}
 
         {blockingFlags.length > 0 && (
-          <div className="border-l-2 border-vermilion pl-3">
-            <div className="stamp-label text-vermilion-deep mb-1">Blocking flags</div>
-            <ul className="font-mono text-2xs text-ink-soft space-y-0.5">
+          <div className="border-l-2 border-error pl-3">
+            <div className="ff-stamp-label text-ff-vermilion-deep mb-1">Blocking flags</div>
+            <ul className="font-mono text-[0.6875rem] text-on-surface-variant space-y-0.5">
               {blockingFlags.map((f, i) => (
                 <li key={i}>
-                  · <span className="text-vermilion-deep">{f.matched}</span>{" "}
-                  <span className="text-ink-mute">({f.category})</span>
+                  · <span className="text-ff-vermilion-deep">{f.matched}</span>{" "}
+                  <span className="text-on-surface-variant/70">({f.category})</span>
                 </li>
               ))}
             </ul>
@@ -533,10 +533,10 @@ function SurfaceCard({ s }: { s: SurfaceResult }) {
 
         {s.issues.length > 0 && (
           <details>
-            <summary className="cursor-pointer font-mono text-2xs uppercase tracking-stamp text-ink-mute hover:text-ink">
+            <summary className="cursor-pointer font-mono text-[0.6875rem] uppercase tracking-stamp text-on-surface-variant/70 hover:text-on-surface">
               issues ({s.issues.length})
             </summary>
-            <ul className="mt-2 font-mono text-2xs text-ink-soft space-y-0.5">
+            <ul className="mt-2 font-mono text-[0.6875rem] text-on-surface-variant space-y-0.5">
               {s.issues.slice(0, 6).map((iss, i) => (
                 <li key={i}>· {iss}</li>
               ))}
@@ -546,10 +546,10 @@ function SurfaceCard({ s }: { s: SurfaceResult }) {
 
         {s.suggestions.length > 0 && (
           <details>
-            <summary className="cursor-pointer font-mono text-2xs uppercase tracking-stamp text-ink-mute hover:text-ink">
+            <summary className="cursor-pointer font-mono text-[0.6875rem] uppercase tracking-stamp text-on-surface-variant/70 hover:text-on-surface">
               suggestions ({s.suggestions.length})
             </summary>
-            <ul className="mt-2 font-mono text-2xs text-ink-soft space-y-0.5">
+            <ul className="mt-2 font-mono text-[0.6875rem] text-on-surface-variant space-y-0.5">
               {s.suggestions.slice(0, 4).map((sg, i) => (
                 <li key={i}>· {sg}</li>
               ))}
@@ -593,16 +593,16 @@ function CopyPreview({ copy }: { copy: Record<string, unknown> }) {
     <div className="space-y-2">
       {title && (
         <div>
-          <div className="stamp-label">Title</div>
-          <p className="text-ink leading-snug font-medium">{title}</p>
+          <div className="ff-stamp-label">Title</div>
+          <p className="text-on-surface leading-snug font-medium">{title}</p>
         </div>
       )}
       {bullets.length > 0 && (
         <div>
-          <div className="stamp-label">Bullets · {bullets.length}</div>
-          <ul className="text-ink-soft text-xs leading-relaxed list-none space-y-1 mt-1">
+          <div className="ff-stamp-label">Bullets · {bullets.length}</div>
+          <ul className="text-on-surface-variant text-xs leading-relaxed list-none space-y-1 mt-1">
             {bullets.slice(0, 5).map((b, i) => (
-              <li key={i} className="pl-3 border-l border-mist">
+              <li key={i} className="pl-3 border-l border-outline-variant">
                 {b}
               </li>
             ))}
@@ -611,14 +611,14 @@ function CopyPreview({ copy }: { copy: Record<string, unknown> }) {
       )}
       {meta && (
         <div>
-          <div className="stamp-label">{copy.meta_description ? "Meta" : "Description"}</div>
-          <p className="text-ink-soft text-xs leading-relaxed line-clamp-4">{meta}</p>
+          <div className="ff-stamp-label">{copy.meta_description ? "Meta" : "Description"}</div>
+          <p className="text-on-surface-variant text-xs leading-relaxed line-clamp-4">{meta}</p>
         </div>
       )}
       {searchTerms && (
         <div>
-          <div className="stamp-label">Backend keywords</div>
-          <p className="font-mono text-2xs text-ink-mute break-all">{searchTerms}</p>
+          <div className="ff-stamp-label">Backend keywords</div>
+          <p className="font-mono text-[0.6875rem] text-on-surface-variant/70 break-all">{searchTerms}</p>
         </div>
       )}
     </div>
@@ -635,12 +635,12 @@ function Stat({
   hint: string;
 }) {
   return (
-    <div className="border border-mist bg-paper-deep/40 px-4 py-3">
-      <div className="stamp-label">{label}</div>
-      <div className="font-display text-2xl font-semibold text-ink mt-1">
+    <div className="border border-outline-variant md-surface-container-low px-4 py-3">
+      <div className="ff-stamp-label">{label}</div>
+      <div className="font-brand text-2xl font-semibold text-on-surface mt-1">
         {value}
       </div>
-      <div className="font-mono text-2xs text-ink-mute mt-0.5">{hint}</div>
+      <div className="font-mono text-[0.6875rem] text-on-surface-variant/70 mt-0.5">{hint}</div>
     </div>
   );
 }
@@ -655,13 +655,13 @@ function PipelineStep({
   hint: string;
 }) {
   return (
-    <div className="flex items-baseline gap-3 py-2 border-b border-mist/50 last:border-0">
-      <span className="font-mono text-2xs text-vermilion-deep tracking-stamp shrink-0">
+    <div className="flex items-baseline gap-3 py-2 border-b border-outline-variant/50 last:border-0">
+      <span className="font-mono text-[0.6875rem] text-ff-vermilion-deep tracking-stamp shrink-0">
         {n}
       </span>
       <div className="flex-1">
-        <div className="text-sm font-medium text-ink">{label}</div>
-        <div className="text-2xs font-mono text-ink-mute mt-0.5">{hint}</div>
+        <div className="text-sm font-medium text-on-surface">{label}</div>
+        <div className="text-[0.6875rem] font-mono text-on-surface-variant/70 mt-0.5">{hint}</div>
       </div>
     </div>
   );

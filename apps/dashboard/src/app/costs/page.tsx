@@ -3,7 +3,13 @@
 import { useEffect, useState, useMemo } from "react";
 import { MCP_URL } from "@/lib/config";
 import { PageHeader } from "@/components/layout/page-header";
-import { Card, CardHeader, CardTitle, CardEyebrow, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardEyebrow,
+  CardContent,
+} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NumberTicker } from "@/components/magic/number-ticker";
 import {
@@ -30,6 +36,18 @@ const COST_RATES = {
   gptImage2: 0.09,
   kling: 0.18,
 } as const;
+
+// M3-token RGB triplets sourced from globals.css. Recharts needs string
+// rgb() values not custom-property references, so we hand-pick from the
+// vermilion seed palette to keep the chart visually consistent with M3.
+const CHART = {
+  primary: "rgb(196 57 43)",
+  primaryFade: "rgb(196 57 43)",
+  outline: "rgb(205 199 189)",
+  onSurface: "rgb(74 70 63)",
+  surface: "rgb(247 241 231)",
+  ink: "rgb(28 27 26)",
+};
 
 export default function CostsPage() {
   const [summary, setSummary] = useState<CostSummary | null>(null);
@@ -70,8 +88,8 @@ export default function CostsPage() {
       />
 
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto space-y-12">
-        {/* ── Summary ribbon — 5 metrics in tabular monospace ────────────── */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-px bg-mist border border-mist">
+        {/* ── Summary ribbon — 5 metrics, M3 surface-tier separation ─────── */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-px md-surface-container border ff-hairline rounded-m3-lg overflow-hidden">
           <MetricCell
             label="Total spend"
             value={summary === null ? null : summary.totalSpend}
@@ -100,14 +118,14 @@ export default function CostsPage() {
           />
         </div>
 
-        {/* ── Trend chart — minimal, paper-on-paper line ─────────────────── */}
-        <Card className="animate-fade-up">
+        {/* ── Trend chart ──────────────────────────────────────────────── */}
+        <Card className="md-fade-in">
           <CardHeader>
             <div>
               <CardEyebrow>Spend trend · 支出趋势</CardEyebrow>
-              <CardTitle className="mt-1">Per-run cost over time</CardTitle>
+              <CardTitle className="mt-1.5">Per-run cost over time</CardTitle>
             </div>
-            <div className="font-mono text-2xs uppercase tracking-stamp text-ink-mute">
+            <div className="md-typescale-label-small">
               {rows === null ? "—" : `${rows.length} runs`}
             </div>
           </CardHeader>
@@ -115,7 +133,7 @@ export default function CostsPage() {
             {rows === null ? (
               <Skeleton className="h-64 w-full" />
             ) : chartData.length === 0 ? (
-              <div className="h-64 flex items-center justify-center text-ink-mute font-mono text-xs uppercase tracking-stamp">
+              <div className="h-64 flex items-center justify-center md-typescale-label-medium text-on-surface-variant">
                 No data yet
               </div>
             ) : (
@@ -123,44 +141,49 @@ export default function CostsPage() {
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={chartData}>
                     <defs>
-                      <linearGradient id="vermilionFade" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="rgb(199 82 42)" stopOpacity={0.4} />
-                        <stop offset="100%" stopColor="rgb(199 82 42)" stopOpacity={0} />
+                      <linearGradient id="primaryFade" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={CHART.primary} stopOpacity={0.35} />
+                        <stop offset="100%" stopColor={CHART.primary} stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid stroke="rgb(200 192 178)" strokeDasharray="2 6" vertical={false} />
+                    <CartesianGrid stroke={CHART.outline} strokeDasharray="2 6" vertical={false} />
                     <XAxis
                       dataKey="run"
-                      tick={{ fill: "rgb(102 110 102)", fontSize: 11, fontFamily: "JetBrains Mono" }}
+                      tick={{ fill: CHART.onSurface, fontSize: 11, fontFamily: "JetBrains Mono" }}
                       tickLine={false}
-                      axisLine={{ stroke: "rgb(200 192 178)" }}
+                      axisLine={{ stroke: CHART.outline }}
                     />
                     <YAxis
-                      tick={{ fill: "rgb(102 110 102)", fontSize: 11, fontFamily: "JetBrains Mono" }}
+                      tick={{ fill: CHART.onSurface, fontSize: 11, fontFamily: "JetBrains Mono" }}
                       tickLine={false}
                       axisLine={false}
                       tickFormatter={(v) => `$${v.toFixed(2)}`}
                     />
                     <Tooltip
                       contentStyle={{
-                        background: "rgb(244 240 232)",
-                        border: "1px solid rgb(200 192 178)",
-                        borderRadius: 0,
+                        background: CHART.surface,
+                        border: `1px solid ${CHART.outline}`,
+                        borderRadius: 12,
                         fontFamily: "JetBrains Mono",
                         fontSize: 11,
-                        color: "rgb(18 24 22)",
+                        color: CHART.ink,
                       }}
-                      labelStyle={{ color: "rgb(102 110 102)", textTransform: "uppercase", letterSpacing: 2, fontSize: 10 }}
+                      labelStyle={{
+                        color: CHART.onSurface,
+                        textTransform: "uppercase",
+                        letterSpacing: 2,
+                        fontSize: 10,
+                      }}
                       formatter={(v: number) => [`$${v.toFixed(3)}`, "cost"]}
                     />
                     <Area
                       type="monotone"
                       dataKey="cost"
-                      stroke="rgb(199 82 42)"
-                      strokeWidth={1.5}
-                      fill="url(#vermilionFade)"
-                      dot={{ fill: "rgb(199 82 42)", r: 2 }}
-                      activeDot={{ r: 4, stroke: "rgb(244 240 232)", strokeWidth: 2 }}
+                      stroke={CHART.primary}
+                      strokeWidth={1.75}
+                      fill="url(#primaryFade)"
+                      dot={{ fill: CHART.primary, r: 2 }}
+                      activeDot={{ r: 4, stroke: CHART.surface, strokeWidth: 2 }}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -174,10 +197,10 @@ export default function CostsPage() {
           <CardHeader>
             <div>
               <CardEyebrow>Run ledger · 运行账目</CardEyebrow>
-              <CardTitle className="mt-1">Recent campaigns</CardTitle>
+              <CardTitle className="mt-1.5">Recent campaigns</CardTitle>
             </div>
           </CardHeader>
-          <div className="border-t border-mist overflow-x-auto">
+          <div className="border-t ff-hairline overflow-x-auto">
             {rows === null ? (
               <div className="p-12 space-y-3">
                 {Array.from({ length: 4 }).map((_, i) => (
@@ -186,19 +209,22 @@ export default function CostsPage() {
               </div>
             ) : rows.length === 0 ? (
               <div className="py-16 text-center">
-                <div className="stamp-label text-ink-mute mb-2">Ledger empty</div>
-                <p className="text-sm text-ink-soft">No runs recorded yet.</p>
+                <div className="ff-stamp-label text-on-surface-variant mb-2">Ledger empty</div>
+                <p className="md-typescale-body-medium text-on-surface-variant">
+                  No runs recorded yet.
+                </p>
               </div>
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full">
                 <thead>
-                  <tr className="bg-paper-dim/40">
+                  <tr className="md-surface-container-low">
                     {["Campaign", "Run at", "Flux", "GPT Img 2", "Kling", "Total"].map((h, i) => (
                       <th
                         key={h}
-                        className={`px-5 py-3 text-2xs font-mono uppercase tracking-stamp text-ink-mute ${
-                          i >= 2 ? "text-right" : "text-left"
-                        }`}
+                        className={[
+                          "px-5 py-3 md-typescale-label-small text-on-surface-variant",
+                          i >= 2 ? "text-right" : "text-left",
+                        ].join(" ")}
                       >
                         {h}
                       </th>
@@ -209,12 +235,12 @@ export default function CostsPage() {
                   {rows.map((row) => (
                     <tr
                       key={row.id}
-                      className="border-t border-mist/60 hover:bg-paper-dim/30 transition-colors"
+                      className="border-t ff-hairline hover:bg-surface-container-low/60 transition-colors duration-m3-short3"
                     >
-                      <td className="px-5 py-3 text-ink font-mono text-xs truncate max-w-[20ch]">
+                      <td className="px-5 py-3 text-on-surface font-mono text-xs truncate max-w-[20ch]">
                         {row.campaign ?? "—"}
                       </td>
-                      <td className="px-5 py-3 text-ink-mute font-mono text-xs">
+                      <td className="px-5 py-3 text-on-surface-variant font-mono text-xs">
                         {row.runAt
                           ? new Date(row.runAt).toLocaleDateString("en-US", {
                               month: "short",
@@ -224,16 +250,16 @@ export default function CostsPage() {
                             })
                           : "—"}
                       </td>
-                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-ink-soft">
+                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-on-surface-variant">
                         {row.fluxCalls ?? 0}
                       </td>
-                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-ink-soft">
+                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-on-surface-variant">
                         {row.gptImage2Calls ?? 0}
                       </td>
-                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-ink-soft">
+                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-on-surface-variant">
                         {row.klingCalls ?? 0}
                       </td>
-                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-vermilion-deep font-semibold">
+                      <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-ff-vermilion-deep font-semibold">
                         ${parseFloat(row.totalCostUsd ?? "0").toFixed(3)}
                       </td>
                     </tr>
@@ -264,12 +290,13 @@ function MetricCell({
   accent?: boolean;
 }) {
   return (
-    <div className="bg-paper-deep/60 px-5 py-5 flex flex-col gap-1.5 min-h-[110px]">
-      <span className="stamp-label">{label}</span>
+    <div className="md-surface-container-lowest px-5 py-5 flex flex-col gap-1.5 min-h-[120px]">
+      <span className="ff-stamp-label">{label}</span>
       <div
-        className={`font-display ${
-          accent ? "text-vermilion-deep" : "text-ink"
-        } text-3xl md:text-4xl font-medium leading-none mt-1`}
+        className={[
+          "md-typescale-display-small tabular-nums",
+          accent ? "text-ff-vermilion-deep" : "text-on-surface",
+        ].join(" ")}
       >
         {value === null ? (
           <Skeleton className="h-8 w-24" />
@@ -277,7 +304,11 @@ function MetricCell({
           <NumberTicker value={value} prefix={prefix} decimals={decimals ?? 0} />
         )}
       </div>
-      {sub && <span className="text-2xs font-mono text-ink-mute">{sub}</span>}
+      {sub && (
+        <span className="md-typescale-label-small text-on-surface-variant/70 font-mono">
+          {sub}
+        </span>
+      )}
     </div>
   );
 }

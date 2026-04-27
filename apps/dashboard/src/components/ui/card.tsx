@@ -2,17 +2,37 @@ import * as React from "react";
 import { cn } from "@/lib/cn";
 
 /**
- * Atelier card — hairline border on paper, subtle inset shadow on hover.
- * The triangular corner mark in `<CardHeader>` evokes a customs-folder
- * cut — a quiet brand motif that runs through the whole UI.
+ * M3 elevated/outlined card — variants follow Material 3 spec.
+ *
+ *  - "elevated" (default for content): surface-container-lowest + level-1 shadow
+ *  - "outlined" (for dense content): surface, hairline outline, no shadow
+ *  - "filled" (for emphasis): surface-container-high, no border
+ *
+ * The triangular corner notch in `<CardHeader>` keeps FF's "customs-folder
+ * cut" brand motif on top of the M3 surface — a quiet vermilion tell that
+ * differentiates from generic Material cards.
  */
-export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+type CardVariant = "elevated" | "outlined" | "filled";
+
+const cardVariants: Record<CardVariant, string> = {
+  elevated:
+    "md-surface-container-lowest md-elevation-1 hover:md-elevation-2 transition-shadow duration-m3-medium2 ease-m3-emphasized rounded-m3-lg",
+  outlined:
+    "md-surface border ff-hairline rounded-m3-lg",
+  filled:
+    "md-surface-container-high rounded-m3-lg",
+};
+
+export function Card({
+  className,
+  variant = "elevated",
+  ...props
+}: React.HTMLAttributes<HTMLDivElement> & { variant?: CardVariant }) {
   return (
     <div
       className={cn(
-        "relative bg-paper-deep/50 border border-mist text-ink",
-        "transition-[box-shadow,border-color] duration-300",
-        "hover:border-ink/30 hover:shadow-[inset_0_0_0_1px_rgb(var(--ink)/0.04)]",
+        "relative text-on-surface overflow-hidden",
+        cardVariants[variant],
         className
       )}
       {...props}
@@ -20,14 +40,17 @@ export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElemen
   );
 }
 
-export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+export function CardHeader({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(
-        "relative px-6 pt-5 pb-3 flex items-baseline justify-between gap-4",
-        // Diagonal corner notch — a single triangle, vermilion 8% tinted
+        "relative px-6 pt-6 pb-3 flex items-baseline justify-between gap-4",
+        // FF brand notch — single triangle, vermilion 12% tinted
         "before:absolute before:top-0 before:right-0",
-        "before:w-3 before:h-3 before:bg-vermilion/10",
+        "before:w-3.5 before:h-3.5 before:bg-primary/15",
         "before:[clip-path:polygon(100%_0,100%_100%,0_0)]",
         className
       )}
@@ -36,11 +59,14 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
   );
 }
 
-export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
+export function CardTitle({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
     <h3
       className={cn(
-        "font-display text-lg font-medium tracking-tight text-ink leading-tight",
+        "md-typescale-headline-small text-on-surface leading-tight",
         className
       )}
       {...props}
@@ -48,19 +74,29 @@ export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHead
   );
 }
 
-export function CardEyebrow({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
-  return <span className={cn("stamp-label", className)} {...props} />;
+export function CardEyebrow({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLSpanElement>) {
+  return <span className={cn("ff-stamp-label", className)} {...props} />;
 }
 
-export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+export function CardContent({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("px-6 pb-5 pt-1", className)} {...props} />;
 }
 
-export function CardFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+export function CardFooter({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(
-        "px-6 py-3 border-t border-mist/70 flex items-center justify-between gap-3 text-xs text-ink-mute",
+        "px-6 py-3.5 border-t ff-hairline flex items-center justify-between gap-3",
+        "md-typescale-body-small text-on-surface-variant",
         className
       )}
       {...props}

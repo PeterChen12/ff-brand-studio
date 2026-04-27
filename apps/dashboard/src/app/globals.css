@@ -1,13 +1,132 @@
+/*
+ * FF Brand Studio — Material 3 design tokens, FF-seeded.
+ *
+ * Built on Google's Material 3 spec (color roles, typography scale, shape
+ * scale, elevation, motion). Customized to avoid generic Google look:
+ *   - Seed color is vermilion (#c4392b) — derives a warm rust/paper palette,
+ *     not Material You's default purple.
+ *   - Typography overrides M3's Roboto default with Fraunces (display, sharp
+ *     editorial serif) + Geist (body, technical sans) + JetBrains Mono
+ *     (numerical/code surfaces). Set via --md-ref-typeface-* per M3 spec.
+ *   - Shape adopts M3's "expressive" scale (large radii) but pushes the XL
+ *     token to 32px for FF-distinctive cards.
+ *   - "Stamp" decorative tokens (vermilion seal-stamp diagonal, hairline
+ *     borders) are FF brand DNA, layered ONTO M3 surfaces, not replacing them.
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
-  --ff-primary: #1c3faa;
-  --ff-electric: #00a8e8;
-  --ff-gold: #c9a84c;
-  --ff-black: #0a0a0a;
-  --ff-white: #ffffff;
-  --ff-navy: #0d1b4b;
-  --ff-surface: #111827;
-  --ff-border: #1f2937;
-  --ff-muted: #6b7280;
+  /* ── M3 sys.color (light scheme, vermilion seed) ──────────────────────── */
+  --md-sys-color-primary: 196 57 43;                       /* #c4392b */
+  --md-sys-color-on-primary: 255 255 255;
+  --md-sys-color-primary-container: 255 218 213;
+  --md-sys-color-on-primary-container: 65 0 0;
+  --md-sys-color-primary-fixed: 255 218 213;
+  --md-sys-color-primary-fixed-dim: 255 180 170;
+  --md-sys-color-on-primary-fixed: 65 0 0;
+  --md-sys-color-on-primary-fixed-variant: 137 28 18;
+
+  --md-sys-color-secondary: 116 84 78;                     /* warm taupe */
+  --md-sys-color-on-secondary: 255 255 255;
+  --md-sys-color-secondary-container: 255 218 213;
+  --md-sys-color-on-secondary-container: 44 21 17;
+
+  --md-sys-color-tertiary: 91 140 117;                     /* jade — passed states */
+  --md-sys-color-on-tertiary: 255 255 255;
+  --md-sys-color-tertiary-container: 207 235 219;
+  --md-sys-color-on-tertiary-container: 0 33 17;
+
+  --md-sys-color-error: 186 26 26;
+  --md-sys-color-on-error: 255 255 255;
+  --md-sys-color-error-container: 255 218 214;
+  --md-sys-color-on-error-container: 65 0 2;
+
+  --md-sys-color-surface: 253 250 246;                     /* warm paper */
+  --md-sys-color-surface-dim: 235 229 219;
+  --md-sys-color-surface-bright: 255 253 250;
+  --md-sys-color-surface-container-lowest: 255 255 255;
+  --md-sys-color-surface-container-low: 247 241 231;
+  --md-sys-color-surface-container: 241 235 225;
+  --md-sys-color-surface-container-high: 235 229 219;
+  --md-sys-color-surface-container-highest: 229 223 213;
+  --md-sys-color-on-surface: 28 27 26;
+  --md-sys-color-on-surface-variant: 74 70 63;
+
+  --md-sys-color-outline: 122 118 110;
+  --md-sys-color-outline-variant: 205 199 189;
+
+  --md-sys-color-inverse-surface: 32 30 28;
+  --md-sys-color-inverse-on-surface: 245 239 230;
+  --md-sys-color-inverse-primary: 255 180 170;
+
+  --md-sys-color-shadow: 0 0 0;
+  --md-sys-color-scrim: 0 0 0;
+
+  /* ── FF accent extensions (not part of M3, but live in our system) ───── */
+  --ff-vermilion-deep: 137 28 18;                          /* darker stamp */
+  --ff-saffron: 209 137 56;                                /* warm callout */
+  --ff-amber: 188 144 73;
+  --ff-jade-deep: 0 87 51;
+
+  /* ── M3 ref.typeface (override Roboto with Fraunces + Geist + Mono) ──── */
+  --md-ref-typeface-brand: "Fraunces", ui-serif, Georgia, serif;
+  --md-ref-typeface-plain: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --md-ref-typeface-mono: "JetBrains Mono", ui-monospace, monospace;
+  --md-ref-typeface-weight-regular: 400;
+  --md-ref-typeface-weight-medium: 500;
+  --md-ref-typeface-weight-bold: 700;
+
+  /* ── M3 sys.shape (rounded scale; XL bumped to 32 for FF cards) ──────── */
+  --md-sys-shape-corner-none: 0;
+  --md-sys-shape-corner-extra-small: 4px;
+  --md-sys-shape-corner-small: 8px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-large: 20px;
+  --md-sys-shape-corner-extra-large: 32px;
+  --md-sys-shape-corner-full: 9999px;
+
+  /* ── M3 sys.elevation (light) ────────────────────────────────────────── */
+  --md-sys-elevation-level-0: none;
+  --md-sys-elevation-level-1:
+    0 1px 2px 0 rgb(0 0 0 / 0.06),
+    0 1px 3px 1px rgb(0 0 0 / 0.04);
+  --md-sys-elevation-level-2:
+    0 1px 2px 0 rgb(0 0 0 / 0.06),
+    0 2px 6px 2px rgb(0 0 0 / 0.05);
+  --md-sys-elevation-level-3:
+    0 4px 8px 3px rgb(0 0 0 / 0.05),
+    0 1px 3px 0 rgb(0 0 0 / 0.07);
+  --md-sys-elevation-level-4:
+    0 6px 10px 4px rgb(0 0 0 / 0.05),
+    0 2px 3px 0 rgb(0 0 0 / 0.07);
+  --md-sys-elevation-level-5:
+    0 8px 12px 6px rgb(0 0 0 / 0.05),
+    0 4px 4px 0 rgb(0 0 0 / 0.08);
+
+  /* ── M3 sys.motion (emphasized + standard easings, durations) ────────── */
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
+  --md-sys-motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1);
+  --md-sys-motion-easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --md-sys-motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --md-sys-motion-duration-short1: 50ms;
+  --md-sys-motion-duration-short2: 100ms;
+  --md-sys-motion-duration-short3: 150ms;
+  --md-sys-motion-duration-short4: 200ms;
+  --md-sys-motion-duration-medium1: 250ms;
+  --md-sys-motion-duration-medium2: 300ms;
+  --md-sys-motion-duration-medium3: 350ms;
+  --md-sys-motion-duration-medium4: 400ms;
+  --md-sys-motion-duration-long1: 450ms;
+  --md-sys-motion-duration-long2: 500ms;
+  --md-sys-motion-duration-long3: 550ms;
+  --md-sys-motion-duration-long4: 600ms;
 }
 
 * {
@@ -16,18 +135,202 @@
   padding: 0;
 }
 
+html {
+  background: rgb(var(--md-sys-color-surface));
+  color: rgb(var(--md-sys-color-on-surface));
+}
+
 body {
-  background: var(--ff-black);
-  color: var(--ff-white);
-  font-family: Inter, "Helvetica Neue", sans-serif;
+  font-family: var(--md-ref-typeface-plain);
+  font-weight: 400;
+  font-feature-settings: "ss01", "cv11"; /* Geist character variants */
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  background: rgb(var(--md-sys-color-surface));
+  color: rgb(var(--md-sys-color-on-surface));
+  min-height: 100vh;
+  /* Subtle warm noise — keeps "paper" surfaces from feeling flat */
+  background-image:
+    radial-gradient(circle at 1px 1px, rgb(var(--md-sys-color-on-surface) / 0.018) 1px, transparent 0);
+  background-size: 18px 18px;
 }
 
-a {
-  color: var(--ff-electric);
-  text-decoration: none;
+/* Selection in vermilion primary container — feels like a stamp impression */
+::selection {
+  background: rgb(var(--md-sys-color-primary-container));
+  color: rgb(var(--md-sys-color-on-primary-container));
 }
 
-a:hover {
-  text-decoration: underline;
+/* Focus ring — vermilion outline, 2px offset, 1px ring (M3-tuned) */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid rgb(var(--md-sys-color-primary));
+  outline-offset: 2px;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+}
+
+/* Headings inherit Fraunces brand typeface unless overridden */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--md-ref-typeface-brand);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* ── M3 typography utility classes — semantically named, not size-based ─── */
+@layer components {
+  .md-typescale-display-large {
+    font-family: var(--md-ref-typeface-brand);
+    font-weight: 500;
+    font-size: clamp(3.25rem, 5vw + 1rem, 4.5rem);
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+  }
+  .md-typescale-display-medium {
+    font-family: var(--md-ref-typeface-brand);
+    font-weight: 500;
+    font-size: clamp(2.5rem, 3vw + 1rem, 3.5rem);
+    line-height: 1.07;
+    letter-spacing: -0.02em;
+  }
+  .md-typescale-display-small {
+    font-family: var(--md-ref-typeface-brand);
+    font-weight: 500;
+    font-size: clamp(2rem, 2vw + 1rem, 2.625rem);
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+  }
+  .md-typescale-headline-large {
+    font-family: var(--md-ref-typeface-brand);
+    font-weight: 500;
+    font-size: 2rem;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+  }
+  .md-typescale-headline-medium {
+    font-family: var(--md-ref-typeface-brand);
+    font-weight: 500;
+    font-size: 1.5rem;
+    line-height: 1.2;
+  }
+  .md-typescale-headline-small {
+    font-family: var(--md-ref-typeface-brand);
+    font-weight: 500;
+    font-size: 1.25rem;
+    line-height: 1.25;
+  }
+  .md-typescale-title-large {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 500;
+    font-size: 1.125rem;
+    line-height: 1.35;
+  }
+  .md-typescale-title-medium {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 500;
+    font-size: 1rem;
+    line-height: 1.4;
+    letter-spacing: 0.01em;
+  }
+  .md-typescale-title-small {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 500;
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
+  .md-typescale-body-large {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 400;
+    font-size: 1rem;
+    line-height: 1.55;
+    letter-spacing: 0.005em;
+  }
+  .md-typescale-body-medium {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 400;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+  }
+  .md-typescale-body-small {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 400;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+  .md-typescale-label-large {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 500;
+    font-size: 0.875rem;
+    line-height: 1.3;
+    letter-spacing: 0.01em;
+  }
+  .md-typescale-label-medium {
+    font-family: var(--md-ref-typeface-plain);
+    font-weight: 500;
+    font-size: 0.75rem;
+    line-height: 1.3;
+    letter-spacing: 0.05em;
+  }
+  /* Keeping the FF "stamp" label as a Material label-small variant —
+     monospace, uppercase, wider tracking, mirrors a customs-stamp impression */
+  .md-typescale-label-small {
+    font-family: var(--md-ref-typeface-mono);
+    font-weight: 500;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+}
+
+/* M3 surface roles as utility classes for components that don't get
+   per-element classes (e.g. <body>, sidebars) */
+@layer utilities {
+  .md-surface { background: rgb(var(--md-sys-color-surface)); color: rgb(var(--md-sys-color-on-surface)); }
+  .md-surface-container { background: rgb(var(--md-sys-color-surface-container)); }
+  .md-surface-container-low { background: rgb(var(--md-sys-color-surface-container-low)); }
+  .md-surface-container-high { background: rgb(var(--md-sys-color-surface-container-high)); }
+  .md-surface-container-lowest { background: rgb(var(--md-sys-color-surface-container-lowest)); }
+  .md-surface-container-highest { background: rgb(var(--md-sys-color-surface-container-highest)); }
+
+  /* Elevation levels as backgrounds + shadows */
+  .md-elevation-1 { box-shadow: var(--md-sys-elevation-level-1); }
+  .md-elevation-2 { box-shadow: var(--md-sys-elevation-level-2); }
+  .md-elevation-3 { box-shadow: var(--md-sys-elevation-level-3); }
+
+  /* Hairline border using M3 outline-variant — softer than 1px, tighter
+     visual rhythm in dense ledger-like surfaces */
+  .md-divider {
+    border-color: rgb(var(--md-sys-color-outline-variant));
+  }
+
+  /* FF brand stamp — diagonal vermilion seal pattern, used as decorative
+     accent on hero panels (NOT replacing M3 surface treatments) */
+  .ff-stamp-diag {
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgb(var(--md-sys-color-primary) / 0.07) 0 1px,
+      transparent 1px 9px
+    );
+  }
+  .ff-stamp-label {
+    font-family: var(--md-ref-typeface-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgb(var(--ff-vermilion-deep));
+  }
+  .ff-hairline {
+    border-color: rgb(var(--md-sys-color-outline-variant) / 0.7);
+    border-width: 1px;
+  }
+}
+
+/* M3 page enter — emphasized decelerate stagger */
+@keyframes md-fade-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.md-fade-in {
+  animation: md-fade-in var(--md-sys-motion-duration-long1) var(--md-sys-motion-easing-emphasized-decelerate) both;
 }

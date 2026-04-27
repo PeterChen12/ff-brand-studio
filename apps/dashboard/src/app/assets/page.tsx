@@ -84,8 +84,11 @@ export default function AssetsPage() {
         {assetList === null ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="border border-mist bg-paper-deep/40">
-                <Skeleton className="aspect-[4/3] w-full" />
+              <div
+                key={i}
+                className="rounded-m3-lg md-surface-container-lowest md-elevation-1 overflow-hidden"
+              >
+                <Skeleton className="aspect-[4/3] w-full rounded-none" />
                 <div className="p-4 space-y-2">
                   <Skeleton className="h-3 w-16" />
                   <Skeleton className="h-4 w-3/4" />
@@ -114,6 +117,7 @@ export default function AssetsPage() {
   );
 }
 
+/** M3 filter-chip — the standard pill, with FF dot prefix when categorical */
 function FilterChip({
   active,
   onClick,
@@ -131,20 +135,21 @@ function FilterChip({
     <button
       onClick={onClick}
       className={[
-        "inline-flex items-center gap-2 px-3 py-1.5 transition-colors",
-        "font-mono text-2xs uppercase tracking-stamp border",
+        "inline-flex items-center gap-2 px-3.5 h-8 rounded-m3-sm",
+        "md-typescale-label-medium uppercase tracking-stamp border",
+        "transition-colors duration-m3-short4 ease-m3-emphasized",
         active
-          ? "bg-ink text-paper border-ink"
-          : "bg-paper-deep/50 text-ink-soft border-mist hover:border-ink hover:text-ink",
+          ? "bg-on-surface text-surface border-on-surface"
+          : "bg-surface-container-low text-on-surface-variant border-outline-variant hover:border-outline hover:text-on-surface",
       ].join(" ")}
     >
       {variant && (
         <span
           className={[
-            "inline-block h-1.5 w-1.5",
-            variant === "passed" && "bg-jade",
-            variant === "pending" && "bg-amber",
-            variant === "flagged" && "bg-vermilion",
+            "inline-block h-1.5 w-1.5 rounded-full",
+            variant === "passed" && "bg-tertiary",
+            variant === "pending" && "bg-ff-saffron",
+            variant === "flagged" && "bg-error",
           ]
             .filter(Boolean)
             .join(" ")}
@@ -159,17 +164,21 @@ function FilterChip({
 function EmptyState({ filter, totalAll }: { filter: FilterState; totalAll: number }) {
   if (totalAll === 0) {
     return (
-      <div className="border border-dashed border-mist py-24 px-8 text-center">
-        <div className="stamp-label text-vermilion-deep mb-3">Manifest empty</div>
-        <h3 className="font-display text-display-3 font-medium text-ink mb-3">
+      <div className="rounded-m3-lg border border-dashed border-outline-variant py-24 px-8 text-center md-fade-in">
+        <div className="ff-stamp-label mb-3">Manifest empty</div>
+        <h3 className="md-typescale-headline-large text-on-surface mb-3">
           No assets crossed the bench yet
         </h3>
-        <p className="text-ink-soft text-sm max-w-md mx-auto">
+        <p className="md-typescale-body-large text-on-surface-variant max-w-md mx-auto">
           Run a campaign via the orchestrator and the resulting heroes, infographics, and videos will land here.
         </p>
         <a
           href="/campaigns/new"
-          className="inline-flex items-center gap-2 mt-6 px-5 h-10 bg-vermilion text-paper font-mono text-2xs uppercase tracking-stamp hover:bg-vermilion-deep transition-colors"
+          className={[
+            "inline-flex items-center gap-2 mt-6 px-6 h-10 rounded-m3-full",
+            "bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2",
+            "md-typescale-label-large transition-shadow duration-m3-short4 ease-m3-emphasized",
+          ].join(" ")}
         >
           Run a campaign →
         </a>
@@ -177,11 +186,13 @@ function EmptyState({ filter, totalAll }: { filter: FilterState; totalAll: numbe
     );
   }
   return (
-    <div className="border border-dashed border-mist py-16 px-8 text-center">
+    <div className="rounded-m3-lg border border-dashed border-outline-variant py-16 px-8 text-center">
       <Badge variant="outline" className="mb-4">
         Filter: {filter}
       </Badge>
-      <p className="text-ink-soft text-sm">No assets match this filter. Try a wider band.</p>
+      <p className="md-typescale-body-medium text-on-surface-variant">
+        No assets match this filter. Try a wider band.
+      </p>
     </div>
   );
 }

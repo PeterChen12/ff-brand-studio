@@ -4,7 +4,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { MCP_URL } from "@/lib/config";
 import { PageHeader } from "@/components/layout/page-header";
-import { Card, CardHeader, CardTitle, CardContent, CardEyebrow, CardFooter } from "@/components/ui/card";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
+  CardEyebrow,
+  CardFooter,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { NumberTicker } from "@/components/magic/number-ticker";
@@ -64,41 +71,46 @@ export default function OverviewPage() {
 
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto">
         {error && (
-          <div className="mb-8 border border-vermilion/40 bg-vermilion/5 px-5 py-4 text-sm text-vermilion-deep font-mono">
-            <span className="stamp-label text-vermilion-deep">api error</span>
-            <span className="ml-3">{error}</span>
+          <div className="mb-8 rounded-m3-md border border-error/40 bg-error-container/40 px-5 py-4">
+            <span className="ff-stamp-label">api error</span>
+            <span className="ml-3 md-typescale-body-medium font-mono text-error-on-container">
+              {error}
+            </span>
           </div>
         )}
 
         {/* ── Hero metric — single dominant number, editorial weight ─────── */}
         <div className="grid grid-cols-12 gap-6 mb-14">
-          <div className="col-span-12 md:col-span-7 animate-fade-up">
-            <div className="stamp-label mb-4">Cumulative spend · 累计支出</div>
-            <div className="font-display text-display-1 leading-none font-medium text-ink">
+          <div className="col-span-12 md:col-span-7 md-fade-in">
+            <div className="ff-stamp-label mb-4">Cumulative spend · 累计支出</div>
+            <div className="md-typescale-display-large text-on-surface tabular-nums">
               {stats === null ? (
                 <Skeleton className="h-24 w-72" />
               ) : (
                 <NumberTicker value={stats.totalSpend} prefix="$" decimals={2} />
               )}
             </div>
-            <div className="mt-5 flex items-baseline gap-3 text-ink-soft">
-              <span className="text-sm">across</span>
-              <span className="font-mono text-sm tabular-nums text-ink">
+            <div className="mt-5 flex items-baseline gap-3 md-typescale-body-large text-on-surface-variant">
+              <span>across</span>
+              <span className="font-mono tabular-nums text-on-surface">
                 {stats === null ? "—" : <NumberTicker value={stats.campaignCount} />}
               </span>
-              <span className="text-sm">campaigns</span>
-              <span className="text-mist">·</span>
-              <span className="font-mono text-sm tabular-nums text-ink">
+              <span>campaigns</span>
+              <span className="text-outline-variant">·</span>
+              <span className="font-mono tabular-nums text-on-surface">
                 {stats === null ? "—" : <NumberTicker value={stats.assetCount} />}
               </span>
-              <span className="text-sm">assets shipped</span>
+              <span>assets shipped</span>
             </div>
           </div>
 
-          <div className="col-span-12 md:col-span-5 md:pl-6 md:border-l md:border-mist animate-fade-up [animation-delay:120ms]">
-            <div className="stamp-label mb-4">Brand compliance · 品牌合规</div>
+          <div
+            className="col-span-12 md:col-span-5 md:pl-8 md:border-l md:ff-hairline md-fade-in"
+            style={{ animationDelay: "120ms" }}
+          >
+            <div className="ff-stamp-label mb-4">Brand compliance · 品牌合规</div>
             <div className="flex items-baseline gap-4">
-              <div className="font-display text-display-2 font-medium text-ink leading-none">
+              <div className="md-typescale-display-medium text-on-surface tabular-nums">
                 {stats === null ? (
                   <Skeleton className="h-16 w-32" />
                 ) : (
@@ -106,7 +118,15 @@ export default function OverviewPage() {
                 )}
               </div>
               {stats && (
-                <Badge variant={stats.avgScore >= 85 ? "passed" : stats.avgScore >= 70 ? "pending" : "flagged"}>
+                <Badge
+                  variant={
+                    stats.avgScore >= 85
+                      ? "passed"
+                      : stats.avgScore >= 70
+                        ? "pending"
+                        : "flagged"
+                  }
+                >
                   {stats.avgScore >= 85
                     ? "auto-approve"
                     : stats.avgScore >= 70
@@ -115,8 +135,8 @@ export default function OverviewPage() {
                 </Badge>
               )}
             </div>
-            <div className="mt-5 flex items-center gap-3 text-sm text-ink-soft">
-              <span className="font-mono text-ink">
+            <div className="mt-5 md-typescale-body-medium text-on-surface-variant flex items-center gap-2">
+              <span className="font-mono text-on-surface">
                 {stats === null ? "—" : `${stats.passRate}%`}
               </span>
               <span>of scored assets clear the 70 threshold</span>
@@ -124,18 +144,21 @@ export default function OverviewPage() {
           </div>
         </div>
 
-        <div className="hairline mb-14" />
+        <div className="border-t ff-hairline mb-14" />
 
         {/* ── Operator console — two cards side by side, asymmetric weight ─ */}
         <div className="grid grid-cols-12 gap-6">
-          <Card className="col-span-12 md:col-span-7 animate-fade-up [animation-delay:200ms]">
+          <Card
+            className="col-span-12 md:col-span-7 md-fade-in"
+            style={{ animationDelay: "200ms" }}
+          >
             <CardHeader>
               <div>
                 <CardEyebrow>Quick actions · 快速操作</CardEyebrow>
-                <CardTitle className="mt-1">Step onto the bench</CardTitle>
+                <CardTitle className="mt-1.5">Step onto the bench</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="space-y-2">
+            <CardContent className="space-y-1">
               <ActionRow
                 href="/campaigns/new"
                 index="01"
@@ -143,36 +166,43 @@ export default function OverviewPage() {
                 hint="EN brief in → bilingual copy + hero + scorecard out · ~30–45s · ~$0.06"
               />
               <ActionRow
-                href="/assets"
+                href="/seo"
                 index="02"
+                title="Draft bilingual SEO listings"
+                hint="Sonnet 4.6 · per-platform copy + 广告法 / Amazon ToS gating · ~10–25¢"
+              />
+              <ActionRow
+                href="/assets"
+                index="03"
                 title="Inspect the asset manifest"
                 hint="Most-recent 50 generated assets with brand-score stamps"
               />
               <ActionRow
                 href="/costs"
-                index="03"
+                index="04"
                 title="Audit the cost ledger"
                 hint="Per-run breakdowns · Flux / GPT Image 2 / Kling / Claude tokens"
               />
             </CardContent>
             <CardFooter>
-              <span className="font-mono text-2xs uppercase tracking-stamp">
-                v0.2.0 · live
-              </span>
+              <span className="md-typescale-label-small">v0.2.0 · live</span>
               <Link
                 href="/campaigns/new"
-                className="font-mono text-2xs uppercase tracking-stamp text-vermilion-deep hover:text-vermilion"
+                className="md-typescale-label-small text-ff-vermilion-deep hover:text-primary transition-colors"
               >
                 start —→
               </Link>
             </CardFooter>
           </Card>
 
-          <Card className="col-span-12 md:col-span-5 animate-fade-up [animation-delay:280ms]">
+          <Card
+            className="col-span-12 md:col-span-5 md-fade-in"
+            style={{ animationDelay: "280ms" }}
+          >
             <CardHeader>
               <div>
                 <CardEyebrow>Compliance rubric · 评分基准</CardEyebrow>
-                <CardTitle className="mt-1">Brand-score thresholds</CardTitle>
+                <CardTitle className="mt-1.5">Brand-score thresholds</CardTitle>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -219,18 +249,26 @@ function ActionRow({
   return (
     <Link
       href={href}
-      className="group flex items-baseline gap-4 px-4 py-4 -mx-2 transition-colors hover:bg-paper-dim/40 border-b border-mist/60 last:border-0"
+      className={[
+        "group flex items-baseline gap-4 px-4 py-4 -mx-2",
+        "rounded-m3-md transition-colors duration-m3-short4 ease-m3-emphasized",
+        "hover:bg-surface-container-low border-b ff-hairline last:border-0",
+      ].join(" ")}
     >
-      <span className="font-mono text-2xs text-vermilion-deep tracking-stamp shrink-0">
+      <span className="font-mono text-[0.6875rem] text-ff-vermilion-deep tracking-stamp shrink-0">
         {index}
       </span>
       <div className="flex-1 min-w-0">
-        <div className="font-display text-base font-medium text-ink group-hover:text-vermilion-deep transition-colors">
+        <div className="md-typescale-title-medium text-on-surface group-hover:text-primary transition-colors">
           {title}
         </div>
-        <div className="text-2xs text-ink-mute font-mono mt-0.5">{hint}</div>
+        <div className="md-typescale-body-small text-on-surface-variant/80 font-mono mt-0.5">
+          {hint}
+        </div>
       </div>
-      <span className="font-mono text-2xs text-ink-mute group-hover:text-vermilion shrink-0">→</span>
+      <span className="font-mono text-[0.75rem] text-on-surface-variant/60 group-hover:text-primary group-hover:translate-x-1 transition-all duration-m3-short4 ease-m3-emphasized shrink-0">
+        →
+      </span>
     </Link>
   );
 }
@@ -247,16 +285,20 @@ function ScoreRow({
   variant: "passed" | "pending" | "flagged";
 }) {
   return (
-    <div className="flex items-baseline gap-3 py-2 border-b border-mist/60 last:border-0">
-      <span className="font-mono text-xs text-ink tabular-nums shrink-0 w-20">{band}</span>
+    <div className="flex items-baseline gap-3 py-2 border-b ff-hairline last:border-0">
+      <span className="font-mono text-[0.8125rem] text-on-surface tabular-nums shrink-0 w-20">
+        {band}
+      </span>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-sm font-medium text-ink">{label}</span>
+          <span className="md-typescale-title-small text-on-surface">{label}</span>
           <Badge variant={variant} size="sm">
             {variant}
           </Badge>
         </div>
-        <div className="text-2xs text-ink-mute font-mono mt-0.5">{hint}</div>
+        <div className="md-typescale-body-small text-on-surface-variant/70 font-mono mt-0.5">
+          {hint}
+        </div>
       </div>
     </div>
   );
