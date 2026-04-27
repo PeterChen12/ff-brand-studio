@@ -14,8 +14,8 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { NumberTicker } from "@/components/magic/number-ticker";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/cn";
 
 interface Stats {
   assetCount: number;
@@ -25,11 +25,30 @@ interface Stats {
   passRate: number;
 }
 
+interface LaunchRow {
+  id: string;
+  productId: string;
+  sku: string | null;
+  productNameEn: string | null;
+  productNameZh: string | null;
+  category: string | null;
+  status: string | null;
+  totalCostCents: number | null;
+  durationMs: number | null;
+  hitlInterventions: number | null;
+  createdAt: string | null;
+}
+
 export default function OverviewPage() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [launches, setLaunches] = useState<LaunchRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    fetch(`${MCP_URL}/api/launches`)
+      .then((r) => r.json())
+      .then((d: { launches: LaunchRow[] }) => setLaunches(d.launches ?? []))
+      .catch(() => setLaunches([]));
     Promise.all([fetch(`${MCP_URL}/api/assets`), fetch(`${MCP_URL}/api/costs`)])
       .then(async ([a, c]) => {
         const aData = (await a.json()) as {
@@ -105,72 +124,81 @@ export default function OverviewPage() {
           </div>
         )}
 
-        {/* ── Hero metric — single dominant number, editorial weight ─────── */}
-        <div className="grid grid-cols-12 gap-6 mb-14">
-          <div className="col-span-12 md:col-span-7 md-fade-in">
-            <div className="ff-stamp-label mb-4">Cumulative spend · 累计支出</div>
-            <div className="md-typescale-display-large text-on-surface tabular-nums">
-              {stats === null ? (
-                <Skeleton className="h-24 w-72" />
-              ) : (
-                <NumberTicker value={stats.totalSpend} prefix="$" decimals={2} />
-              )}
+        {/* ── Hero — recent launches, the most actionable surface ─────────── */}
+        <div className="mb-12 md-fade-in">
+          <div className="flex items-baseline justify-between gap-4 mb-5 flex-wrap">
+            <div>
+              <div className="ff-stamp-label mb-2">Recent launches · 最近上线</div>
+              <h2 className="md-typescale-headline-large text-on-surface">
+                {launches === null
+                  ? "Loading launches…"
+                  : launches.length === 0
+                    ? "No launches yet"
+                    : `Last ${launches.length} launch${launches.length === 1 ? "" : "es"}`}
+              </h2>
             </div>
-            <div className="mt-5 flex items-baseline gap-3 md-typescale-body-large text-on-surface-variant">
-              <span>across</span>
-              <span className="font-mono tabular-nums text-on-surface">
-                {stats === null ? "—" : <NumberTicker value={stats.campaignCount} />}
-              </span>
-              <span>campaigns</span>
-              <span className="text-outline-variant">·</span>
-              <span className="font-mono tabular-nums text-on-surface">
-                {stats === null ? "—" : <NumberTicker value={stats.assetCount} />}
-              </span>
-              <span>assets shipped</span>
-            </div>
+            {launches !== null && launches.length > 0 && (
+              <Link
+                href="/library"
+                className="md-typescale-label-small text-ff-vermilion-deep hover:text-primary transition-colors"
+              >
+                See all in library →
+              </Link>
+            )}
           </div>
 
-          <div
-            className="col-span-12 md:col-span-5 md:pl-8 md:border-l md:ff-hairline md-fade-in"
-            style={{ animationDelay: "120ms" }}
-          >
-            <div className="ff-stamp-label mb-4">Brand compliance · 品牌合规</div>
-            <div className="flex items-baseline gap-4">
-              <div className="md-typescale-display-medium text-on-surface tabular-nums">
-                {stats === null ? (
-                  <Skeleton className="h-16 w-32" />
-                ) : (
-                  <NumberTicker value={stats.avgScore} suffix="/100" />
-                )}
-              </div>
-              {stats && (
-                <Badge
-                  variant={
-                    stats.avgScore >= 85
-                      ? "passed"
-                      : stats.avgScore >= 70
-                        ? "pending"
-                        : "flagged"
-                  }
-                >
-                  {stats.avgScore >= 85
-                    ? "auto-approve"
-                    : stats.avgScore >= 70
-                      ? "passes review"
-                      : "HITL"}
-                </Badge>
-              )}
+          {launches === null ? (
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-16 w-full" />
+              ))}
             </div>
-            <div className="mt-5 md-typescale-body-medium text-on-surface-variant flex items-center gap-2">
-              <span className="font-mono text-on-surface">
-                {stats === null ? "—" : `${stats.passRate}%`}
-              </span>
-              <span>of scored assets clear the 70 threshold</span>
+          ) : launches.length === 0 ? (
+            <FirstLaunchCTA />
+          ) : (
+            <div className="md-surface-container-low border ff-hairline rounded-m3-lg overflow-hidden">
+              {launches.slice(0, 5).map((l, i) => (
+                <LaunchRowItem key={l.id} launch={l} isLast={i === Math.min(launches.length, 5) - 1} />
+              ))}
             </div>
-          </div>
+          )}
         </div>
 
-        <div className="border-t ff-hairline mb-14" />
+        {/* ── KPI ribbon — small, secondary, single line on desktop ────────── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-px md-surface-container border ff-hairline rounded-m3-md overflow-hidden mb-14">
+          <KpiCell
+            label="Total spend"
+            value={
+              stats === null ? null : `$${stats.totalSpend.toFixed(2)}`
+            }
+            tone="primary"
+          />
+          <KpiCell
+            label="SKUs / campaigns"
+            value={stats === null ? null : stats.campaignCount.toString()}
+          />
+          <KpiCell
+            label="Assets shipped"
+            value={stats === null ? null : stats.assetCount.toString()}
+          />
+          <KpiCell
+            label="Avg compliance"
+            value={
+              stats === null
+                ? null
+                : stats.avgScore > 0
+                  ? `${stats.avgScore}/100`
+                  : "—"
+            }
+            tone={
+              stats && stats.avgScore >= 85
+                ? "tertiary"
+                : stats && stats.avgScore >= 70
+                  ? "amber"
+                  : "primary"
+            }
+          />
+        </div>
 
         {/* ── Operator console — two cards side by side, asymmetric weight ─ */}
         <div className="grid grid-cols-12 gap-6">
@@ -283,3 +311,138 @@ function ActionRow({
   );
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Recent-launches list row + supporting helpers
+// ────────────────────────────────────────────────────────────────────────
+function LaunchRowItem({
+  launch,
+  isLast,
+}: {
+  launch: LaunchRow;
+  isLast: boolean;
+}) {
+  const status = launch.status ?? "pending";
+  const statusVariant: "passed" | "pending" | "flagged" =
+    status === "succeeded"
+      ? "passed"
+      : status === "hitl_blocked" || status === "cost_capped"
+        ? "pending"
+        : "flagged";
+  const ago = launch.createdAt ? relativeTime(launch.createdAt) : "—";
+  return (
+    <Link
+      href={`/library`}
+      className={cn(
+        "group flex items-center gap-4 px-5 py-4",
+        "transition-colors duration-m3-short3 hover:bg-surface-container",
+        !isLast && "border-b ff-hairline"
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <span className="md-typescale-title-medium text-on-surface group-hover:text-primary transition-colors truncate">
+            {launch.productNameEn ?? launch.sku ?? "(unknown product)"}
+          </span>
+          {launch.sku && (
+            <span className="md-typescale-label-small text-on-surface-variant/70 font-mono">
+              {launch.sku}
+            </span>
+          )}
+        </div>
+        <div className="md-typescale-body-small text-on-surface-variant/80 mt-0.5 flex items-center gap-2.5 flex-wrap font-mono">
+          <span>{ago}</span>
+          {launch.durationMs !== null && (
+            <>
+              <span className="text-outline-variant">·</span>
+              <span>{(launch.durationMs / 1000).toFixed(1)}s</span>
+            </>
+          )}
+          {launch.totalCostCents !== null && (
+            <>
+              <span className="text-outline-variant">·</span>
+              <span>{launch.totalCostCents}¢</span>
+            </>
+          )}
+          {launch.hitlInterventions !== null && launch.hitlInterventions > 0 && (
+            <>
+              <span className="text-outline-variant">·</span>
+              <span className="text-ff-amber">{launch.hitlInterventions} HITL</span>
+            </>
+          )}
+        </div>
+      </div>
+      <Badge variant={statusVariant} size="sm">
+        {status}
+      </Badge>
+    </Link>
+  );
+}
+
+function FirstLaunchCTA() {
+  return (
+    <div className="md-surface-container-low border border-dashed border-outline-variant rounded-m3-lg p-10 text-center md-fade-in">
+      <div className="ff-stamp-label mb-3">No launches yet · 暂无</div>
+      <h3 className="md-typescale-headline-small text-on-surface mb-2">
+        Run your first launch
+      </h3>
+      <p className="md-typescale-body-medium text-on-surface-variant max-w-md mx-auto mb-6">
+        Pick one of the seeded SKUs in the launch wizard. Dry-run keeps
+        image-gen cost at zero and produces real bilingual SEO copy in ~30
+        seconds.
+      </p>
+      <Link
+        href="/launch"
+        className={[
+          "inline-flex items-center gap-2 px-6 h-11 rounded-m3-full",
+          "bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2",
+          "md-typescale-label-large transition-shadow duration-m3-short4 ease-m3-emphasized",
+        ].join(" ")}
+      >
+        Open Launch wizard →
+      </Link>
+    </div>
+  );
+}
+
+function KpiCell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string | null;
+  tone?: "primary" | "tertiary" | "amber";
+}) {
+  const valueClass =
+    tone === "primary"
+      ? "text-ff-vermilion-deep"
+      : tone === "tertiary"
+        ? "text-ff-jade-deep"
+        : tone === "amber"
+          ? "text-ff-amber"
+          : "text-on-surface";
+  return (
+    <div className="md-surface-container-lowest px-5 py-4">
+      <div className="ff-stamp-label">{label}</div>
+      <div
+        className={cn(
+          "md-typescale-headline-small tabular-nums font-brand mt-1",
+          valueClass
+        )}
+      >
+        {value === null ? <Skeleton className="h-5 w-16" /> : value}
+      </div>
+    </div>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const diff = Date.now() - t;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}

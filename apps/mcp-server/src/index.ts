@@ -14,6 +14,7 @@ import {
   productVariants,
   platformAssets,
   sellerProfiles,
+  launchRuns,
   type Product,
 } from "./db/schema.js";
 import { desc, sql, eq } from "drizzle-orm";
@@ -211,6 +212,38 @@ app.get("/api/runs", async (c) => {
   } catch (err) {
     console.error("[/api/runs]", err);
     return c.json({ runs: [] });
+  }
+});
+
+// Recent launch_runs joined with their parent product. Drives the Overview
+// "Recent launches" hero block. v2 vocabulary throughout — campaigns no
+// longer applies.
+app.get("/api/launches", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const rows = await db
+      .select({
+        id: launchRuns.id,
+        productId: launchRuns.productId,
+        sku: products.sku,
+        productNameEn: products.nameEn,
+        productNameZh: products.nameZh,
+        category: products.category,
+        orchestratorModel: launchRuns.orchestratorModel,
+        status: launchRuns.status,
+        totalCostCents: launchRuns.totalCostCents,
+        durationMs: launchRuns.durationMs,
+        hitlInterventions: launchRuns.hitlInterventions,
+        createdAt: launchRuns.createdAt,
+      })
+      .from(launchRuns)
+      .leftJoin(products, eq(launchRuns.productId, products.id))
+      .orderBy(desc(launchRuns.createdAt))
+      .limit(20);
+    return c.json({ launches: rows });
+  } catch (err) {
+    console.error("[/api/launches]", err);
+    return c.json({ launches: [] });
   }
 });
 
