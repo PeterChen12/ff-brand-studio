@@ -34,7 +34,7 @@ preserved at `plans/active-plan-v1-bootstrap.md`.
 | D5 — Deterministic seo compliance scorer | `e4ba410` | ✅ |
 | D6 — launch_product_sku v2 orchestrator integration | `1a8144a` | ✅ |
 | D7 — Dashboard SEO panel + /demo/seo-preview Worker endpoint | `20f4b7a` | ✅ |
-| D8 — Demo SKUs pre-seeded (3 fishing-rod SKUs in Postgres) | `pending` | ✅ |
+| D8 — Demo SKUs pre-seeded (3 fishing-rod SKUs in Postgres) | `2454f9b` | ✅ |
 
 **New Worker secrets** (pushed 2026-04-26): `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`, `APIFY_TOKEN`. OpenAI project key already there.
 
@@ -51,7 +51,7 @@ preserved at `plans/active-plan-v1-bootstrap.md`.
 - New component `apps/dashboard/src/components/seo-atelier.tsx` — brief form (name EN/ZH, category, platforms) → POST /demo/seo-preview → per-surface result cards with rating badge, copy preview, issues, blocking-flag callouts, regenerate-disabled HITL gate on Publish to DAM.
 - New Worker endpoint `POST /demo/seo-preview` — synthesizes a minimal `Product` from request body (no DB read), calls the same `runSeoPipeline` used by `launch_product_sku`. Lets the panel demo end-to-end before D8 SKUs are seeded.
 - Worker redeployed (version `cf550922`); smoke-tested at 1.09¢ for a single Amazon-US listing returning EXCELLENT-rated copy.
-- Dashboard NOT yet redeployed to Amplify — `git push origin master` does not auto-deploy; user must either push the `staging` branch or run the Python-zipfile manual deploy from gotcha #1 below.
+- Dashboard auto-deploys to Cloudflare Pages via `.github/workflows/deploy.yml` (added in `96d593a`) — push to master, CI passes, Worker + Pages deploy in parallel. Lives at `https://ff-brand-studio.pages.dev` (and on master push the new SEO panel will be there). Amplify custom domain `image-generation.buyfishingrod.com` is still on the *manual* Python-zipfile deploy path (gotcha #1) — the auto-deploy targets Pages only, so the Amplify mirror lags until someone runs that script.
 
 **D8 surface area:**
 - New script `scripts/seed-demo-skus.mjs` — idempotent (ON CONFLICT DO UPDATE on `products.sku`, SELECT-then-INSERT on `seller_profiles.org_name_en`). Run with: `$env:PGPASSWORD='...'; node scripts/seed-demo-skus.mjs`.
