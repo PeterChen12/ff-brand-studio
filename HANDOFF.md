@@ -61,11 +61,11 @@ Pipeline = Planner (Claude Sonnet) → Copy → Translate → Image (Flux Pro / 
 - [x] 6 FF-branded hero images generated and live in R2 (scores 75-84)
 - [x] End-to-end campaign verified on production: planner → copy → ZH translate → Flux hero → R2 upload → Guardian score 84 → Postgres write
 - [x] Claude Desktop config template at `claude_desktop_config.json`
+- [x] **GitHub Actions auto-deploy** — `.github/workflows/deploy.yml` triggers after CI succeeds on push to master, deploys both Worker and Pages in parallel. Verified 2026-04-27 (run id 24978977687).
 
 ## What's NOT done yet 🚧
 
-- [ ] **GitHub Actions auto-deploy** — currently `git push` does nothing; deploys are manual via `wrangler deploy` and `wrangler pages deploy`
-- [ ] **Connect Pages project to GitHub** — for auto-build on push (1-click in CF dashboard)
+- [ ] **Connect Pages project to GitHub natively** — currently auto-deploy goes via wrangler in our Action. Cloudflare's GitHub integration would give per-PR previews but isn't required.
 - [ ] **OpenAI key fix** — current key 401s, need to provision a new one (or pivot infographic to fal.ai's GPT Image 2 endpoint per the user's note)
 - [ ] **Video step in production** — Kling 2.6 wired but never run end-to-end (slow, 30-90s polling)
 - [ ] **AWS Amplify app `d1a431ll6nyfk4`** — created but unused, can be deleted via `aws amplify delete-app --app-id d1a431ll6nyfk4`
