@@ -12,6 +12,12 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { PlatformAssetRow } from "@/db/schema";
+import {
+  AssetLightbox,
+  type AssetSlide,
+} from "@/components/library/asset-lightbox";
+import { ZoomTile } from "@/components/library/zoom-tile";
+import { isImageFormat, type SkuGroupShape } from "@/components/library/types";
 
 interface LibraryResponse {
   platformAssets: PlatformAssetRow[];
@@ -20,6 +26,11 @@ interface LibraryResponse {
 export default function LibraryPage() {
   const apiFetch = useApiFetch();
   const [items, setItems] = useState<PlatformAssetRow[] | null>(null);
+  const [lightbox, setLightbox] = useState<{
+    open: boolean;
+    slides: AssetSlide[];
+    index: number;
+  }>({ open: false, slides: [], index: 0 });
 
   useEffect(() => {
     apiFetch<LibraryResponse>("/api/assets")
@@ -29,20 +40,9 @@ export default function LibraryPage() {
       .catch(() => setItems([]));
   }, [apiFetch]);
 
-  // Group v2 platform assets by SKU
-  const skuGroups = useMemo(() => {
+  const skuGroups = useMemo<SkuGroupShape[] | null>(() => {
     if (!items) return null;
-    const map = new Map<
-      string,
-      {
-        sku: string;
-        nameEn: string;
-        nameZh: string | null;
-        category: string;
-        sellerName: string | null;
-        items: PlatformAssetRow[];
-      }
-    >();
+    const map = new Map<string, SkuGroupShape>();
     for (const row of items) {
       const key = row.sku ?? row.productId ?? "unattributed";
       const existing = map.get(key);
@@ -69,6 +69,26 @@ export default function LibraryPage() {
   const skuCount = skuGroups?.length ?? 0;
   const totalAssets = items?.length ?? 0;
 
+  function openLightbox(group: SkuGroupShape, startIdx: number) {
+    const slides: AssetSlide[] = group.items
+      .filter((it) => isImageFormat(it.format))
+      .map((it) => ({
+        src: it.r2Url,
+        width: it.width ?? undefined,
+        height: it.height ?? undefined,
+        title: `${group.sku} · ${it.platform} · ${it.slot}`,
+        description: group.nameEn,
+      }));
+    const visibleIndex = group.items
+      .slice(0, startIdx + 1)
+      .filter((it) => isImageFormat(it.format)).length - 1;
+    setLightbox({
+      open: true,
+      slides,
+      index: Math.max(0, visibleIndex),
+    });
+  }
+
   return (
     <>
       <PageHeader
@@ -83,13 +103,25 @@ export default function LibraryPage() {
         ) : skuGroups && skuGroups.length > 0 ? (
           <div className="space-y-7">
             {skuGroups.map((g, i) => (
-              <SkuGroup key={g.sku} group={g} delay={Math.min(i * 70, 280)} />
+              <SkuGroup
+                key={g.sku}
+                group={g}
+                delay={Math.min(i * 70, 280)}
+                onOpenAt={(idx) => openLightbox(g, idx)}
+              />
             ))}
           </div>
         ) : (
           <EmptyState />
         )}
       </section>
+
+      <AssetLightbox
+        open={lightbox.open}
+        slides={lightbox.slides}
+        index={lightbox.index}
+        onClose={() => setLightbox((l) => ({ ...l, open: false }))}
+      />
     </>
   );
 }
@@ -97,16 +129,11 @@ export default function LibraryPage() {
 function SkuGroup({
   group,
   delay,
+  onOpenAt,
 }: {
-  group: {
-    sku: string;
-    nameEn: string;
-    nameZh: string | null;
-    category: string;
-    sellerName: string | null;
-    items: PlatformAssetRow[];
-  };
+  group: SkuGroupShape;
   delay: number;
+  onOpenAt: (idx: number) => void;
 }) {
   return (
     <Card className="md-fade-in" style={{ animationDelay: `${delay}ms` }}>
@@ -128,48 +155,45 @@ function SkuGroup({
         </Badge>
       </CardHeader>
       <div className="px-6 pb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {group.items.map((item) => (
-          <PlatformAssetTile key={item.id} item={item} />
+        {group.items.map((item, idx) => (
+          <PlatformAssetTile
+            key={item.id}
+            item={item}
+            onOpen={() => onOpenAt(idx)}
+          />
         ))}
       </div>
     </Card>
   );
 }
 
-function PlatformAssetTile({ item }: { item: PlatformAssetRow }) {
-  const isImage =
-    item.format === "jpg" ||
-    item.format === "jpeg" ||
-    item.format === "png" ||
-    item.format === "webp" ||
-    item.format === null;
+function PlatformAssetTile({
+  item,
+  onOpen,
+}: {
+  item: PlatformAssetRow;
+  onOpen: () => void;
+}) {
+  const isImage = isImageFormat(item.format);
   const ratingVariant = scoreToVariant(item.complianceScore);
   const isReference = item.status === "reference";
   return (
     <div className="md-surface-container-low border ff-hairline rounded-m3-md overflow-hidden flex flex-col group">
       <div className="relative aspect-[4/3] bg-surface-container">
         {isImage ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={item.r2Url}
-            alt={`${item.platform} ${item.slot}`}
-            className="w-full h-full object-cover transition-transform duration-700 ease-m3-emphasized group-hover:scale-[1.02]"
-            loading="lazy"
-          />
+          <ZoomTile src={item.r2Url} alt={`${item.platform} ${item.slot}`} onClick={onOpen} />
         ) : (
           <div className="w-full h-full flex items-center justify-center md-typescale-label-small text-on-surface-variant/70">
             {item.format ?? "asset"}
           </div>
         )}
-        {/* Top-left: reference flag (pre-loaded baseline, not orchestrator output) */}
         {isReference && (
-          <div className="absolute top-3 left-3 px-2 py-0.5 rounded-m3-sm bg-surface/90 backdrop-blur-sm border ff-hairline">
+          <div className="absolute top-3 left-3 px-2 py-0.5 rounded-m3-sm bg-surface/90 backdrop-blur-sm border ff-hairline pointer-events-none">
             <span className="ff-stamp-label">reference · 参考</span>
           </div>
         )}
-        {/* Top-right: compliance score */}
         {item.complianceScore && (
-          <div className="absolute top-3 right-3 animate-stamp-in">
+          <div className="absolute top-3 right-3 animate-stamp-in pointer-events-none">
             <Badge variant={ratingVariant} size="sm">
               {item.complianceScore}
             </Badge>
