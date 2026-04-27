@@ -1,0 +1,84 @@
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      worker: ${{ steps.filter.outputs.worker }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            worker:
+              - 'apps/mcp-server/**'
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.github/workflows/deploy.yml'
+            dashboard:
+              - 'apps/dashboard/**'
+              - 'packages/types/**'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.github/workflows/deploy.yml'
+
+  worker:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter ff-mcp-server run type-check
+      - name: Deploy Worker
+        working-directory: apps/mcp-server
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  dashboard:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter ff-dashboard run type-check
+      - run: pnpm --filter ff-dashboard run build
+      - name: Deploy to Cloudflare Pages
+        working-directory: apps/mcp-server
+        run: npx wrangler pages deploy ../dashboard/out --project-name ff-brand-studio --branch master --commit-dirty=true
+        env:
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
