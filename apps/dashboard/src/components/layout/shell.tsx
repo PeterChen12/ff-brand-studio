@@ -9,7 +9,8 @@ const NAV: { href: string; label: string; index: string }[] = [
   { href: "/", label: "Overview", index: "01" },
   { href: "/assets", label: "Asset Manifest", index: "02" },
   { href: "/campaigns/new", label: "New Campaign", index: "03" },
-  { href: "/costs", label: "Cost Ledger", index: "04" },
+  { href: "/seo", label: "SEO Atelier", index: "04" },
+  { href: "/costs", label: "Cost Ledger", index: "05" },
 ];
 
 type HealthState = "ok" | "degraded" | "error" | "loading";

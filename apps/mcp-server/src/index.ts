@@ -1,13 +1,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { z } from "zod";
 import { registerAllTools } from "./tools/index.js";
 import { RunCampaignInput } from "@ff/types";
 import { runCampaignWorkflow, setScoreFn } from "./workflows/campaign.workflow.js";
 import { scoreBrandCompliance } from "./guardian/index.js";
 import { createDbClient } from "./db/client.js";
-import { assets, runCosts } from "./db/schema.js";
+import { assets, runCosts, type Product } from "./db/schema.js";
 import { desc, sql } from "drizzle-orm";
+import { runSeoPipeline, type SeoSurfaceSpec } from "./orchestrator/seo_pipeline.js";
+import type { LaunchPlatform } from "./orchestrator/planner.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
@@ -188,6 +191,77 @@ app.post("/demo/run-campaign", async (c) => {
 
   const result = await runCampaignWorkflow(parsed.data, c.env);
   return c.json(result);
+});
+
+// ── SEO preview demo endpoint (D7) ────────────────────────────────────────
+// Bypasses the DB entirely — synthesizes a Product from the request body so
+// the dashboard SEO panel works before D8 demo SKUs are seeded. Calls the
+// same runSeoPipeline used by launch_product_sku, so the output shape is
+// identical.
+const SeoPreviewInput = z.object({
+  product_name_en: z.string().min(2).max(200),
+  product_name_zh: z.string().max(200).optional(),
+  product_category: z.string().min(2).max(80),
+  platforms: z
+    .array(z.enum(["amazon", "shopify"]))
+    .min(1)
+    .default(["amazon", "shopify"]),
+  surfaces: z
+    .array(
+      z.object({
+        surface: z.enum(["amazon-us", "tmall", "jd", "shopify"]),
+        language: z.enum(["en", "zh"]),
+      })
+    )
+    .optional(),
+  cost_cap_cents: z.number().int().positive().max(200).default(50),
+});
+
+app.post("/demo/seo-preview", async (c) => {
+  const body = await c.req.json();
+  const parsed = SeoPreviewInput.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+  const p = parsed.data;
+
+  // Synthesize a minimal Product the pipeline can read. None of the fields
+  // touch the DB — the pipeline only reads nameEn, nameZh, category.
+  const synthProduct: Product = {
+    id: "00000000-0000-0000-0000-000000000000",
+    sellerId: "00000000-0000-0000-0000-000000000000",
+    sku: `DEMO-${Date.now()}`,
+    nameEn: p.product_name_en,
+    nameZh: p.product_name_zh ?? null,
+    category: p.product_category,
+    dimensions: null,
+    materials: null,
+    colorsHex: null,
+    loraUrl: null,
+    triggerPhrase: null,
+    brandConfig: null,
+    createdAt: new Date(),
+  };
+
+  try {
+    const result = await runSeoPipeline({
+      product: synthProduct,
+      platforms: p.platforms as LaunchPlatform[],
+      surfaces: p.surfaces as SeoSurfaceSpec[] | undefined,
+      cost_cap_cents: p.cost_cap_cents,
+      anthropic_api_key: c.env.ANTHROPIC_API_KEY,
+      openai_api_key: c.env.OPENAI_API_KEY,
+      dataforseo_login: c.env.DATAFORSEO_LOGIN,
+      dataforseo_password: c.env.DATAFORSEO_PASSWORD,
+    });
+    return c.json(result);
+  } catch (err) {
+    console.error("[/demo/seo-preview]", err);
+    return c.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      500
+    );
+  }
 });
 
 export default app;
