@@ -1,7 +1,7 @@
 name: Deploy
 
-# Runs after CI succeeds on master. Path-filters which deploy job to run so
-# Worker-only changes don't redeploy the dashboard and vice versa.
+# Runs after CI succeeds on master. Deploys Worker + Pages in parallel.
+# Both deploys are <30s, so we don't bother with path-filtering.
 
 on:
   workflow_run:
@@ -15,43 +15,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  detect-changes:
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    outputs:
-      worker: ${{ steps.filter.outputs.worker }}
-      dashboard: ${{ steps.filter.outputs.dashboard }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          base: HEAD~1
-          filters: |
-            worker:
-              - 'apps/mcp-server/**'
-              - 'packages/**'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - '.github/workflows/deploy.yml'
-            dashboard:
-              - 'apps/dashboard/**'
-              - 'packages/types/**'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - '.github/workflows/deploy.yml'
-
   worker:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.worker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        # version from package.json#packageManager
+        # version from package.json#packageManager (pnpm@10.33.2)
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -66,14 +37,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   dashboard:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.dashboard == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        # version from package.json#packageManager
+        # version from package.json#packageManager (pnpm@10.33.2)
       - uses: actions/setup-node@v4
         with:
           node-version: 22
