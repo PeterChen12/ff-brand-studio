@@ -1,4 +1,4 @@
-# Session State — 2026-04-26 end-of-day
+# Session State — 2026-04-26 end-of-day (D6 follow-up)
 
 A compact catch-up doc so the next session can resume in <5 min. For deeper context read in this order: HANDOFF.md → V2_STATUS.md → V2_FINAL_AUDIT.md → V2_OPTIMIZATION_PLAN.md → docs/RUNBOOK.md.
 
@@ -20,7 +20,7 @@ A compact catch-up doc so the next session can resume in <5 min. For deeper cont
 
 ---
 
-## SEO Description Layer — D1-D5 done, D6-D8 remaining (2026-04-26)
+## SEO Description Layer — D1-D6 done, D7-D8 remaining (2026-04-26)
 
 The plan at `plans/active-plan.md` is being executed. Old v1 bootstrap plan
 preserved at `plans/active-plan-v1-bootstrap.md`.
@@ -32,13 +32,19 @@ preserved at `plans/active-plan-v1-bootstrap.md`.
 | D3 — OpenAI embeddings + clusterByCosine + cluster_keywords | `19fe77e` | ✅ |
 | D4 — Bilingual SEO description generator (Sonnet 4.6, cached) | `872e8cb` | ✅ |
 | D5 — Deterministic seo compliance scorer | `e4ba410` | ✅ |
-| D6 — launch_product_sku v2 orchestrator integration | — | ⏸ |
+| D6 — launch_product_sku v2 orchestrator integration | `1a8144a` | ✅ |
 | D7 — Dashboard SEO panel | — | ⏸ |
 | D8 — Demo SKUs pre-seeded | — | ⏸ |
 
 **New Worker secrets** (pushed 2026-04-26): `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`, `APIFY_TOKEN`. OpenAI project key already there.
 
-**New MCP tools registered** (16 total, was 11): `research_keywords`, `expand_seed`, `cluster_keywords`, `generate_seo_description`, `score_seo_compliance`. Type-check 10/10. Deploy NOT yet pushed to Worker — D6 ties them into the orchestrator first, then a single `wrangler deploy` lands the whole batch.
+**New MCP tools registered** (16 total, was 11): `research_keywords`, `expand_seed`, `cluster_keywords`, `generate_seo_description`, `score_seo_compliance`. Type-check 10/10, all 33 unit tests green. Deploy NOT yet pushed to Worker — single `wrangler deploy` lands the whole batch (tools + orchestrator) once D7 ships the panel that consumes the new return shape.
+
+**D6 surface area:**
+- New file `apps/mcp-server/src/orchestrator/seo_pipeline.ts` — `runSeoPipeline()` runs expand_seed → cluster_keywords → research_keywords (top reps only) → generate × score with 3-iter feedback regenerate. 50¢ default sub-cap.
+- `runLaunchPipeline` calls it after image adapters, gated by `include_seo` (default true). Cost rolls into run total and respects `cost_cap_cents` retroactively.
+- `LaunchProductSkuInput` adds `include_seo: boolean = true` and `seo_cost_cap_cents: number = 50`.
+- Result shape adds `seo?: SeoPipelineResult` with per-surface `{copy, rating, issues, suggestions, iterations, cost_cents}`.
 
 ## Recent commits (last → first)
 
