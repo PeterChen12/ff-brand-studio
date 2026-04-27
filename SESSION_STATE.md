@@ -1,6 +1,24 @@
-# Session State — 2026-04-27 (Phase G shipped — auth + tenancy)
+# Session State — 2026-04-27 (Phase J shipped — library SaaS)
 
 A compact catch-up doc so the next session can resume in <5 min. For deeper context read in this order: HANDOFF.md → V2_STATUS.md → V2_FINAL_AUDIT.md → V2_OPTIMIZATION_PLAN.md → docs/RUNBOOK.md → plans/active-plan-saas-G.md.
+
+---
+
+## Phase J — Library SaaS — ✅ shipped 2026-04-27
+
+Plan: `plans/active-plan-saas-J.md`. Four iterations land as `7b4a97a` →
+`6b22c54` → `ce23938` → `f6695d2`.
+
+| Iter | What ships | Commit |
+|---|---|---|
+| J1 | yet-another-react-lightbox + Zoom plugin; ZoomTile 250% magnifier (mouse-only via matchMedia(hover: none)) | `7b4a97a` |
+| J2 | Per-asset download anchor; bundle ZIP via jszip + file-saver with manifest.csv (sku, platform, slot, w, h, rating, model, cost, generated_at). 200 MB cap; mobile confirm gate | `6b22c54` |
+| J3 | FilterBar (debounced text + platform chips + slot/status selects + date-range presets) binds to URL via history.replaceState; new `GET /v1/audit` paginates audit_events; AuditTab on /library | `ce23938` |
+| J4 | `@tanstack/react-virtual` virtualizes the SKU group list (measureElement, overscan 1, bypassed for ≤8 groups); /api/assets derives thumbUrl via cf-image-resizing path when R2_THUMB_HOST is set | `f6695d2` |
+
+The library now looks like a real DAM (lightbox, magnifier, bulk
+download, search, audit log, virtualized scroll) instead of a debug
+inspector. Phase K (edit + publish) builds on top.
 
 ---
 

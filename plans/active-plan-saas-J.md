@@ -227,17 +227,18 @@ agency-scale usage.
 
 When Phase J is done:
 
-- [ ] `yet-another-react-lightbox` integrated; click-tile-to-zoom works
-- [ ] Hover magnifier visible on mouse devices, off on touch
-- [ ] Per-asset download button writes correctly-named file
-- [ ] Bulk SKU bundle = ZIP + manifest.csv, opens cleanly in Finder/
-      Explorer
-- [ ] Filter bar (search + platform + slot + status + date) controls
-      URL state
-- [ ] `/library` has an Audit log tab backed by `GET /v1/audit`
-- [ ] Library grid virtualized; 500 assets scroll smoothly
-- [ ] Image thumbs served via CF Image Resizing
-- [ ] `SESSION_STATE.md` updated with library SaaS surface
+- [x] `yet-another-react-lightbox` integrated; click-tile-to-zoom works — `7b4a97a`
+- [x] Hover magnifier visible on mouse devices, off on touch — `7b4a97a`
+- [x] Per-asset download button writes correctly-named file — `6b22c54`
+- [x] Bulk SKU bundle = ZIP + manifest.csv, opens cleanly in Finder/
+      Explorer — `6b22c54`
+- [x] Filter bar (search + platform + slot + status + date) controls
+      URL state — `ce23938`
+- [x] `/library` has an Audit log tab backed by `GET /v1/audit` — `ce23938`
+- [x] Library grid virtualized; ≥500 assets scroll smoothly (skipped <9 groups) — `f6695d2`
+- [x] Image thumbs served via CF Image Resizing (R2_THUMB_HOST gated;
+      ships dark until zone is wired) — `f6695d2`
+- [x] `SESSION_STATE.md` updated with library SaaS surface — committed alongside
 
 When all are checked, the platform looks like a real DAM, not a debug
 inspector. Phase K (edit + publish) builds on top.
