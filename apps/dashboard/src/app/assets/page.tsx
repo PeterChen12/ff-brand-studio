@@ -3,10 +3,16 @@
 import { useEffect, useState } from "react";
 import { AssetCard } from "@/components/asset-card";
 import { MCP_URL } from "@/lib/config";
+import { PageHeader } from "@/components/layout/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import type { AssetRow } from "@/db/schema";
+
+type FilterState = "all" | "passed" | "review" | "flagged";
 
 export default function AssetsPage() {
   const [assetList, setAssetList] = useState<AssetRow[] | null>(null);
+  const [filter, setFilter] = useState<FilterState>("all");
 
   useEffect(() => {
     fetch(`${MCP_URL}/api/assets`)
@@ -15,53 +21,167 @@ export default function AssetsPage() {
       .catch(() => setAssetList([]));
   }, []);
 
-  if (assetList === null) {
+  const filtered = (assetList ?? []).filter((a) => {
+    if (filter === "all") return true;
+    const s = a.brandScore ?? 0;
+    if (filter === "passed") return s >= 85;
+    if (filter === "review") return s >= 70 && s < 85;
+    if (filter === "flagged") return s > 0 && s < 70;
+    return true;
+  });
+
+  const counts = {
+    all: assetList?.length ?? 0,
+    passed: (assetList ?? []).filter((a) => (a.brandScore ?? 0) >= 85).length,
+    review: (assetList ?? []).filter(
+      (a) => (a.brandScore ?? 0) >= 70 && (a.brandScore ?? 0) < 85
+    ).length,
+    flagged: (assetList ?? []).filter(
+      (a) => (a.brandScore ?? 0) > 0 && (a.brandScore ?? 0) < 70
+    ).length,
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Asset Manifest · 资产清单"
+        title="What crossed the bench"
+        description={`${counts.all} asset${counts.all === 1 ? "" : "s"} stamped, scored, and shelved — most recent first.`}
+        action={
+          <div className="flex flex-wrap gap-2">
+            <FilterChip active={filter === "all"} onClick={() => setFilter("all")} count={counts.all}>
+              All
+            </FilterChip>
+            <FilterChip
+              active={filter === "passed"}
+              onClick={() => setFilter("passed")}
+              count={counts.passed}
+              variant="passed"
+            >
+              Auto-approved
+            </FilterChip>
+            <FilterChip
+              active={filter === "review"}
+              onClick={() => setFilter("review")}
+              count={counts.review}
+              variant="pending"
+            >
+              In review
+            </FilterChip>
+            <FilterChip
+              active={filter === "flagged"}
+              onClick={() => setFilter("flagged")}
+              count={counts.flagged}
+              variant="flagged"
+            >
+              HITL flagged
+            </FilterChip>
+          </div>
+        }
+      />
+
+      <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto">
+        {assetList === null ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="border border-mist bg-paper-deep/40">
+                <Skeleton className="aspect-[4/3] w-full" />
+                <div className="p-4 space-y-2">
+                  <Skeleton className="h-3 w-16" />
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-3 w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : filtered.length === 0 ? (
+          <EmptyState filter={filter} totalAll={counts.all} />
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {filtered.map((asset, i) => (
+              <div
+                key={asset.id}
+                className="animate-fade-up"
+                style={{ animationDelay: `${Math.min(i * 50, 400)}ms` }}
+              >
+                <AssetCard asset={asset} />
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  count,
+  variant,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  count: number;
+  variant?: "passed" | "pending" | "flagged";
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        "inline-flex items-center gap-2 px-3 py-1.5 transition-colors",
+        "font-mono text-2xs uppercase tracking-stamp border",
+        active
+          ? "bg-ink text-paper border-ink"
+          : "bg-paper-deep/50 text-ink-soft border-mist hover:border-ink hover:text-ink",
+      ].join(" ")}
+    >
+      {variant && (
+        <span
+          className={[
+            "inline-block h-1.5 w-1.5",
+            variant === "passed" && "bg-jade",
+            variant === "pending" && "bg-amber",
+            variant === "flagged" && "bg-vermilion",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        />
+      )}
+      <span>{children}</span>
+      <span className="tabular-nums opacity-70">{count}</span>
+    </button>
+  );
+}
+
+function EmptyState({ filter, totalAll }: { filter: FilterState; totalAll: number }) {
+  if (totalAll === 0) {
     return (
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "40px 24px", textAlign: "center", color: "#6b7280" }}>
-        Loading assets…
+      <div className="border border-dashed border-mist py-24 px-8 text-center">
+        <div className="stamp-label text-vermilion-deep mb-3">Manifest empty</div>
+        <h3 className="font-display text-display-3 font-medium text-ink mb-3">
+          No assets crossed the bench yet
+        </h3>
+        <p className="text-ink-soft text-sm max-w-md mx-auto">
+          Run a campaign via the orchestrator and the resulting heroes, infographics, and videos will land here.
+        </p>
+        <a
+          href="/campaigns/new"
+          className="inline-flex items-center gap-2 mt-6 px-5 h-10 bg-vermilion text-paper font-mono text-2xs uppercase tracking-stamp hover:bg-vermilion-deep transition-colors"
+        >
+          Run a campaign →
+        </a>
       </div>
     );
   }
-
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-      <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Asset Library</h1>
-        <p style={{ color: "#6b7280", fontSize: 14 }}>
-          {assetList.length} asset{assetList.length !== 1 ? "s" : ""} — most recent first
-        </p>
-      </div>
-
-      {assetList.length === 0 ? (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "80px 24px",
-            color: "#6b7280",
-            border: "1px dashed #1f2937",
-            borderRadius: 8,
-          }}
-        >
-          <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: "#9ca3af" }}>
-            No assets yet
-          </div>
-          <div style={{ fontSize: 14 }}>
-            Run a campaign via Claude Desktop or the New Campaign page.
-          </div>
-        </div>
-      ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-            gap: 16,
-          }}
-        >
-          {assetList.map((asset) => (
-            <AssetCard key={asset.id} asset={asset} />
-          ))}
-        </div>
-      )}
+    <div className="border border-dashed border-mist py-16 px-8 text-center">
+      <Badge variant="outline" className="mb-4">
+        Filter: {filter}
+      </Badge>
+      <p className="text-ink-soft text-sm">No assets match this filter. Try a wider band.</p>
     </div>
   );
 }
