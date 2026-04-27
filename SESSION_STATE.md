@@ -1,4 +1,4 @@
-# Session State — 2026-04-26 end-of-day (D6 follow-up)
+# Session State — 2026-04-27 (Frontend UX iteration F1-F5 done)
 
 A compact catch-up doc so the next session can resume in <5 min. For deeper context read in this order: HANDOFF.md → V2_STATUS.md → V2_FINAL_AUDIT.md → V2_OPTIMIZATION_PLAN.md → docs/RUNBOOK.md.
 
@@ -18,6 +18,32 @@ A compact catch-up doc so the next session can resume in <5 min. For deeper cont
 **Deploy flow (current):** `git push origin master` → CI runs (`ci.yml`) → on success `deploy.yml` ships Worker (`wrangler deploy`) + Pages (`wrangler pages deploy ../dashboard/out`). Custom domain `image-generation.buyfishingrod.com` proxied through Cloudflare to Pages project `ff-brand-studio`. **No more manual Python-zipfile Amplify dance.**
 
 **Microservice boundary:** ff-brand-studio shares ONLY the URL prefix with buyfishingrod. No shared code, no shared DB, no shared deploy pipeline. Rip-out cost: delete 1 CNAME on `buyfishingrod.com` zone + 1 Pages custom-domain ≈ 30 sec.
+
+---
+
+## Frontend UX iteration — F1-F5 ✅ complete (2026-04-27)
+
+Plan at `plans/active-plan-frontend-ux.md`. Triggered by audit finding that
+the dashboard still encoded v1 (FF social-content campaigns) while the
+backend had been pivoted to v2 (multi-model launch_product_sku
+orchestrator). Two visual refreshes never re-architected page purpose.
+
+**Pitch (settled):** "High-quality product images and description generation
+at scale — for marketing agencies serving Chinese sellers on Amazon US and
+Shopify DTC."
+
+| Phase | Commit | What landed |
+|---|---|---|
+| F1 — Vocabulary + IA cleanup | `8b5b769` | Drop 成 / atelier / bench decoration. Nav reordered: Overview → Launch → Library → Costs. Service Status footer collapsed to a 1-line dot. Score thresholds card demoted from peer-card to compact reference text. |
+| F2 — Launch wizard | (this commit) | New /launch route replaces both /campaigns/new (v1 social) and /seo (parallel SEO panel). Single flow: pick product → pick platforms → launch. Result panel shows image plan + per-platform SEO copy + compliance badges. New backend endpoints: GET /api/products + POST /demo/launch-sku (wraps launch_product_sku with safe defaults). dry_run now still runs SEO. |
+| F3 — Library (was /assets) | `c7be3fc` | /assets → /library. Backend /api/assets joins platform_assets → product_variants → products → seller_profiles. UI groups by SKU; tabs for "By SKU" (v2) and "Legacy" (v1 hero filenames). Smart titles: "FF-DEMO-ROD-12FT · category · seller" + product name. |
+| F4 — Overview rebalance | `b0e6dd9` | Hero pivots from "Cumulative spend" to "Recent launches" list. KPI ribbon below holds spend/SKU-count/asset-count/avg-compliance compactly. Empty state has "Run your first launch" CTA. New endpoint: GET /api/launches. |
+| F5 — Costs touch-up | `b0e6dd9` (same commit) | New "Recent launches by SKU" table sourced from launch_runs. Old v1 run_costs table relabeled "Legacy v1 ledger". Ribbon's "Campaigns" → "Legacy runs". |
+| F6 — Verify + ship | (in progress) | Workspace type-check 7/7 green, dashboard build clean, push triggers deploy.yml. |
+
+**Routes today:** `/`, `/launch`, `/library`, `/costs`. v1 routes deleted: `/campaigns/new`, `/seo` (404 if anyone hits the old URL — intentional, no redirect since the v1 social-content workflow is officially dead).
+
+**New Worker endpoints:** `GET /api/products`, `GET /api/launches`, `POST /demo/launch-sku`. The old `/demo/run-campaign` and `/demo/seo-preview` are still present but unused by the dashboard — the cleanup-routine on 2026-05-11 (`trig_01Po58VRaMzHUp4YAvFVb52G`) will check whether to delete /demo/seo-preview.
 
 ---
 
