@@ -20,7 +20,7 @@ A compact catch-up doc so the next session can resume in <5 min. For deeper cont
 
 ---
 
-## SEO Description Layer — D1-D6 done, D7-D8 remaining (2026-04-26)
+## SEO Description Layer — D1-D8 ✅ complete (2026-04-27)
 
 The plan at `plans/active-plan.md` is being executed. Old v1 bootstrap plan
 preserved at `plans/active-plan-v1-bootstrap.md`.
@@ -33,8 +33,8 @@ preserved at `plans/active-plan-v1-bootstrap.md`.
 | D4 — Bilingual SEO description generator (Sonnet 4.6, cached) | `872e8cb` | ✅ |
 | D5 — Deterministic seo compliance scorer | `e4ba410` | ✅ |
 | D6 — launch_product_sku v2 orchestrator integration | `1a8144a` | ✅ |
-| D7 — Dashboard SEO panel | — | ⏸ |
-| D8 — Demo SKUs pre-seeded | — | ⏸ |
+| D7 — Dashboard SEO panel + /demo/seo-preview Worker endpoint | `20f4b7a` | ✅ |
+| D8 — Demo SKUs pre-seeded (3 fishing-rod SKUs in Postgres) | `pending` | ✅ |
 
 **New Worker secrets** (pushed 2026-04-26): `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`, `APIFY_TOKEN`. OpenAI project key already there.
 
@@ -45,6 +45,22 @@ preserved at `plans/active-plan-v1-bootstrap.md`.
 - `runLaunchPipeline` calls it after image adapters, gated by `include_seo` (default true). Cost rolls into run total and respects `cost_cap_cents` retroactively.
 - `LaunchProductSkuInput` adds `include_seo: boolean = true` and `seo_cost_cap_cents: number = 50`.
 - Result shape adds `seo?: SeoPipelineResult` with per-surface `{copy, rating, issues, suggestions, iterations, cost_cents}`.
+
+**D7 surface area:**
+- New page `/seo` (rendered at build time, in static export) with sidebar nav entry "SEO Atelier · 文案工坊".
+- New component `apps/dashboard/src/components/seo-atelier.tsx` — brief form (name EN/ZH, category, platforms) → POST /demo/seo-preview → per-surface result cards with rating badge, copy preview, issues, blocking-flag callouts, regenerate-disabled HITL gate on Publish to DAM.
+- New Worker endpoint `POST /demo/seo-preview` — synthesizes a minimal `Product` from request body (no DB read), calls the same `runSeoPipeline` used by `launch_product_sku`. Lets the panel demo end-to-end before D8 SKUs are seeded.
+- Worker redeployed (version `cf550922`); smoke-tested at 1.09¢ for a single Amazon-US listing returning EXCELLENT-rated copy.
+- Dashboard NOT yet redeployed to Amplify — `git push origin master` does not auto-deploy; user must either push the `staging` branch or run the Python-zipfile manual deploy from gotcha #1 below.
+
+**D8 surface area:**
+- New script `scripts/seed-demo-skus.mjs` — idempotent (ON CONFLICT DO UPDATE on `products.sku`, SELECT-then-INSERT on `seller_profiles.org_name_en`). Run with: `$env:PGPASSWORD='...'; node scripts/seed-demo-skus.mjs`.
+- Already executed against production Postgres (170.9.252.93:5433/ff_brand_studio). Inserted seller `9dff9e3e-e1a8-49fa-a9af-d99170b2f607` "Demo · Tackle Atelier" + 3 products:
+  - `FF-DEMO-ROD-12FT` → `27e0457a-71e7-4cc3-959c-1ff6fcce123f` (Carbon fiber telescopic 12ft, category=other)
+  - `FF-DEMO-REEL-4000` → `827525ee-a9b0-44bd-8b46-b66530a0d03a` (Saltwater spinning reel 4000, category=tech-acc)
+  - `FF-DEMO-BITE-LED4` → `74ed5a8c-3e63-43dd-897f-aa4c8285832a` (LED bite alarm 4-pack, category=tech-acc)
+- Dashboard SEO Atelier gets a "Demo SKUs · 一键填充" preset row above the form — one-click fill for live demos.
+- These product UUIDs are also valid `product_id` arguments to the full `launch_product_sku` MCP tool (D6 orchestrator), so an end-to-end image+SEO run is one MCP call away once you want to spend ~$0.30 on a live image render.
 
 ## Recent commits (last → first)
 

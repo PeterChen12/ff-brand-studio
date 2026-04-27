@@ -64,6 +64,34 @@ const PLATFORMS = [
   { id: "shopify", label: "Shopify DTC · en", surface: "shopify" },
 ];
 
+// D8 demo SKUs — seeded in Postgres via scripts/seed-demo-skus.mjs. Click
+// to auto-fill the brief form for a one-tap live demo.
+const DEMO_PRESETS: {
+  label: string;
+  nameEn: string;
+  nameZh: string;
+  category: string;
+}[] = [
+  {
+    label: "Carbon rod 12ft",
+    nameEn: "Carbon fiber telescopic fishing rod 12ft",
+    nameZh: "碳纤维伸缩钓竿 12 英尺",
+    category: "other",
+  },
+  {
+    label: "Spinning reel 4000",
+    nameEn: "Saltwater spinning reel 4000 series",
+    nameZh: "海钓纺车轮 4000 型",
+    category: "tech-acc",
+  },
+  {
+    label: "LED bite alarm 4-pk",
+    nameEn: "LED bite alarm 4-pack",
+    nameZh: "LED 咬钩报警器 4 件套",
+    category: "tech-acc",
+  },
+];
+
 // Rating → badge variant map. POOR is flagged, FAIR pending, GOOD/EXCELLENT passed.
 const ratingVariant: Record<Rating, "passed" | "pending" | "flagged"> = {
   EXCELLENT: "passed",
@@ -147,6 +175,30 @@ export function SeoAtelier({ mcpUrl }: { mcpUrl: string }) {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-7">
+            <div>
+              <div className="stamp-label mb-2">Demo SKUs · 一键填充</div>
+              <div className="flex flex-wrap gap-2">
+                {DEMO_PRESETS.map((d) => (
+                  <button
+                    type="button"
+                    key={d.label}
+                    onClick={() => {
+                      setProductNameEn(d.nameEn);
+                      setProductNameZh(d.nameZh);
+                      setCategory(d.category);
+                    }}
+                    className={cn(
+                      "inline-flex items-center gap-2 px-3 py-1.5 transition-colors",
+                      "font-mono text-2xs uppercase tracking-stamp border",
+                      "bg-paper-deep/40 text-ink-soft border-mist hover:border-vermilion-deep hover:text-vermilion-deep"
+                    )}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div>
               <div className="stamp-label mb-2">Product name (EN)</div>
               <input
