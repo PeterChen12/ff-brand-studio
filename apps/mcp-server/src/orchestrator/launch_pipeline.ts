@@ -155,9 +155,37 @@ export async function runLaunchPipeline(
   );
 
   if (input.dry_run) {
+    // F2: dry-run skips paid image generation but STILL runs the SEO
+    // pipeline — agencies want bilingual listings even when they're
+    // bringing their own product photos.
+    let seoResult: SeoPipelineResult | undefined;
+    if (input.include_seo !== false && input.anthropic_api_key) {
+      try {
+        seoResult = await runSeoPipeline({
+          product,
+          platforms: input.platforms,
+          surfaces: input.seo_surfaces,
+          cost_cap_cents: input.seo_cost_cap_cents,
+          anthropic_api_key: input.anthropic_api_key,
+          openai_api_key: input.openai_api_key,
+          dataforseo_login: input.dataforseo_login,
+          dataforseo_password: input.dataforseo_password,
+        });
+        notes.push(
+          `seo_pipeline (dry-run) → ${seoResult.surfaces.length} surfaces, ${seoResult.total_cost_cents}¢ (${seoResult.status})`
+        );
+      } catch (e) {
+        notes.push(`seo_pipeline failed: ${String(e).slice(0, 200)}`);
+      }
+    }
+    const seoCostCents = seoResult?.total_cost_cents ?? 0;
     await db
       .update(launchRuns)
-      .set({ status: "succeeded", durationMs: Date.now() - startedAt })
+      .set({
+        status: "succeeded",
+        durationMs: Date.now() - startedAt,
+        totalCostCents: Math.round(seoCostCents),
+      })
       .where(eq(launchRuns.id, runId));
     return {
       run_id: runId,
@@ -165,12 +193,13 @@ export async function runLaunchPipeline(
       product_sku: product.sku,
       status: "succeeded",
       duration_ms: Date.now() - startedAt,
-      total_cost_cents: 0,
+      total_cost_cents: seoCostCents,
       plan,
       canonicals: [],
       adapter_results: [],
       hitl_count: 0,
-      notes: [...notes, "dry_run=true — skipped workers and adapters"],
+      notes: [...notes, "dry_run=true — skipped image workers and adapters"],
+      seo: seoResult,
     };
   }
 
@@ -384,7 +413,7 @@ export async function runLaunchPipeline(
     .set({
       status: finalStatus,
       durationMs,
-      totalCostCents,
+      totalCostCents: Math.round(totalCostCents),
       hitlInterventions: hitlCount,
     })
     .where(eq(launchRuns.id, runId));

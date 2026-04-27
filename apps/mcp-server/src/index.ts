@@ -7,9 +7,10 @@ import { RunCampaignInput } from "@ff/types";
 import { runCampaignWorkflow, setScoreFn } from "./workflows/campaign.workflow.js";
 import { scoreBrandCompliance } from "./guardian/index.js";
 import { createDbClient } from "./db/client.js";
-import { assets, runCosts, type Product } from "./db/schema.js";
-import { desc, sql } from "drizzle-orm";
+import { assets, runCosts, products, sellerProfiles, type Product } from "./db/schema.js";
+import { desc, sql, eq } from "drizzle-orm";
 import { runSeoPipeline, type SeoSurfaceSpec } from "./orchestrator/seo_pipeline.js";
+import { runLaunchPipeline } from "./orchestrator/launch_pipeline.js";
 import type { LaunchPlatform } from "./orchestrator/planner.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
@@ -171,6 +172,37 @@ app.get("/api/runs", async (c) => {
   }
 });
 
+// List all products with seller info — drives the launch wizard SKU picker.
+app.get("/api/products", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const rows = await db
+      .select({
+        id: products.id,
+        sku: products.sku,
+        nameEn: products.nameEn,
+        nameZh: products.nameZh,
+        category: products.category,
+        materials: products.materials,
+        colorsHex: products.colorsHex,
+        dimensions: products.dimensions,
+        loraUrl: products.loraUrl,
+        sellerId: products.sellerId,
+        sellerNameEn: sellerProfiles.orgNameEn,
+        sellerNameZh: sellerProfiles.orgNameZh,
+        createdAt: products.createdAt,
+      })
+      .from(products)
+      .leftJoin(sellerProfiles, eq(products.sellerId, sellerProfiles.id))
+      .orderBy(desc(products.createdAt))
+      .limit(100);
+    return c.json({ products: rows });
+  } catch (err) {
+    console.error("[/api/products]", err);
+    return c.json({ products: [] });
+  }
+});
+
 // Demo HTTP endpoint — simulates the run_campaign tool call for testing without Claude Desktop
 app.post("/demo/run-campaign", async (c) => {
   const body = await c.req.json();
@@ -257,6 +289,56 @@ app.post("/demo/seo-preview", async (c) => {
     return c.json(result);
   } catch (err) {
     console.error("[/demo/seo-preview]", err);
+    return c.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      500
+    );
+  }
+});
+
+// ── Launch SKU demo endpoint (F2) ─────────────────────────────────────────
+// Wraps the v2 launch_product_sku orchestrator for dashboard consumption.
+// Defaults are tuned for the agency-demo workflow: dry_run=true keeps
+// image-generation cost at zero (FAL.ai is paid per call), include_seo=true
+// runs the real bilingual SEO pipeline (~$0.10-0.50/SKU). Caller can opt
+// into full image gen by passing dry_run=false.
+const LaunchSkuInput = z.object({
+  product_id: z.string().uuid(),
+  platforms: z
+    .array(z.enum(["amazon", "shopify"]))
+    .min(1)
+    .default(["amazon", "shopify"]),
+  // Image generation costs real money via FAL.ai — keep dry-run by default
+  // for demos. Passing dry_run=false runs the full Phase-2 image stack.
+  dry_run: z.boolean().default(true),
+  include_seo: z.boolean().default(true),
+  seo_cost_cap_cents: z.number().int().positive().max(200).default(50),
+});
+
+app.post("/demo/launch-sku", async (c) => {
+  const body = await c.req.json();
+  const parsed = LaunchSkuInput.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+  const p = parsed.data;
+  try {
+    const db = createDbClient(c.env);
+    const result = await runLaunchPipeline(db, {
+      product_id: p.product_id,
+      platforms: p.platforms as LaunchPlatform[],
+      include_video: false,
+      dry_run: p.dry_run,
+      include_seo: p.include_seo,
+      seo_cost_cap_cents: p.seo_cost_cap_cents,
+      anthropic_api_key: c.env.ANTHROPIC_API_KEY,
+      openai_api_key: c.env.OPENAI_API_KEY,
+      dataforseo_login: c.env.DATAFORSEO_LOGIN,
+      dataforseo_password: c.env.DATAFORSEO_PASSWORD,
+    });
+    return c.json(result);
+  } catch (err) {
+    console.error("[/demo/launch-sku]", err);
     return c.json(
       { error: err instanceof Error ? err.message : String(err) },
       500
