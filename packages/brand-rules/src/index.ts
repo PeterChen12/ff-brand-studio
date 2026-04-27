@@ -1,6 +1,17 @@
 // Brand rules are inlined as a TypeScript object so this module works in
 // Cloudflare Workers (no node:fs, no node:path, no yaml runtime dependency).
 
+// v2 SEO description prompts — re-exported here so consumers import a single
+// surface from `@ff/brand-rules` rather than reaching into a sub-path.
+export {
+  type SeoSurface,
+  type SeoLanguage,
+  type SeoSurfaceConfig,
+  SEO_SURFACE_CONFIGS,
+  getSeoSurfaceConfig,
+  buildUserPrompt,
+} from "./seo-prompts.js";
+
 export interface BrandRules {
   version: string;
   brand: string;

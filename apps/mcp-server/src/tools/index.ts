@@ -13,6 +13,7 @@ import { registerTranscreateZhToEnUs } from "./transcreate-zh-to-en-us.js";
 import { registerResearchKeywords } from "./research-keywords.js";
 import { registerExpandSeed } from "./expand-seed.js";
 import { registerClusterKeywords } from "./cluster-keywords.js";
+import { registerGenerateSeoDescription } from "./generate-seo-description.js";
 
 /**
  * Single registration array. Add new tools by importing the registrar above
@@ -37,6 +38,7 @@ const REGISTRARS: Array<(server: McpServer, env: CloudflareBindings) => void> = 
   registerResearchKeywords,
   registerExpandSeed,
   registerClusterKeywords,
+  registerGenerateSeoDescription,
 ];
 
 export function registerAllTools(server: McpServer, env: CloudflareBindings): void {
