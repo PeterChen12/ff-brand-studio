@@ -18,11 +18,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/cn";
 
 interface Stats {
-  assetCount: number;
   totalSpend: number;
-  avgScore: number;
-  campaignCount: number;
-  passRate: number;
+  launchCount: number;
+  succeeded: number;
+  hitl: number;
+  assetCount: number;
+  skuCount: number;
 }
 
 interface LaunchRow {
@@ -45,58 +46,39 @@ export default function OverviewPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${MCP_URL}/api/launches`)
-      .then((r) => r.json())
-      .then((d: { launches: LaunchRow[] }) => setLaunches(d.launches ?? []))
-      .catch(() => setLaunches([]));
-    Promise.all([fetch(`${MCP_URL}/api/assets`), fetch(`${MCP_URL}/api/costs`)])
-      .then(async ([a, c]) => {
+    Promise.all([
+      fetch(`${MCP_URL}/api/launches`),
+      fetch(`${MCP_URL}/api/assets`),
+    ])
+      .then(async ([l, a]) => {
+        const lData = (await l.json()) as { launches: LaunchRow[] };
         const aData = (await a.json()) as {
-          legacy?: Array<{ brandScore?: number | null; campaign?: string | null }>;
-          platformAssets?: Array<{ complianceScore?: string | null; sku?: string | null }>;
+          platformAssets?: Array<{ sku?: string | null }>;
         };
-        const cData = (await c.json()) as { totalSpend: number; runs: number };
-        const legacy = aData.legacy ?? [];
-        const v2 = aData.platformAssets ?? [];
-
-        // Compliance signal: blend v1 numeric brandScore with v2 string ratings
-        const v1Scores = legacy.map((x) => x.brandScore ?? 0).filter((s) => s > 0);
-        const v2Scores = v2
-          .map((x) => x.complianceScore)
-          .filter((s): s is string => !!s)
-          .map((s) => {
-            const u = s.toUpperCase();
-            if (u === "EXCELLENT") return 95;
-            if (u === "GOOD") return 80;
-            if (u === "FAIR") return 65;
-            if (u === "POOR") return 40;
-            const n = parseInt(s, 10);
-            return Number.isFinite(n) ? n : 0;
-          })
-          .filter((n) => n > 0);
-        const allScores = [...v1Scores, ...v2Scores];
-        const avgScore = allScores.length
-          ? Math.round(allScores.reduce((s, x) => s + x, 0) / allScores.length)
-          : 0;
-        const passing = allScores.filter((s) => s >= 70).length;
-        const passRate = allScores.length
-          ? Math.round((passing / allScores.length) * 100)
-          : 0;
-
-        // Campaign count is now SKU count (v2) — legacy campaigns counted separately
-        const v2Skus = new Set(v2.map((x) => x.sku).filter(Boolean));
-        const v1Campaigns = new Set(
-          legacy.map((x) => x.campaign).filter(Boolean)
+        const launches_ = lData.launches ?? [];
+        const v2Assets = aData.platformAssets ?? [];
+        setLaunches(launches_);
+        const totalCents = launches_.reduce(
+          (s, x) => s + (x.totalCostCents ?? 0),
+          0
         );
+        const skus = new Set(v2Assets.map((x) => x.sku).filter(Boolean));
         setStats({
-          assetCount: legacy.length + v2.length,
-          totalSpend: cData.totalSpend,
-          avgScore,
-          campaignCount: v2Skus.size + v1Campaigns.size,
-          passRate,
+          totalSpend: totalCents / 100,
+          launchCount: launches_.length,
+          succeeded: launches_.filter((x) => x.status === "succeeded").length,
+          hitl: launches_.filter(
+            (x) =>
+              (x.hitlInterventions ?? 0) > 0 || x.status === "hitl_blocked"
+          ).length,
+          assetCount: v2Assets.length,
+          skuCount: skus.size,
         });
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : "fetch failed"));
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : "fetch failed");
+        setLaunches([]);
+      });
   }, []);
 
   return (
@@ -174,29 +156,20 @@ export default function OverviewPage() {
             tone="primary"
           />
           <KpiCell
-            label="SKUs / campaigns"
-            value={stats === null ? null : stats.campaignCount.toString()}
+            label="Launches"
+            value={stats === null ? null : stats.launchCount.toString()}
+            sub={stats ? `${stats.succeeded} succeeded` : undefined}
           />
           <KpiCell
-            label="Assets shipped"
-            value={stats === null ? null : stats.assetCount.toString()}
+            label="SKUs"
+            value={stats === null ? null : stats.skuCount.toString()}
+            sub={stats ? `${stats.assetCount} assets` : undefined}
           />
           <KpiCell
-            label="Avg compliance"
-            value={
-              stats === null
-                ? null
-                : stats.avgScore > 0
-                  ? `${stats.avgScore}/100`
-                  : "—"
-            }
-            tone={
-              stats && stats.avgScore >= 85
-                ? "tertiary"
-                : stats && stats.avgScore >= 70
-                  ? "amber"
-                  : "primary"
-            }
+            label="HITL holds"
+            value={stats === null ? null : stats.hitl.toString()}
+            sub="needing review"
+            tone={stats && stats.hitl > 0 ? "amber" : "tertiary"}
           />
         </div>
 
@@ -407,10 +380,12 @@ function FirstLaunchCTA() {
 function KpiCell({
   label,
   value,
+  sub,
   tone,
 }: {
   label: string;
   value: string | null;
+  sub?: string;
   tone?: "primary" | "tertiary" | "amber";
 }) {
   const valueClass =
@@ -432,6 +407,11 @@ function KpiCell({
       >
         {value === null ? <Skeleton className="h-5 w-16" /> : value}
       </div>
+      {sub && (
+        <div className="md-typescale-body-small text-on-surface-variant/70 font-mono mt-0.5">
+          {sub}
+        </div>
+      )}
     </div>
   );
 }
