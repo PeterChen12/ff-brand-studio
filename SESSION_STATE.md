@@ -9,7 +9,7 @@ A compact catch-up doc so the next session can resume in <5 min. For deeper cont
 | Surface | URL | State |
 |---|---|---|
 | MCP Worker (v2) | https://ff-brand-studio-mcp.creatorain.workers.dev | ✅ live, v0.2.0, 11 secrets uploaded, all 5 dep checks green, db ping ~100ms |
-| Dashboard custom domain | https://image-generation.buyfishingrod.com | ✅ fully functional after deploy job #5 (re-zipped via Python zipfile, all chunks 200, all 4 routes load) |
+| Dashboard custom domain | https://image-generation.buyfishingrod.com | ✅ atelier redesign live (Amplify job #6); custom Tailwind v3 + shadcn-style components + magicui NumberTicker |
 | Dashboard fallback | https://staging.d1a431ll6nyfk4.amplifyapp.com | same content as custom domain |
 | Dashboard fallback (CF Pages) | https://ff-brand-studio.pages.dev | v1 deployment, still works |
 | GitHub Actions CI | master | ✅ green as of commit `d4f83d8` |
@@ -19,6 +19,26 @@ A compact catch-up doc so the next session can resume in <5 min. For deeper cont
 **Microservice boundary:** ff-brand-studio shares ONLY the URL prefix with buyfishingrod. No shared code, no shared DB, no shared deploy pipeline. Rip-out cost: delete 1 CNAME on `buyfishingrod.com` zone + 1 Amplify domain association ≈ 30 sec.
 
 ---
+
+## SEO Description Layer — D1-D5 done, D6-D8 remaining (2026-04-26)
+
+The plan at `plans/active-plan.md` is being executed. Old v1 bootstrap plan
+preserved at `plans/active-plan-v1-bootstrap.md`.
+
+| Task | Commit | State |
+|---|---|---|
+| D1 — DataForSEO client + research_keywords tool | `19fe77e` | ✅ |
+| D2 — Free autocomplete (Amazon/Google/Tmall) + expand_seed | `19fe77e` | ✅ |
+| D3 — OpenAI embeddings + clusterByCosine + cluster_keywords | `19fe77e` | ✅ |
+| D4 — Bilingual SEO description generator (Sonnet 4.6, cached) | `872e8cb` | ✅ |
+| D5 — Deterministic seo compliance scorer | `e4ba410` | ✅ |
+| D6 — launch_product_sku v2 orchestrator integration | — | ⏸ |
+| D7 — Dashboard SEO panel | — | ⏸ |
+| D8 — Demo SKUs pre-seeded | — | ⏸ |
+
+**New Worker secrets** (pushed 2026-04-26): `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD`, `APIFY_TOKEN`. OpenAI project key already there.
+
+**New MCP tools registered** (16 total, was 11): `research_keywords`, `expand_seed`, `cluster_keywords`, `generate_seo_description`, `score_seo_compliance`. Type-check 10/10. Deploy NOT yet pushed to Worker — D6 ties them into the orchestrator first, then a single `wrangler deploy` lands the whole batch.
 
 ## Recent commits (last → first)
 
