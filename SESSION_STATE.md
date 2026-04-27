@@ -9,14 +9,15 @@ A compact catch-up doc so the next session can resume in <5 min. For deeper cont
 | Surface | URL | State |
 |---|---|---|
 | MCP Worker (v2) | https://ff-brand-studio-mcp.creatorain.workers.dev | ✅ live, v0.2.0, 11 secrets uploaded, all 5 dep checks green, db ping ~100ms |
-| Dashboard custom domain | https://image-generation.buyfishingrod.com | ✅ atelier redesign live (Amplify job #6); custom Tailwind v3 + shadcn-style components + magicui NumberTicker |
-| Dashboard fallback | https://staging.d1a431ll6nyfk4.amplifyapp.com | same content as custom domain |
-| Dashboard fallback (CF Pages) | https://ff-brand-studio.pages.dev | v1 deployment, still works |
-| GitHub Actions CI | master | ✅ green as of commit `d4f83d8` |
+| Dashboard custom domain | https://image-generation.buyfishingrod.com | ✅ M3 redesign live (commit `d473e92`); now served by Cloudflare Pages, NOT Amplify |
+| Dashboard fallback | https://ff-brand-studio.pages.dev | identical content (same project) |
+| GitHub Actions CI + auto-deploy | master | ✅ `.github/workflows/deploy.yml` ships Worker + Pages on every successful CI |
 | Postgres | 170.9.252.93:5433/ff_brand_studio | ✅ v2 schema applied, 7 tables + 10 platform_specs |
-| Amplify staging app | `d1a431ll6nyfk4` (us-east-1, account 590183723867) | branch `staging`, custom domain `image-generation.buyfishingrod.com` |
+| Amplify staging app | `d1a431ll6nyfk4` (us-east-1) | DEPRECATED — domain disassociated 2026-04-27. App still exists but no traffic |
 
-**Microservice boundary:** ff-brand-studio shares ONLY the URL prefix with buyfishingrod. No shared code, no shared DB, no shared deploy pipeline. Rip-out cost: delete 1 CNAME on `buyfishingrod.com` zone + 1 Amplify domain association ≈ 30 sec.
+**Deploy flow (current):** `git push origin master` → CI runs (`ci.yml`) → on success `deploy.yml` ships Worker (`wrangler deploy`) + Pages (`wrangler pages deploy ../dashboard/out`). Custom domain `image-generation.buyfishingrod.com` proxied through Cloudflare to Pages project `ff-brand-studio`. **No more manual Python-zipfile Amplify dance.**
+
+**Microservice boundary:** ff-brand-studio shares ONLY the URL prefix with buyfishingrod. No shared code, no shared DB, no shared deploy pipeline. Rip-out cost: delete 1 CNAME on `buyfishingrod.com` zone + 1 Pages custom-domain ≈ 30 sec.
 
 ---
 
