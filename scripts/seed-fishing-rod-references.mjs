@@ -153,14 +153,19 @@ async function main() {
       }
       const productId = product[0].id;
 
+      // Phase G — every row carries tenant_id; demo SKUs go to the
+      // sample-catalog tenant so any signed-in tenant with
+      // features.has_sample_access sees them.
+      const SAMPLE_TENANT_ID = "00000000-0000-0000-0000-000000000001";
+
       let variant = await sql`
         SELECT id FROM product_variants WHERE product_id = ${productId} LIMIT 1
       `;
       let variantId;
       if (variant.length === 0) {
         const ins = await sql`
-          INSERT INTO product_variants (product_id, color, pattern)
-          VALUES (${productId}, NULL, NULL)
+          INSERT INTO product_variants (tenant_id, product_id, color, pattern)
+          VALUES (${SAMPLE_TENANT_ID}, ${productId}, NULL, NULL)
           RETURNING id
         `;
         variantId = ins[0].id;
@@ -202,10 +207,10 @@ async function main() {
 
         await sql`
           INSERT INTO platform_assets (
-            variant_id, platform, slot, r2_url, format, status,
+            tenant_id, variant_id, platform, slot, r2_url, format, status,
             model_used, cost_cents, compliance_score
           ) VALUES (
-            ${variantId}, ${slot.platform}, ${slot.slot}, ${r2Url},
+            ${SAMPLE_TENANT_ID}, ${variantId}, ${slot.platform}, ${slot.slot}, ${r2Url},
             'png', 'reference', 'buyfishingrod-catalog', 0, 'GOOD'
           )
           ON CONFLICT (variant_id, platform, slot) DO UPDATE SET

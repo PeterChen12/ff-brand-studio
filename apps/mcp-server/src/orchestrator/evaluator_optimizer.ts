@@ -38,6 +38,7 @@ export interface RefinementHistoryEntry {
 
 export interface EvaluatorOptimizerInput {
   db: DbClient;
+  tenant_id: string;
   variant_id: string;
   product_id: string;
   product_sku: string;
@@ -109,6 +110,7 @@ export async function runEvaluatorOptimizer(
   for (; iter <= MAX_REFINEMENT_ITERATIONS; iter++) {
     asset = await runAdapter({
       db: input.db,
+      tenant_id: input.tenant_id,
       variant_id: input.variant_id,
       canonical,
       platform: input.platform,

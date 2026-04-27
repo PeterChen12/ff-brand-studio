@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useApiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -119,6 +120,7 @@ const ratingVariant: Record<Rating, "passed" | "pending" | "flagged"> = {
 };
 
 export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
+  const apiFetch = useApiFetch();
   const [products, setProducts] = useState<ProductRow[] | null>(null);
   const [productErr, setProductErr] = useState<string | null>(null);
   const [productId, setProductId] = useState<string | null>(null);
@@ -133,17 +135,15 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${mcpUrl}/api/products`)
-      .then((r) => r.json())
-      .then((data: { products: ProductRow[] }) => {
+    apiFetch<{ products: ProductRow[] }>("/api/products")
+      .then((data) => {
         setProducts(data.products);
         if (data.products.length > 0 && !productId) {
           setProductId(data.products[0].id);
         }
       })
       .catch((err) => setProductErr(err instanceof Error ? err.message : String(err)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mcpUrl]);
+  }, [apiFetch, productId]);
 
   const selected = products?.find((p) => p.id === productId) ?? null;
 
@@ -163,6 +163,10 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
     const startTime = Date.now();
     const timer = setInterval(() => setElapsedMs(Date.now() - startTime), 250);
     try {
+      // Phase G note: /demo/launch-sku is open today. Phase L will move
+      // this to /v1/launches under the requireTenant middleware. Once
+      // that ships, apiFetch attaches the Bearer JWT and the tenant
+      // context comes from there instead of the synth-tenant default.
       const res = await fetch(`${mcpUrl}/demo/launch-sku`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -1,6 +1,6 @@
 import type { GeneratedAssetType, BrandScorecardType } from "@ff/types";
 import { createDbClient } from "../../db/client.js";
-import { assets, runCosts } from "../../db/schema.js";
+import { assets, runCosts, SAMPLE_TENANT_ID } from "../../db/schema.js";
 import type Langfuse from "langfuse";
 
 export interface PublishOutput {
@@ -42,6 +42,10 @@ export async function publishStep(params: {
     const [row] = await db
       .insert(assets)
       .values({
+        // Phase G — legacy v1 campaign path; assets attributed to the
+        // sample-catalog tenant since this surface predates per-tenant
+        // upload (Phase H replaces it).
+        tenantId: SAMPLE_TENANT_ID,
         r2Key: asset.r2_key,
         assetType: asset.asset_type,
         campaign: params.campaign,
@@ -90,6 +94,7 @@ export async function publishStep(params: {
   let run_cost_logged = false;
   try {
     await db.insert(runCosts).values({
+      tenantId: SAMPLE_TENANT_ID,
       campaign: params.campaign,
       gptImage2Calls: infoCount,
       fluxCalls: heroCount,

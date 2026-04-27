@@ -557,23 +557,40 @@ Phase G itself adds zero recurring costs:
 
 When Phase G is done:
 
-- [ ] Clerk app live, force-orgs enabled
-- [ ] `tenants`, `platform_listings`, `platform_listings_versions`,
+- [x] Clerk app live, force-orgs setting on (manual)
+- [x] `tenants`, `platform_listings`, `platform_listings_versions`,
       `wallet_ledger`, `audit_events` tables exist in prod
-- [ ] All 8 domain tables have `tenant_id NOT NULL`
-- [ ] Worker rejects unauthenticated requests with 401
-- [ ] Dashboard wraps everything in `<ClerkProvider>`; `/sign-in` and
-      `/sign-up` work
-- [ ] New signup creates tenant + grants $5 starter credit + 1
-      `wallet_ledger` row
-- [ ] Every launch debits the wallet through `chargeWallet()`
-- [ ] Every launch writes `audit.launch.start` + `.complete`
-- [ ] SEO copy persists in `platform_listings`; visible after page
-      reload
-- [ ] CI guard prevents un-scoped Drizzle queries from being merged
-- [ ] `scripts/audit-wallet-integrity.mjs` returns clean
-- [ ] ADR-0004 committed
+      (migration 0002_phase_g_tenancy.sql applied 2026-04-27)
+- [x] All 8 domain tables have `tenant_id NOT NULL`
+- [x] Worker rejects unauthenticated requests with 401 — see
+      `apps/mcp-server/src/lib/auth.ts:requireTenant` applied to
+      `/api/*` and `/v1/launches/*`, `/v1/listings/*`
+- [x] Dashboard wraps everything in client-only ClerkProvider; `/sign-in`
+      and `/sign-up` work — see `components/layout/clerk-app-shell.tsx`
+      (dynamic-loaded to bypass static-export prerender)
+- [x] New signup creates tenant + grants $5 starter credit + 1
+      `wallet_ledger` row — see `apps/mcp-server/src/lib/tenants.ts`
+      `ensureTenantForOrg`
+- [ ] Every launch debits the wallet through `chargeWallet()` —
+      helper landed at `apps/mcp-server/src/lib/wallet.ts`; wiring
+      into `runLaunchPipeline` deferred to Phase H1 alongside the
+      pre-flight cost prediction (cleaner integration boundary)
+- [ ] Every launch writes `audit.launch.start` + `.complete` —
+      helper landed at `apps/mcp-server/src/lib/audit.ts`; wiring
+      same as above (pairs with Phase H1)
+- [x] SEO copy persists in `platform_listings`; visible after page
+      reload — `runLaunchPipeline` upserts per surface via the
+      `(variant_id, surface, language)` unique index
+- [ ] CI guard prevents un-scoped Drizzle queries from being merged —
+      deferred (every existing query is now scoped via
+      `inArray(table.tenantId, visibleTenantIds(tenant))`; CI grep
+      lint follows in Phase L's API-key tightening)
+- [x] `scripts/audit-wallet-integrity.mjs` returns clean
+      (1 tenant, 0 drift after 2026-04-27 run)
+- [ ] ADR-0004 committed (embedded in this plan; standalone file follows)
 - [ ] `SESSION_STATE.md` updated with the new auth flow + tenant model
 
 When all are checked, Phase H (Stripe billing + self-serve upload) is
-unblocked.
+unblocked. The unchecked items above are integration points that fit
+more cleanly inside Phase H1 (wallet wiring → pre-flight cost
+prediction is one PR) and Phase L (CI guard → API-key surface).

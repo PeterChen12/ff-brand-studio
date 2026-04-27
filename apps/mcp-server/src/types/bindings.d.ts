@@ -28,4 +28,9 @@ interface CloudflareBindings {
   DATAFORSEO_LOGIN: string;
   DATAFORSEO_PASSWORD: string;
   APIFY_TOKEN: string;
+
+  // Clerk auth (Phase G)
+  CLERK_PUBLISHABLE_KEY: string;
+  CLERK_SECRET_KEY: string;
+  CLERK_WEBHOOK_SECRET: string;
 }

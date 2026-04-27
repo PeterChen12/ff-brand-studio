@@ -20,7 +20,7 @@
  * Phase 4 will inject evaluator-optimizer between workers and adapters.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and, sql as drizzleSql } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
 import {
   products,
@@ -28,6 +28,7 @@ import {
   productVariants,
   sellerProfiles,
   launchRuns,
+  platformListings,
   type Product,
 } from "../db/schema.js";
 import { planSkuLaunch, type LaunchPlatform, type PlannedWork } from "./planner.js";
@@ -114,6 +115,7 @@ export async function runLaunchPipeline(
     throw new Error(`product not found: ${input.product_id}`);
   }
   const product: Product = productRow[0];
+  const tenantId = product.tenantId; // Phase G — every row stamped with this
 
   const refsCount = await db
     .select({ id: productReferences.id })
@@ -131,6 +133,7 @@ export async function runLaunchPipeline(
   const inserted = await db
     .insert(launchRuns)
     .values({
+      tenantId,
       productId: product.id,
       orchestratorModel: "claude-sonnet-4-6",
       status: "pending",
@@ -291,7 +294,7 @@ export async function runLaunchPipeline(
   } else {
     const newVar = await db
       .insert(productVariants)
-      .values({ productId: product.id, color: null, pattern: null })
+      .values({ tenantId, productId: product.id, color: null, pattern: null })
       .returning();
     variantId = newVar[0].id;
     notes.push(`auto-created default product_variant ${variantId}`);
@@ -321,6 +324,7 @@ export async function runLaunchPipeline(
 
     const eo = await runEvaluatorOptimizer({
       db,
+      tenant_id: tenantId,
       variant_id: variantId,
       product_id: product.id,
       product_sku: product.sku,
@@ -380,6 +384,52 @@ export async function runLaunchPipeline(
       notes.push(
         `seo_pipeline → ${seoResult.surfaces.length}/${input.platforms.length} surfaces, ${seoResult.total_cost_cents}¢ (${seoResult.status})`
       );
+
+      // ── G3 — persist platform_listings rows for each surface ─────────────
+      // One row per (variant, surface, language). Re-runs upsert (DO UPDATE)
+      // so the live row always reflects the latest copy + rating.
+      for (const surface of seoResult.surfaces) {
+        try {
+          await db
+            .insert(platformListings)
+            .values({
+              tenantId,
+              variantId,
+              surface: surface.surface,
+              language: surface.language,
+              copy: (surface.copy ?? {}) as Record<string, unknown>,
+              flags: surface.flags as unknown as Record<string, unknown>[],
+              violations: surface.violations as unknown as string[],
+              rating: surface.rating ?? null,
+              iterations: surface.iterations,
+              costCents: Math.round(surface.cost_cents),
+              status: "draft",
+              updatedAt: new Date(),
+            })
+            .onConflictDoUpdate({
+              target: [
+                platformListings.variantId,
+                platformListings.surface,
+                platformListings.language,
+              ],
+              set: {
+                copy: (surface.copy ?? {}) as Record<string, unknown>,
+                flags: surface.flags as unknown as Record<string, unknown>[],
+                violations: surface.violations as unknown as string[],
+                rating: surface.rating ?? null,
+                iterations: surface.iterations,
+                costCents: Math.round(surface.cost_cents),
+                updatedAt: new Date(),
+              },
+            });
+        } catch (persistErr) {
+          notes.push(
+            `platform_listings persist failed for ${surface.surface}:${surface.language} — ${
+              persistErr instanceof Error ? persistErr.message : String(persistErr)
+            }`
+          );
+        }
+      }
       // Honor the run-level cost cap retroactively.
       if (
         input.cost_cap_cents &&

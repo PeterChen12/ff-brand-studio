@@ -21,3 +21,6 @@ inbox/*.md
 inbox/processed/*.md
 !inbox/.gitkeep
 !inbox/processed/.gitkeep
+
+# Phase G — local Clerk creds
+apps/dashboard/.env.local

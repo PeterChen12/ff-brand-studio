@@ -22,6 +22,7 @@ import type { CanonicalAsset } from "../orchestrator/workers/index.js";
 
 export interface AdapterContext {
   db: DbClient;
+  tenant_id: string;
   variant_id: string;
   canonical: CanonicalAsset;
   platform: "amazon" | "shopify";
@@ -70,7 +71,7 @@ function approxFileSize(width: number, height: number, format: string): number {
 }
 
 export async function runAdapter(ctx: AdapterContext): Promise<AdapterResult> {
-  const { db, variant_id, canonical, platform, slot } = ctx;
+  const { db, tenant_id, variant_id, canonical, platform, slot } = ctx;
 
   const specRow = await db
     .select()
@@ -172,6 +173,7 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterResult> {
   const inserted = await db
     .insert(platformAssets)
     .values({
+      tenantId: tenant_id,
       variantId: variant_id,
       platform,
       slot,

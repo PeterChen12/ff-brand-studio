@@ -2,6 +2,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  RedirectToSignIn,
+  OrganizationSwitcher,
+  UserButton,
+  useAuth,
+} from "@clerk/clerk-react";
 import { cn } from "@/lib/cn";
 import { MCP_URL } from "@/lib/config";
 
@@ -30,6 +36,37 @@ type HealthState = "ok" | "degraded" | "error" | "loading";
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  const { isLoaded, isSignedIn } = useAuth();
+
+  // Auth-only routes render their own layout — bypass the Shell entirely.
+  if (pathname.startsWith("/sign-in") || pathname.startsWith("/sign-up")) {
+    return <>{children}</>;
+  }
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen md-surface flex items-center justify-center">
+        <div className="md-typescale-label-small text-on-surface-variant tracking-stamp uppercase">
+          Loading…
+        </div>
+      </div>
+    );
+  }
+
+  if (!isSignedIn) {
+    return <RedirectToSignIn />;
+  }
+
+  return <ShellInner pathname={pathname}>{children}</ShellInner>;
+}
+
+function ShellInner({
+  pathname,
+  children,
+}: {
+  pathname: string;
+  children: React.ReactNode;
+}) {
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -148,10 +185,36 @@ export function Shell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* Footer — single-line service indicator. Detailed metrics live
-            on hover (title attribute) so the sidebar stays focused on nav. */}
+        {/* Tenant + identity — Clerk OrganizationSwitcher acts as the
+            tenant picker; the avatar opens the standard Clerk user menu. */}
+        <div className="px-5 py-4 border-t ff-hairline mt-auto flex items-center gap-3">
+          <OrganizationSwitcher
+            hidePersonal
+            afterCreateOrganizationUrl="/"
+            afterSelectOrganizationUrl="/"
+            appearance={{
+              elements: {
+                organizationSwitcherTrigger:
+                  "flex-1 px-3 py-2 rounded-m3-full hover:bg-surface-container-high transition-colors text-left",
+                organizationPreviewMainIdentifier:
+                  "md-typescale-label-large text-on-surface",
+                organizationPreviewSecondaryIdentifier:
+                  "md-typescale-body-small text-on-surface-variant/70",
+              },
+            }}
+          />
+          <UserButton
+            appearance={{
+              elements: {
+                avatarBox: "h-9 w-9 ring-1 ring-outline-variant",
+              },
+            }}
+          />
+        </div>
+
+        {/* Service indicator — health probe to the Worker. */}
         <div
-          className="px-5 py-4 border-t ff-hairline mt-auto"
+          className="px-5 py-3 border-t ff-hairline"
           title={`MCP Worker: ${health}${pingMs !== null ? ` · ${pingMs}ms` : ""}`}
         >
           <div className="flex items-center gap-2 md-typescale-body-small text-on-surface-variant/80">

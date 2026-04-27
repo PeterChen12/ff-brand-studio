@@ -13,20 +13,119 @@ import {
   products,
   productVariants,
   platformAssets,
+  platformListings,
   sellerProfiles,
   launchRuns,
+  SAMPLE_TENANT_ID,
   type Product,
+  type Tenant,
 } from "./db/schema.js";
-import { desc, sql, eq } from "drizzle-orm";
+import { and, desc, sql, eq, inArray } from "drizzle-orm";
 import { runSeoPipeline, type SeoSurfaceSpec } from "./orchestrator/seo_pipeline.js";
 import { runLaunchPipeline } from "./orchestrator/launch_pipeline.js";
 import type { LaunchPlatform } from "./orchestrator/planner.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { requireTenant, type AuthVars } from "./lib/auth.js";
+import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 
-const app = new Hono<{ Bindings: CloudflareBindings }>();
+const app = new Hono<{
+  Bindings: CloudflareBindings;
+  Variables: Partial<AuthVars>;
+}>();
 
-app.use("*", cors({ origin: "*" }));
+/**
+ * Helper — for any /api/* read endpoint we treat the legacy-demo Sample
+ * tenant as readable to every signed-in tenant (per the locked decision
+ * "Sample Catalog visible via tenant.features.has_sample_access"). So
+ * the visibility filter is `tenant_id IN (currentTenant, SAMPLE_TENANT)`.
+ */
+function visibleTenantIds(tenant: Tenant): string[] {
+  const features = (tenant.features ?? {}) as { has_sample_access?: boolean };
+  const ids = [tenant.id];
+  if (features.has_sample_access && tenant.id !== SAMPLE_TENANT_ID) {
+    ids.push(SAMPLE_TENANT_ID);
+  }
+  return ids;
+}
+
+app.use(
+  "*",
+  cors({
+    origin: "*",
+    allowHeaders: ["Authorization", "Content-Type", "svix-id", "svix-timestamp", "svix-signature"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
+
+// Phase G — Clerk webhook (must come BEFORE requireTenant since it uses
+// svix signature, not a Bearer JWT).
+app.post("/v1/clerk-webhook", handleClerkWebhook);
+
+// Apply auth middleware to /api/* and /v1/* (except open routes already
+// declared above). /health, /sse, /messages, /demo/* stay open for now —
+// /demo/* will be removed by the inbox cleanup agent once dashboard
+// migrates fully to /v1/launches.
+app.use("/api/*", requireTenant);
+app.use("/v1/launches/*", requireTenant);
+app.use("/v1/listings/*", requireTenant);
+
+// G3 — read endpoint for persisted SEO copy. Tenant-scoped.
+app.get("/v1/listings", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const tids = visibleTenantIds(tenant);
+    const variantId = c.req.query("variant_id");
+    const sku = c.req.query("sku");
+
+    if (variantId) {
+      const rows = await db
+        .select()
+        .from(platformListings)
+        .where(
+          and(
+            eq(platformListings.variantId, variantId),
+            inArray(platformListings.tenantId, tids)
+          )
+        )
+        .orderBy(desc(platformListings.updatedAt));
+      return c.json({ listings: rows });
+    }
+
+    if (sku) {
+      const rows = await db
+        .select({
+          id: platformListings.id,
+          variantId: platformListings.variantId,
+          surface: platformListings.surface,
+          language: platformListings.language,
+          copy: platformListings.copy,
+          rating: platformListings.rating,
+          iterations: platformListings.iterations,
+          costCents: platformListings.costCents,
+          status: platformListings.status,
+          updatedAt: platformListings.updatedAt,
+        })
+        .from(platformListings)
+        .leftJoin(productVariants, eq(platformListings.variantId, productVariants.id))
+        .leftJoin(products, eq(productVariants.productId, products.id))
+        .where(
+          and(
+            eq(products.sku, sku),
+            inArray(platformListings.tenantId, tids)
+          )
+        )
+        .orderBy(desc(platformListings.updatedAt));
+      return c.json({ listings: rows });
+    }
+
+    return c.json({ error: "variant_id or sku required" }, 400);
+  } catch (err) {
+    console.error("[/v1/listings]", err);
+    return c.json({ listings: [], error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
 
 // Transport registry — keyed by sessionId so GET /sse and POST /messages share state
 const transports = new Map<string, Transport>();
@@ -141,38 +240,39 @@ app.post("/messages", async (c) => {
 app.get("/api/assets", async (c) => {
   try {
     const db = createDbClient(c.env);
-    const [legacyRows, v2Rows] = await Promise.all([
-      db.select().from(assets).orderBy(desc(assets.createdAt)).limit(50),
-      db
-        .select({
-          id: platformAssets.id,
-          variantId: platformAssets.variantId,
-          platform: platformAssets.platform,
-          slot: platformAssets.slot,
-          r2Url: platformAssets.r2Url,
-          width: platformAssets.width,
-          height: platformAssets.height,
-          format: platformAssets.format,
-          complianceScore: platformAssets.complianceScore,
-          status: platformAssets.status,
-          modelUsed: platformAssets.modelUsed,
-          costCents: platformAssets.costCents,
-          createdAt: platformAssets.createdAt,
-          productId: products.id,
-          sku: products.sku,
-          productNameEn: products.nameEn,
-          productNameZh: products.nameZh,
-          category: products.category,
-          sellerNameEn: sellerProfiles.orgNameEn,
-        })
-        .from(platformAssets)
-        .leftJoin(productVariants, eq(platformAssets.variantId, productVariants.id))
-        .leftJoin(products, eq(productVariants.productId, products.id))
-        .leftJoin(sellerProfiles, eq(products.sellerId, sellerProfiles.id))
-        .orderBy(desc(platformAssets.createdAt))
-        .limit(100),
-    ]);
-    return c.json({ legacy: legacyRows, platformAssets: v2Rows });
+    const tenant = c.get("tenant") as Tenant;
+    const tids = visibleTenantIds(tenant);
+    const v2Rows = await db
+      .select({
+        id: platformAssets.id,
+        variantId: platformAssets.variantId,
+        platform: platformAssets.platform,
+        slot: platformAssets.slot,
+        r2Url: platformAssets.r2Url,
+        width: platformAssets.width,
+        height: platformAssets.height,
+        format: platformAssets.format,
+        complianceScore: platformAssets.complianceScore,
+        status: platformAssets.status,
+        modelUsed: platformAssets.modelUsed,
+        costCents: platformAssets.costCents,
+        createdAt: platformAssets.createdAt,
+        productId: products.id,
+        sku: products.sku,
+        productNameEn: products.nameEn,
+        productNameZh: products.nameZh,
+        category: products.category,
+        sellerNameEn: sellerProfiles.orgNameEn,
+        tenantId: platformAssets.tenantId,
+      })
+      .from(platformAssets)
+      .leftJoin(productVariants, eq(platformAssets.variantId, productVariants.id))
+      .leftJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(sellerProfiles, eq(products.sellerId, sellerProfiles.id))
+      .where(inArray(platformAssets.tenantId, tids))
+      .orderBy(desc(platformAssets.createdAt))
+      .limit(100);
+    return c.json({ legacy: [], platformAssets: v2Rows });
   } catch (err) {
     console.error("[/api/assets]", err);
     return c.json({ legacy: [], platformAssets: [] });
@@ -182,6 +282,8 @@ app.get("/api/assets", async (c) => {
 app.get("/api/costs", async (c) => {
   try {
     const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const tids = visibleTenantIds(tenant);
     const [row] = await db
       .select({
         totalSpend: sql<string>`coalesce(sum(total_cost_usd), 0)`,
@@ -190,7 +292,8 @@ app.get("/api/costs", async (c) => {
         totalGpt: sql<string>`coalesce(sum(gpt_image_2_calls), 0)`,
         totalKling: sql<string>`coalesce(sum(kling_calls), 0)`,
       })
-      .from(runCosts);
+      .from(runCosts)
+      .where(inArray(runCosts.tenantId, tids));
     return c.json({
       totalSpend: Number(row?.totalSpend ?? 0),
       runs: Number(row?.runs ?? 0),
@@ -207,7 +310,14 @@ app.get("/api/costs", async (c) => {
 app.get("/api/runs", async (c) => {
   try {
     const db = createDbClient(c.env);
-    const rows = await db.select().from(runCosts).orderBy(desc(runCosts.runAt)).limit(30);
+    const tenant = c.get("tenant") as Tenant;
+    const tids = visibleTenantIds(tenant);
+    const rows = await db
+      .select()
+      .from(runCosts)
+      .where(inArray(runCosts.tenantId, tids))
+      .orderBy(desc(runCosts.runAt))
+      .limit(30);
     return c.json({ runs: rows });
   } catch (err) {
     console.error("[/api/runs]", err);
@@ -221,6 +331,8 @@ app.get("/api/runs", async (c) => {
 app.get("/api/launches", async (c) => {
   try {
     const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const tids = visibleTenantIds(tenant);
     const rows = await db
       .select({
         id: launchRuns.id,
@@ -238,6 +350,7 @@ app.get("/api/launches", async (c) => {
       })
       .from(launchRuns)
       .leftJoin(products, eq(launchRuns.productId, products.id))
+      .where(inArray(launchRuns.tenantId, tids))
       .orderBy(desc(launchRuns.createdAt))
       .limit(20);
     return c.json({ launches: rows });
@@ -251,6 +364,8 @@ app.get("/api/launches", async (c) => {
 app.get("/api/products", async (c) => {
   try {
     const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const tids = visibleTenantIds(tenant);
     const rows = await db
       .select({
         id: products.id,
@@ -266,9 +381,12 @@ app.get("/api/products", async (c) => {
         sellerNameEn: sellerProfiles.orgNameEn,
         sellerNameZh: sellerProfiles.orgNameZh,
         createdAt: products.createdAt,
+        tenantId: products.tenantId,
+        isSample: sql<boolean>`${products.tenantId} = ${SAMPLE_TENANT_ID}`,
       })
       .from(products)
       .leftJoin(sellerProfiles, eq(products.sellerId, sellerProfiles.id))
+      .where(inArray(products.tenantId, tids))
       .orderBy(desc(products.createdAt))
       .limit(100);
     return c.json({ products: rows });
@@ -336,6 +454,7 @@ app.post("/demo/seo-preview", async (c) => {
   // touch the DB — the pipeline only reads nameEn, nameZh, category.
   const synthProduct: Product = {
     id: "00000000-0000-0000-0000-000000000000",
+    tenantId: SAMPLE_TENANT_ID, // Phase G — synth path attributes to sample tenant
     sellerId: "00000000-0000-0000-0000-000000000000",
     sku: `DEMO-${Date.now()}`,
     nameEn: p.product_name_en,

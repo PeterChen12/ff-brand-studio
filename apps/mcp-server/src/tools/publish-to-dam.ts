@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PublishToDAMInput } from "@ff/types";
 import { createDbClient } from "../db/client.js";
-import { assets } from "../db/schema.js";
+import { assets, SAMPLE_TENANT_ID } from "../db/schema.js";
 
 export function registerPublishToDAM(
   server: McpServer,
@@ -17,6 +17,9 @@ export function registerPublishToDAM(
       const publicUrl = `${env.R2_PUBLIC_URL.replace(/\/$/, "")}/${params.r2_key}`;
 
       await db.insert(assets).values({
+        // Phase G — legacy v1 MCP path, attributed to the sample tenant
+        // until Phase L tenant-aware MCP arrives.
+        tenantId: SAMPLE_TENANT_ID,
         r2Key: params.r2_key,
         assetType: params.asset_type,
         campaign: params.metadata.campaign,

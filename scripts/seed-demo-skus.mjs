@@ -99,23 +99,27 @@ async function main() {
       `;
       console.log(`✓ updated seller ${sellerId}`);
     } else {
+      // Phase G — every row carries tenant_id; demo seller goes to the
+      // sample-catalog tenant.
+      const SAMPLE_TENANT_ID = "00000000-0000-0000-0000-000000000001";
       const ins = await sql`
-        INSERT INTO seller_profiles (org_name_en, org_name_zh, contact_email, brand_voice, amazon_seller_id)
-        VALUES (${SELLER.org_name_en}, ${SELLER.org_name_zh}, ${SELLER.contact_email}, ${sql.json(SELLER.brand_voice)}, ${SELLER.amazon_seller_id})
+        INSERT INTO seller_profiles (tenant_id, org_name_en, org_name_zh, contact_email, brand_voice, amazon_seller_id)
+        VALUES (${SAMPLE_TENANT_ID}, ${SELLER.org_name_en}, ${SELLER.org_name_zh}, ${SELLER.contact_email}, ${sql.json(SELLER.brand_voice)}, ${SELLER.amazon_seller_id})
         RETURNING id
       `;
       sellerId = ins[0].id;
       console.log(`✓ inserted seller ${sellerId}`);
     }
 
+    const SAMPLE_TENANT_ID = "00000000-0000-0000-0000-000000000001";
     // Products: idempotent on the unique sku column.
     for (const p of PRODUCTS) {
       const upserted = await sql`
         INSERT INTO products (
-          seller_id, sku, name_en, name_zh, category,
+          tenant_id, seller_id, sku, name_en, name_zh, category,
           dimensions, materials, colors_hex
         ) VALUES (
-          ${sellerId}, ${p.sku}, ${p.name_en}, ${p.name_zh}, ${p.category},
+          ${SAMPLE_TENANT_ID}, ${sellerId}, ${p.sku}, ${p.name_en}, ${p.name_zh}, ${p.category},
           ${sql.json(p.dimensions)}, ${p.materials}, ${p.colors_hex}
         )
         ON CONFLICT (sku) DO UPDATE SET

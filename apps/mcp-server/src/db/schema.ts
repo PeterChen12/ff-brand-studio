@@ -9,10 +9,31 @@ import {
   boolean,
   primaryKey,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
+
+// ── Phase G: tenancy ───────────────────────────────────────────────────────
+
+export const tenants = pgTable(
+  "tenants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clerkOrgId: text("clerk_org_id").notNull().unique(),
+    name: text("name").notNull(),
+    stripeCustomerId: text("stripe_customer_id"),
+    walletBalanceCents: integer("wallet_balance_cents").notNull().default(500),
+    plan: text("plan").notNull().default("free"),
+    features: jsonb("features").notNull().default({}),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (t) => ({
+    clerkOrgIdx: index("idx_tenants_clerk_org_id").on(t.clerkOrgId),
+  })
+);
 
 export const assets = pgTable("assets", {
   id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   r2Key: text("r2_key").notNull().unique(),
   assetType: text("asset_type").notNull(),
   campaign: text("campaign"),
@@ -25,6 +46,7 @@ export const assets = pgTable("assets", {
 
 export const runCosts = pgTable("run_costs", {
   id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   campaign: text("campaign"),
   runAt: timestamp("run_at").defaultNow(),
   gptImage2Calls: integer("gpt_image_2_calls").default(0),
@@ -44,6 +66,7 @@ export type NewRunCost = typeof runCosts.$inferInsert;
 
 export const sellerProfiles = pgTable("seller_profiles", {
   id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   orgNameEn: text("org_name_en").notNull(),
   orgNameZh: text("org_name_zh"),
   contactEmail: text("contact_email"),
@@ -54,6 +77,7 @@ export const sellerProfiles = pgTable("seller_profiles", {
 
 export const products = pgTable("products", {
   id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   sellerId: uuid("seller_id")
     .notNull()
     .references(() => sellerProfiles.id, { onDelete: "cascade" }),
@@ -72,6 +96,7 @@ export const products = pgTable("products", {
 
 export const productReferences = pgTable("product_references", {
   id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   productId: uuid("product_id")
     .notNull()
     .references(() => products.id, { onDelete: "cascade" }),
@@ -83,6 +108,7 @@ export const productReferences = pgTable("product_references", {
 
 export const productVariants = pgTable("product_variants", {
   id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   productId: uuid("product_id")
     .notNull()
     .references(() => products.id, { onDelete: "cascade" }),
@@ -95,6 +121,7 @@ export const platformAssets = pgTable(
   "platform_assets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
     variantId: uuid("variant_id")
       .notNull()
       .references(() => productVariants.id, { onDelete: "cascade" }),
@@ -153,6 +180,7 @@ export const platformSpecs = pgTable(
 
 export const launchRuns = pgTable("launch_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   productId: uuid("product_id")
     .notNull()
     .references(() => products.id, { onDelete: "cascade" }),
@@ -179,3 +207,116 @@ export type PlatformSpec = typeof platformSpecs.$inferSelect;
 export type NewPlatformSpec = typeof platformSpecs.$inferInsert;
 export type LaunchRun = typeof launchRuns.$inferSelect;
 export type NewLaunchRun = typeof launchRuns.$inferInsert;
+
+// ── Phase G: SEO copy persistence + wallet + audit ────────────────────────
+
+export const platformListings = pgTable(
+  "platform_listings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    variantId: uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id, { onDelete: "cascade" }),
+    surface: text("surface").notNull(),
+    language: text("language").notNull(),
+    copy: jsonb("copy").notNull(),
+    flags: jsonb("flags").notNull().default([]),
+    violations: jsonb("violations").notNull().default([]),
+    rating: text("rating"),
+    iterations: integer("iterations").notNull().default(1),
+    costCents: integer("cost_cents").notNull().default(0),
+    status: text("status").notNull().default("draft"),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (t) => ({
+    uniqVariantSurfaceLang: uniqueIndex("uniq_variant_surface_lang").on(
+      t.variantId,
+      t.surface,
+      t.language
+    ),
+    tenantIdx: index("idx_listings_tenant").on(t.tenantId),
+  })
+);
+
+export const platformListingsVersions = pgTable(
+  "platform_listings_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    parentListingId: uuid("parent_listing_id")
+      .notNull()
+      .references(() => platformListings.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    variantId: uuid("variant_id").notNull(),
+    surface: text("surface").notNull(),
+    language: text("language").notNull(),
+    copy: jsonb("copy").notNull(),
+    flags: jsonb("flags").notNull().default([]),
+    violations: jsonb("violations").notNull().default([]),
+    rating: text("rating"),
+    iterations: integer("iterations").notNull().default(1),
+    costCents: integer("cost_cents").notNull().default(0),
+    status: text("status").notNull(),
+    version: integer("version").notNull(),
+    archivedAt: timestamp("archived_at").defaultNow(),
+  },
+  (t) => ({
+    parentIdx: index("idx_listings_versions_parent").on(
+      t.parentListingId,
+      t.version
+    ),
+  })
+);
+
+export const walletLedger = pgTable(
+  "wallet_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    deltaCents: integer("delta_cents").notNull(),
+    reason: text("reason").notNull(),
+    referenceType: text("reference_type"),
+    referenceId: uuid("reference_id"),
+    balanceAfterCents: integer("balance_after_cents").notNull(),
+    at: timestamp("at").defaultNow(),
+  },
+  (t) => ({
+    tenantAtIdx: index("idx_wallet_ledger_tenant_at").on(t.tenantId, t.at),
+  })
+);
+
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    actor: text("actor"),
+    action: text("action").notNull(),
+    targetType: text("target_type"),
+    targetId: uuid("target_id"),
+    metadata: jsonb("metadata").notNull().default({}),
+    at: timestamp("at").defaultNow(),
+  },
+  (t) => ({
+    tenantAtIdx: index("idx_audit_events_tenant_at").on(t.tenantId, t.at),
+    actionIdx: index("idx_audit_events_action").on(t.action, t.at),
+  })
+);
+
+export type Tenant = typeof tenants.$inferSelect;
+export type NewTenant = typeof tenants.$inferInsert;
+export type PlatformListing = typeof platformListings.$inferSelect;
+export type NewPlatformListing = typeof platformListings.$inferInsert;
+export type PlatformListingVersion = typeof platformListingsVersions.$inferSelect;
+export type WalletLedgerEntry = typeof walletLedger.$inferSelect;
+export type NewWalletLedgerEntry = typeof walletLedger.$inferInsert;
+export type AuditEvent = typeof auditEvents.$inferSelect;
+export type NewAuditEvent = typeof auditEvents.$inferInsert;
+
+/**
+ * Hard-coded UUID for the legacy-demo "Sample Catalog" tenant. Every row
+ * created before Phase G is owned by this tenant; new signups also see
+ * it as a read-only sample via tenant.features.has_sample_access.
+ */
+export const SAMPLE_TENANT_ID = "00000000-0000-0000-0000-000000000001";

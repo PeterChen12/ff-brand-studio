@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Shell } from "@/components/layout/shell";
-import { M3Register } from "@/components/m3-register";
+import { ClerkAppShell } from "@/components/layout/clerk-app-shell";
 
 export const metadata: Metadata = {
   title: "FF Brand Studio · Listing Ops",
@@ -13,8 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <M3Register />
-        <Shell>{children}</Shell>
+        <ClerkAppShell>{children}</ClerkAppShell>
       </body>
     </html>
   );

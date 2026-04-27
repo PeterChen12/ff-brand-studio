@@ -1,6 +1,60 @@
-# Session State — 2026-04-27 (Frontend UX iteration F1-F5 done)
+# Session State — 2026-04-27 (Phase G shipped — auth + tenancy)
 
-A compact catch-up doc so the next session can resume in <5 min. For deeper context read in this order: HANDOFF.md → V2_STATUS.md → V2_FINAL_AUDIT.md → V2_OPTIMIZATION_PLAN.md → docs/RUNBOOK.md.
+A compact catch-up doc so the next session can resume in <5 min. For deeper context read in this order: HANDOFF.md → V2_STATUS.md → V2_FINAL_AUDIT.md → V2_OPTIMIZATION_PLAN.md → docs/RUNBOOK.md → plans/active-plan-saas-G.md.
+
+---
+
+## Phase G — Foundation (auth + tenancy + persistence) — ✅ shipped 2026-04-27
+
+Plan: `plans/active-plan-saas-G.md`.
+
+**Schema:** migration `apps/mcp-server/drizzle/0002_phase_g_tenancy.sql`
+applied to prod (170.9.252.93:5433). New tables: `tenants`,
+`platform_listings`, `platform_listings_versions`, `wallet_ledger`,
+`audit_events`. `tenant_id NOT NULL` added to all 8 domain tables.
+Backfill assigned every existing row to the `legacy-demo` Sample
+Catalog tenant (UUID `00000000-0000-0000-0000-000000000001`).
+
+**Auth:** Clerk app `app_3CxVYIB6FbIopFz9CWga2j3inuq` (instance
+`pro-cattle-88`) live in test mode. Three secrets pushed to the Worker:
+`CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `CLERK_WEBHOOK_SECRET`.
+Webhook subscribed to `organization.*` + `user.*` +
+`organizationMembership.*` events at `/v1/clerk-webhook`.
+
+**Worker auth:** `requireTenant` Hono middleware (`src/lib/auth.ts`)
+verifies the Clerk session JWT via `@clerk/backend.verifyToken`,
+extracts `org_id`, calls `ensureTenantForOrg` (auto-creates tenant +
+$5 signup-bonus ledger row + `tenant.created` audit event). Applied
+to `/api/*`, `/v1/launches/*`, `/v1/listings/*`. `/health`, `/sse`,
+`/messages`, `/v1/clerk-webhook`, `/demo/*` stay open.
+
+**Visibility:** Sample Catalog visible to every signed-in tenant via
+`tenant.features.has_sample_access` (default true). Read endpoints
+filter `tenant_id IN (currentTenant, SAMPLE_TENANT)`.
+
+**Dashboard:** `<ClerkProvider>` from `@clerk/clerk-react` (NOT
+`@clerk/nextjs` — Server Actions break static export). Loaded
+client-only via `next/dynamic({ ssr: false })` in
+`components/layout/clerk-app-shell.tsx` so the Clerk bundle never
+runs during the prerender pass. Each page is a thin
+`"use client"` wrapper that dynamic-imports its `_client.tsx`
+sibling for the same reason. Sign-in / sign-up at `/sign-in` and
+`/sign-up`; Shell uses `useAuth().isSignedIn` to gate everything
+else and falls back to `<RedirectToSignIn />`.
+
+**SEO persistence:** `runLaunchPipeline` upserts one row per surface
+into `platform_listings` keyed by `(variant_id, surface, language)`.
+Read endpoint `GET /v1/listings?variant_id=...` or `?sku=...`.
+
+**Wallet + audit:** helpers in `src/lib/wallet.ts` and
+`src/lib/audit.ts`. Integrity script
+`scripts/audit-wallet-integrity.mjs` runs clean (0 drift, 1 tenant).
+Wiring into `runLaunchPipeline` deferred to Phase H1 (pairs with the
+pre-flight cost prediction).
+
+**Live URL:** sign-in flow at
+`https://image-generation.buyfishingrod.com/sign-in` after the next
+deploy lands.
 
 ---
 
