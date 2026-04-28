@@ -54,4 +54,11 @@ interface CloudflareBindings {
 
   // Phase K3 — Resend email API key
   RESEND_API_KEY?: string;
+
+  // Phase M1 — Upstash Redis (rate limiting)
+  UPSTASH_REDIS_REST_URL?: string;
+  UPSTASH_REDIS_REST_TOKEN?: string;
+
+  // Phase M3 — Sentry DSN (Worker error reporting)
+  SENTRY_DSN?: string;
 }

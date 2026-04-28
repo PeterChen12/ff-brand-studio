@@ -32,6 +32,7 @@ import { predictLaunchCost, PRODUCT_ONBOARD_CENTS } from "./orchestrator/cost.js
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { requireTenant, type AuthVars } from "./lib/auth.js";
+import { rateLimitMiddleware } from "./lib/rate-limit.js";
 import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
 import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
@@ -181,6 +182,27 @@ app.use("/v1/api-keys", requireTenant);
 app.use("/v1/api-keys/*", requireTenant);
 app.use("/v1/webhooks", requireTenant);
 app.use("/v1/webhooks/*", requireTenant);
+app.use("/v1/tenant/*", requireTenant);
+
+// Phase M1 — rate limit AFTER auth so we have tenant context to scope
+// counters by. Open routes (/v1/clerk-webhook, /v1/stripe-webhook,
+// /v1/openapi.yaml, /docs) bypass naturally since they're not under
+// requireTenant.
+app.use("/api/*", rateLimitMiddleware);
+app.use("/v1/launches", rateLimitMiddleware);
+app.use("/v1/launches/*", rateLimitMiddleware);
+app.use("/v1/listings/*", rateLimitMiddleware);
+app.use("/v1/products", rateLimitMiddleware);
+app.use("/v1/products/*", rateLimitMiddleware);
+app.use("/v1/me/*", rateLimitMiddleware);
+app.use("/v1/billing/*", rateLimitMiddleware);
+app.use("/v1/audit", rateLimitMiddleware);
+app.use("/v1/assets/*", rateLimitMiddleware);
+app.use("/v1/skus/*", rateLimitMiddleware);
+app.use("/v1/api-keys", rateLimitMiddleware);
+app.use("/v1/api-keys/*", rateLimitMiddleware);
+app.use("/v1/webhooks", rateLimitMiddleware);
+app.use("/v1/webhooks/*", rateLimitMiddleware);
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -915,6 +937,25 @@ app.get("/v1/listings/:id", async (c) => {
   }
 });
 
+// Phase M5 — per-tenant data export.
+app.get("/v1/tenant/export", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const { buildTenantExport } = await import("./lib/tenant-export.js");
+    const zip = await buildTenantExport(db, { tenantId: tenant.id });
+    return new Response(zip, {
+      headers: {
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename="tenant-${tenant.id.slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.zip"`,
+      },
+    });
+  } catch (err) {
+    console.error("[/v1/tenant/export]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // Phase L4 — webhook subscription CRUD.
 app.post("/v1/webhooks", async (c) => {
   try {
@@ -1347,13 +1388,45 @@ app.get("/v1/audit", async (c) => {
       filters.push(eq(auditEvents.actor, actorParam));
     }
 
+    const format = c.req.query("format");
+    const isCsv = format === "csv";
+    const fetchLimit = isCsv ? Math.min(limit * 50, 10_000) : limit + 1;
+
     const rows = await db
       .select()
       .from(auditEvents)
       .where(and(...filters))
       .orderBy(desc(auditEvents.at))
-      .limit(limit + 1)
+      .limit(fetchLimit)
       .offset(offset);
+
+    if (isCsv) {
+      const cols = ["id", "at", "actor", "action", "target_type", "target_id", "metadata"];
+      const escape = (s: unknown): string => {
+        if (s === null || s === undefined) return "";
+        const str = typeof s === "string" ? s : JSON.stringify(s);
+        if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+        return str;
+      };
+      const lines = [cols.join(",")];
+      for (const r of rows) {
+        lines.push([
+          escape(r.id),
+          escape(r.at?.toISOString() ?? ""),
+          escape(r.actor),
+          escape(r.action),
+          escape(r.targetType),
+          escape(r.targetId),
+          escape(r.metadata),
+        ].join(","));
+      }
+      return new Response(lines.join("\n"), {
+        headers: {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="audit-${tenant.id.slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.csv"`,
+        },
+      });
+    }
 
     const hasMore = rows.length > limit;
     return c.json({

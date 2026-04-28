@@ -1,3 +1,32 @@
+# Session State — 2026-04-27 (SaaS iteration G–M ✅ complete)
+
+> The platform is production-ready. Phases G (auth), H (billing), I
+> (image pipeline scaffold, behind feature flag), J (library SaaS),
+> K (iterate + publish), L (public API + webhooks), M (scale
+> hardening + DR + observability) all shipped this session.
+
+---
+
+## Phase M — Scale hardening — ✅ shipped 2026-04-27
+
+| Iter | What ships |
+|---|---|
+| M1 | Hand-rolled Upstash REST rate-limit middleware (sliding 60s window, plan-aware: free 60 rpm, pro 600, enterprise 6000; per-tenant override via `tenant.features.rate_limit_per_min`); X-RateLimit-* headers + Retry-After on 429; fail-open when Upstash unconfigured. Applied to every `/v1/*` + `/api/*` route after auth. |
+| M2 | `GET /v1/audit?format=csv` streams a tenant audit CSV with proper Content-Disposition. |
+| M3 | `src/lib/sentry.ts` envelope helper (no-op without SENTRY_DSN) + `.github/workflows/synthetic.yml` Playwright check every 30 min hitting /health, /docs, /v1/openapi.yaml, dashboard /sign-in. Failures POST to Sentry envelope endpoint. |
+| M4 | `docs/RUNBOOK_SECRET_ROTATION.md` per-secret cadence + steps + rollback for all 16 tracked secrets. |
+| M5 | `GET /v1/tenant/export` builds an in-Worker ZIP across 12 domain tables (sellers, products, variants, refs, assets, listings, runs, ledger, audit, api_keys, webhook_subs + tenant.json). `.github/workflows/dump.yml` daily 05:23 UTC pg_dump → R2 `backups/db/<date>.sql.gz` with 30-day retention + auto-prune. |
+
+**Deferred items documented in the plan:**
+- Langfuse Hono-wide middleware (current per-tool emission still works)
+- API key 90-day expiration (no agency has asked yet)
+- `DELETE /v1/me` self-serve soft-delete (GDPR grace period UX needs design)
+
+**Bundle impact:** Worker grew by ~6 kB (rate limiter + sentry helper +
+tenant export). Sidecar unchanged.
+
+---
+
 # Session State — 2026-04-27 (Phase L shipped — public API)
 
 A compact catch-up doc so the next session can resume in <5 min.

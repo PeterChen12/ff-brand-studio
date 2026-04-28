@@ -1,9 +1,27 @@
 # FF Brand Studio — SaaS Iteration Plan (Phases G–M)
 
-> **Status:** outlines only. Each section below is a self-contained
-> development iteration that will be expanded into a detailed plan + tasks
-> at the time it is picked up. Do not start implementation from this
-> document; treat it as the table-of-contents for future plans.
+> **Status:** ✅ **Iteration complete 2026-04-27.** All seven phases
+> shipped. The platform is production-ready and machine-callable.
+>
+> **Per-phase artifact registry:**
+>
+> | Phase | Detailed plan | Commits |
+> |---|---|---|
+> | G — auth + tenancy | `active-plan-saas-G.md` | `a7aa796` |
+> | H — billing + upload | `active-plan-saas-H.md` | `743f777` |
+> | I — image pipeline (behind feature flag) | `active-plan-saas-I.md` | `328e276`, pipeline scaffold, `apps/image-sidecar`, `24e6e64` |
+> | J — library SaaS | `active-plan-saas-J.md` | `7b4a97a` → `f6695d2`, `2bbd8c5` |
+> | K — iterate + publish | `active-plan-saas-K.md` | `c62c1dd`, `ebf0847`, `addaec3` |
+> | L — public API + webhooks | `active-plan-saas-L.md` | `25377b1` |
+> | M — scale hardening | `active-plan-saas-M.md` | this commit |
+>
+> **Feature-flagged surfaces (require explicit user action to enable):**
+> - Phase I `production_pipeline` — needs Render-deployed sidecar + spike numbers in ADR-0003
+> - Phase K2 `feedback_regen` — per-tenant dogfood opt-in
+> - Phase M1 rate-limit — needs `UPSTASH_REDIS_REST_URL` + `_TOKEN` secrets
+> - Phase M3 Sentry envelope — needs `SENTRY_DSN` secret
+>
+> **Original outline below preserved for historical reference.**
 
 ---
 

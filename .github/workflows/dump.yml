@@ -1,0 +1,77 @@
+name: postgres-dump
+
+# Phase M5 — daily compressed pg_dump → R2.
+# Retention: keep 30 most-recent dumps in R2 (`backups/db/yyyy-mm-dd.sql.gz`).
+# Pruning is a separate job that runs after the dump succeeds.
+
+on:
+  schedule:
+    - cron: "23 5 * * *"  # 05:23 UTC daily — off-peak everywhere
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PGHOST: ${{ secrets.PGHOST }}
+      PGPORT: ${{ secrets.PGPORT }}
+      PGUSER: ${{ secrets.PGUSER }}
+      PGPASSWORD: ${{ secrets.PGPASSWORD }}
+      PGDATABASE: ${{ secrets.PGDATABASE }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install postgresql-client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client gzip
+
+      - name: install awscli (S3-compatible R2 upload)
+        run: |
+          pip install --user --upgrade awscli
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: dump
+        run: |
+          set -e
+          STAMP=$(date -u +%Y-%m-%d)
+          OUT="dump-${STAMP}.sql.gz"
+          pg_dump \
+            --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" \
+            --dbname="$PGDATABASE" \
+            --format=plain --no-owner --no-privileges \
+            | gzip -9 > "$OUT"
+          ls -lh "$OUT"
+          echo "OUT=$OUT" >> $GITHUB_ENV
+          echo "STAMP=$STAMP" >> $GITHUB_ENV
+
+      - name: upload to R2
+        run: |
+          aws --endpoint-url="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+              s3 cp "$OUT" "s3://${R2_BUCKET}/backups/db/${STAMP}.sql.gz"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+
+      - name: prune old dumps (keep 30)
+        run: |
+          aws --endpoint-url="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+              s3 ls "s3://${R2_BUCKET}/backups/db/" \
+              | awk '{print $4}' | sort -r | tail -n +31 \
+              | while read OLD; do
+                  if [ -n "$OLD" ]; then
+                    echo "pruning $OLD"
+                    aws --endpoint-url="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+                        s3 rm "s3://${R2_BUCKET}/backups/db/$OLD"
+                  fi
+                done
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
