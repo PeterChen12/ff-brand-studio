@@ -1,9 +1,108 @@
-# Session State — 2026-04-27 (SaaS iteration G–M ✅ complete)
+# Session State — 2026-04-27 (SaaS iteration G–O ✅ complete)
 
-> The platform is production-ready. Phases G (auth), H (billing), I
-> (image pipeline scaffold, behind feature flag), J (library SaaS),
-> K (iterate + publish), L (public API + webhooks), M (scale
-> hardening + DR + observability) all shipped this session.
+> The platform is production-ready and self-serve. Phases G (auth),
+> H (billing), I (image pipeline scaffold, behind feature flag),
+> J (library SaaS), K (iterate + publish), L (public API + webhooks),
+> M (scale hardening + DR + observability), N (self-serve settings
+> UI), O (launch wizard with live cost preview) all shipped this
+> session. AWS infrastructure for the image-sidecar deployed; the
+> dashboard runtime crash patched.
+
+---
+
+## Live infrastructure
+
+| Surface | URL | Notes |
+|---|---|---|
+| Dashboard | https://image-generation.buyfishingrod.com | Cloudflare Pages, auto-deploys on push to master |
+| MCP Worker | https://ff-brand-studio-mcp.creatorain.workers.dev | Hono, all `/v1/*` endpoints |
+| OpenAPI 3.1 | …/v1/openapi.yaml + …/docs (Redoc) | Public, no auth |
+| Image sidecar | https://mmwz2czd99.us-east-1.awsapprunner.com | App Runner, 0.25 vCPU / 0.5 GB, ~$5/mo idle |
+| ECR repo | `590183723867.dkr.ecr.us-east-1.amazonaws.com/ff-brand-studio/image-sidecar` | Auto-built by `.github/workflows/sidecar.yml` |
+| Postgres | 170.9.252.93:5433/ff_brand_studio | Self-hosted, 6 phases of migrations applied |
+
+---
+
+## Phase O — Launch wizard polish — ✅ shipped 2026-04-27
+
+Single-screen wizard with debounced live cost preview against
+`POST /v1/launches/preview`, wallet-aware Launch button (insufficient
+balance shows a "Top up wallet (X¢ short)" link to /billing instead
+of failing on submit), and post-launch routing to
+`/library?q=<sku>` so operators land on their just-shipped assets
+in one click. Switched product fetch from `/api/products` to the
+cursor-paginated `/v1/products?limit=50`.
+
+## Phase N — Self-serve Settings — ✅ shipped 2026-04-27
+
+`/settings` route with three tabs:
+- **API keys**: issue (modal show-once with copy + curl snippet) /
+  list / revoke against L1 backend.
+- **Webhooks**: subscribe with event multi-select + show-once HMAC
+  secret + verification snippet / list / disable.
+- **Tenant**: brand color (used in I4 composites + Shopify banner),
+  default platforms, A+ comparison-grid feature toggle, rate-limit
+  override, read-only operator-flag visibility, tenant-data-export
+  download via new `useApiDownload()` hook (Bearer-aware blob fetch).
+
+Worker `PATCH /v1/tenant` validated against zod schema; refuses
+operator-only flags. Pipeline reads `ctx.features.brand_hex` and
+threads it into composite + banner generation.
+
+## Hosting bug fix — `@clerk/clerk-react` patch
+
+Root cause: 5.61.x compiles `r7.setPackageName({packageName})` with
+the `packageName` shorthand referencing an undefined identifier.
+Reproduced on 5.61.3 and 5.61.6; the package itself is deprecated
+(`@clerk/react@6` is the v6 successor with breaking API changes
+we deferred).
+
+Fix: post-build script
+`apps/dashboard/scripts/patch-clerk-package-name.mjs` regex-replaces
+`<id>.setPackageName({packageName})` → `<id>.setPackageName({packageName:"@clerk/clerk-react"})`.
+Wired as `postbuild` in `apps/dashboard/package.json`. Pattern is
+unique to Clerk's IIFE so collateral damage is zero.
+
+## AWS sidecar deploy — image-sidecar on App Runner
+
+Pre-reqs provisioned in account 590183723867 (us-east-1):
+- ECR repo `ff-brand-studio/image-sidecar`
+- IAM role `AppRunnerECRAccessRole` (with `AWSAppRunnerServicePolicyForECRAccess`)
+- IAM role `AppRunnerInstanceRole`
+- App Runner service `ff-image-sidecar` (auto-deploys on ECR push)
+- Worker secrets `IMAGE_SIDECAR_URL` + `IMAGE_SIDECAR_SECRET` set
+
+Build pipeline: `.github/workflows/sidecar.yml` triggers on
+`apps/image-sidecar/**` changes, builds `linux/amd64` image with
+buildx GHA cache, pushes `:<sha>` + `:latest` tags. App Runner pulls
+from ECR automatically.
+
+Cost: ~$5/mo idle, ~$15-20/mo if the production_pipeline spike runs
+in earnest. Cost-watch agent (`trig_01R4QqcC9sbExVTw4SfQ23Uw`) audits
+weekly, opens an issue if peak ActiveInstances > 1.
+
+---
+
+## Cleanup deltas this session
+
+- Removed `@cloudflare/next-on-pages` dep (deprecated; we deploy
+  via `wrangler pages deploy` directly)
+- Removed `@clerk/nextjs` dep (unused after Phase G migration to
+  `@clerk/clerk-react`)
+- Onboarding banner on `/` upgraded from single-step CTA to a
+  3-step "Add product → Launch → Inspect+ship" card
+
+---
+
+## Remaining user-side actions
+
+| Action | Where | Why |
+|---|---|---|
+| Run Phase I 3-SKU spike | `docs/RUNBOOK_PHASE_I_SPIKE.md` | Fill ADR-0003 spike-numbers table; agent checks May 12 |
+| Create 4 Stripe Price IDs ($10/$25/$50/$100) | Stripe dashboard → wrangler secret put | Wallet top-up checkout works dark until set |
+| Set Upstash Redis secrets | `docs/RUNBOOK_FEATURE_FLAGS.md` § Phase M1 | Enables rate limiting (currently fail-open) |
+| Set SENTRY_DSN | `docs/RUNBOOK_FEATURE_FLAGS.md` § Phase M3 | Worker errors + synthetic check failures stay silent without it |
+| Delete Amplify app `d1a431ll6nyfk4` | `aws amplify delete-app --app-id d1a431ll6nyfk4` | Created during v1, never used; unused infra |
 
 ---
 

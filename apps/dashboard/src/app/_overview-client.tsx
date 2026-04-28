@@ -350,25 +350,76 @@ function LaunchRowItem({
 
 function FirstLaunchCTA() {
   return (
-    <div className="md-surface-container-low border border-dashed border-outline-variant rounded-m3-lg p-10 text-center md-fade-in">
-      <div className="ff-stamp-label mb-3">No launches yet · 暂无</div>
+    <div className="md-surface-container-low border border-dashed border-outline-variant rounded-m3-lg p-8 md-fade-in">
+      <div className="ff-stamp-label mb-3">Get started · 三步上手</div>
       <h3 className="md-typescale-headline-small text-on-surface mb-2">
-        Run your first launch
+        Three steps to your first SKU
       </h3>
-      <p className="md-typescale-body-medium text-on-surface-variant max-w-md mx-auto mb-6">
-        Pick one of the seeded SKUs in the launch wizard. Dry-run keeps
-        image-gen cost at zero and produces real bilingual SEO copy in ~30
-        seconds.
+      <p className="md-typescale-body-medium text-on-surface-variant max-w-xl mb-6">
+        Each step is reversible. Dry runs are free of FAL spend. Sample
+        catalog SKUs (fishing rods) are visible until you onboard your own.
       </p>
+      <ol className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+        <OnboardStep
+          n="01"
+          title="Add a product"
+          sub="Drop reference images + name + kind"
+          href="/products/new"
+          cta="Add product →"
+        />
+        <OnboardStep
+          n="02"
+          title="Launch"
+          sub="Pick platforms + dry/full + see live cost"
+          href="/launch"
+          cta="Open wizard →"
+        />
+        <OnboardStep
+          n="03"
+          title="Inspect + ship"
+          sub="Edit listings, regen images, export ZIP"
+          href="/library"
+          cta="Open library →"
+        />
+      </ol>
+      <p className="md-typescale-body-small text-on-surface-variant mt-4">
+        Need agency-side automation? Issue an API key in{" "}
+        <Link href="/settings" className="text-primary underline">
+          /settings
+        </Link>
+        .
+      </p>
+    </div>
+  );
+}
+
+function OnboardStep({
+  n,
+  title,
+  sub,
+  href,
+  cta,
+}: {
+  n: string;
+  title: string;
+  sub: string;
+  href: string;
+  cta: string;
+}) {
+  return (
+    <div className="rounded-m3-md md-surface-container border ff-hairline px-4 py-4 flex flex-col gap-2">
+      <span className="ff-stamp-label text-ff-vermilion-deep">{n}</span>
+      <div>
+        <div className="md-typescale-title-small text-on-surface">{title}</div>
+        <div className="md-typescale-body-small text-on-surface-variant mt-0.5">
+          {sub}
+        </div>
+      </div>
       <Link
-        href="/launch"
-        className={[
-          "inline-flex items-center gap-2 px-6 h-11 rounded-m3-full",
-          "bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2",
-          "md-typescale-label-large transition-shadow duration-m3-short4 ease-m3-emphasized",
-        ].join(" ")}
+        href={href}
+        className="md-typescale-label-medium text-primary hover:underline mt-auto"
       >
-        Open Launch wizard →
+        {cta}
       </Link>
     </div>
   );
