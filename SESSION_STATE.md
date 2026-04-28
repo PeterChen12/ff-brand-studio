@@ -412,7 +412,7 @@ preserved at `plans/active-plan-v1-bootstrap.md`.
 
 1. **Phase 2 real generators** — fal.ai Kontext + Nano Banana Pro + FLUX.2 LoRA wiring at `apps/mcp-server/src/orchestrator/workers/{white_bg,lifestyle,variant,video}.ts`. Currently all stubs returning placeholder R2 URLs. Estimate ~1.5 weeks. Blocks real image generation in production.
 
-2. **Frontend redesign per playbook** — paused mid-flight when user pivoted to deploy audit. Aesthetic direction committed (cross-border atelier: Fraunces + Geist + JetBrains Mono, vermilion saffron + jade accents, hairline borders, customs-stamp motifs). Implementation halted before any files were written. References: `Desktop/FF_DASHBOARD_BUILD_PLAYBOOK.md`. Next step is invoking `frontend-design` skill again with the same brief.
+2. **Frontend redesign per playbook** — DONE. Cross-border atelier aesthetic (Fraunces + Geist + JetBrains Mono, vermilion #c4392b primary, jade tertiary, saffron/amber accents, hairline borders, `ff-stamp-diag` customs-stamp motifs) shipped as M3 design tokens in `apps/dashboard/src/app/globals.css`. Folded into Phases F/J/N/O alongside feature work. `Desktop/FF_DASHBOARD_BUILD_PLAYBOOK.md` retained as backup reference for future v2 dashboard fork if ever greenlit.
 
 3. **creatorain.com subdomain** — `creatorain.com` DNS zone is in a different Cloudflare account than the documented Global API Key covers. Two CNAMEs needed (cert verification + route to CloudFront). Currently parked: `proxy-worker` code committed at `apps/proxy-worker/` but NOT deployed; Amplify domain association on `buyfishingrod.com` works instead.
 
