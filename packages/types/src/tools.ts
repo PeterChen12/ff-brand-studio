@@ -172,6 +172,31 @@ export const ProductCategory = z.enum([
 ]);
 export type ProductCategoryType = z.infer<typeof ProductCategory>;
 
+// Phase I — image-pipeline kind, drives kind-aware crops + per-kind refine
+// prompts. Persisted on products.kind. New kinds require a new Deriver +
+// prompt template + smoke SKU.
+export const Kind = z.enum([
+  "long_thin_vertical",   // rod, umbrella, pole — aspect <0.5
+  "long_thin_horizontal", // skis, paddle — aspect >2.0
+  "compact_square",       // handbag, drinkware, watch box — ~1:1
+  "compact_round",        // hat, beanie, wreath — ~1:1 round silhouette
+  "horizontal_thin",      // 1.5–2.0 aspect
+  "multi_component",      // sets, multi-piece tools
+  "apparel_flat",         // t-shirts, hoodies, flat-lay
+  "accessory_small",      // jewelry, keychains, small detail items
+]);
+export type KindType = z.infer<typeof Kind>;
+
+// Auto-suggest mapping from category → default kind.
+export const KIND_DEFAULT_FROM_CATEGORY: Record<ProductCategoryType, KindType> = {
+  apparel: "apparel_flat",
+  drinkware: "compact_square",
+  "tech-acc": "compact_square",
+  bag: "compact_square",
+  hat: "compact_round",
+  other: "compact_square",
+};
+
 export const LaunchProductSkuInput = z.object({
   product_id: z.string().uuid().describe("UUID of the product row to launch"),
   platforms: z
