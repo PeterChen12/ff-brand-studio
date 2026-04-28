@@ -31,65 +31,70 @@ jobs:
           set -e
           node - <<'EOF'
           const { chromium } = require("playwright");
+          const crypto = require("crypto");
 
-          const dashboard = process.env.DASHBOARD_URL;
-          const worker = process.env.WORKER_URL;
-          const checks = [
-            { url: `${worker}/health`, expect: 200 },
-            { url: `${worker}/docs`, expect: 200 },
-            { url: `${worker}/v1/openapi.yaml`, expect: 200 },
-            { url: `${dashboard}/sign-in`, expect: 200 },
-          ];
+          (async () => {
+            const dashboard = process.env.DASHBOARD_URL;
+            const worker = process.env.WORKER_URL;
+            const checks = [
+              { url: `${worker}/health`, expect: 200 },
+              { url: `${worker}/docs`, expect: 200 },
+              { url: `${worker}/v1/openapi.yaml`, expect: 200 },
+              { url: `${dashboard}/sign-in`, expect: 200 },
+            ];
 
-          const browser = await chromium.launch();
-          const ctx = await browser.newContext();
-          const page = await ctx.newPage();
-          const failures = [];
-          for (const c of checks) {
-            const res = await page.goto(c.url, { waitUntil: "domcontentloaded", timeout: 20000 });
-            const status = res?.status() ?? 0;
-            if (status !== c.expect) {
-              failures.push(`${c.url} → ${status} (expected ${c.expect})`);
-            } else {
-              console.log(`OK  ${c.url}`);
-            }
-          }
-          await browser.close();
-
-          if (failures.length > 0) {
-            console.error("synthetic FAILED:");
-            for (const f of failures) console.error("  - " + f);
-            // Best-effort Sentry notify
-            const dsn = process.env.SENTRY_DSN;
-            if (dsn) {
-              try {
-                const u = new URL(dsn);
-                const eventId = require("crypto").randomBytes(16).toString("hex");
-                const ts = new Date().toISOString();
-                const env = JSON.stringify({ event_id: eventId, sent_at: ts, dsn });
-                const item = JSON.stringify({ type: "event" });
-                const event = JSON.stringify({
-                  event_id: eventId,
-                  timestamp: ts,
-                  level: "error",
-                  platform: "node",
-                  server_name: "ff-synthetic",
-                  message: { formatted: "synthetic check failed: " + failures.join("; ") },
-                  tags: { check: "synthetic" },
-                });
-                await fetch(`${u.protocol}//${u.host}/api/${u.pathname.replace(/^\//,"")}/envelope/`, {
-                  method: "POST",
-                  headers: {
-                    "content-type": "application/x-sentry-envelope",
-                    "x-sentry-auth": `Sentry sentry_version=7,sentry_key=${u.username},sentry_client=ff-synthetic/0.1`,
-                  },
-                  body: env + "\n" + item + "\n" + event + "\n",
-                });
-              } catch (err) {
-                console.error("[sentry notify failed]", err);
+            const browser = await chromium.launch();
+            const ctx = await browser.newContext();
+            const page = await ctx.newPage();
+            const failures = [];
+            for (const c of checks) {
+              const res = await page.goto(c.url, { waitUntil: "domcontentloaded", timeout: 20000 });
+              const status = res?.status() ?? 0;
+              if (status !== c.expect) {
+                failures.push(`${c.url} → ${status} (expected ${c.expect})`);
+              } else {
+                console.log(`OK  ${c.url}`);
               }
             }
+            await browser.close();
+
+            if (failures.length > 0) {
+              console.error("synthetic FAILED:");
+              for (const f of failures) console.error("  - " + f);
+              const dsn = process.env.SENTRY_DSN;
+              if (dsn) {
+                try {
+                  const u = new URL(dsn);
+                  const eventId = crypto.randomBytes(16).toString("hex");
+                  const ts = new Date().toISOString();
+                  const env = JSON.stringify({ event_id: eventId, sent_at: ts, dsn });
+                  const item = JSON.stringify({ type: "event" });
+                  const event = JSON.stringify({
+                    event_id: eventId,
+                    timestamp: ts,
+                    level: "error",
+                    platform: "node",
+                    server_name: "ff-synthetic",
+                    message: { formatted: "synthetic check failed: " + failures.join("; ") },
+                    tags: { check: "synthetic" },
+                  });
+                  await fetch(`${u.protocol}//${u.host}/api/${u.pathname.replace(/^\//,"")}/envelope/`, {
+                    method: "POST",
+                    headers: {
+                      "content-type": "application/x-sentry-envelope",
+                      "x-sentry-auth": `Sentry sentry_version=7,sentry_key=${u.username},sentry_client=ff-synthetic/0.1`,
+                    },
+                    body: env + "\n" + item + "\n" + event + "\n",
+                  });
+                } catch (err) {
+                  console.error("[sentry notify failed]", err);
+                }
+              }
+              process.exit(1);
+            }
+            console.log("all checks green");
+          })().catch((err) => {
+            console.error(err);
             process.exit(1);
-          }
-          console.log("all checks green");
+          });
           EOF
