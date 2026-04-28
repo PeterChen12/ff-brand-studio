@@ -55,9 +55,8 @@ interface CloudflareBindings {
   // Phase K3 — Resend email API key
   RESEND_API_KEY?: string;
 
-  // Phase M1 — Upstash Redis (rate limiting)
-  UPSTASH_REDIS_REST_URL?: string;
-  UPSTASH_REDIS_REST_TOKEN?: string;
+  // Phase U2 — rate limiter is now Postgres-backed; reuses PG* secrets.
+  // (Earlier UPSTASH_REDIS_REST_URL/TOKEN secrets removed — see Phase U2.)
 
   // Phase M3 — Sentry DSN (Worker error reporting)
   SENTRY_DSN?: string;

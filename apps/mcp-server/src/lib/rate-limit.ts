@@ -1,24 +1,34 @@
 /**
- * Phase M1 — per-tenant rate limiter.
+ * Phase U2 — per-tenant rate limiter on Postgres (replaces the
+ * earlier Upstash Redis path; we have plenty of Postgres infra
+ * already and don't want a Redis dependency).
  *
- * Sliding-window counter against Upstash Redis REST. Plan-aware:
+ * Fixed-window counter: bucket_key = floor(now_seconds / WINDOW)
+ * scopes the count to the current minute. Atomic INSERT...ON
+ * CONFLICT upserts the row with count++ in a single round-trip
+ * (~10-15ms vs Upstash's 30-50ms over the public REST endpoint —
+ * Postgres is on the same VPC as the Worker connection).
+ *
+ * Plan-aware:
  *   free   →  60 req/min
- *   pro    → 600 req/min (10× headroom)
- *   admin  →  no limit
+ *   pro    → 600 req/min
+ *   enterprise → 6000 req/min
  *
- * No-op when UPSTASH_REDIS_REST_URL is unset (dev / pre-rollout). Sets
- * X-RateLimit-Limit / X-RateLimit-Remaining / X-RateLimit-Reset on
- * every response. 429 with Retry-After when exhausted.
+ * Per-tenant override via tenant.features.rate_limit_per_min.
+ * Disable entirely with tenant.features.rate_limit_disabled.
  *
- * Why hand-rolled vs @upstash/ratelimit: the official client pulls in
- * tens of kB and ships its own logger. A direct REST call is ~50 LOC
- * and ships in <1 kB.
+ * Opportunistic 1% cleanup on every increment — bucket rows older
+ * than the current window are deleted so the table stays bounded
+ * without a cron.
  */
 
+import { sql } from "drizzle-orm";
 import type { Context, Next } from "hono";
+import { createDbClient } from "../db/client.js";
 import type { Tenant } from "../db/schema.js";
 
 const WINDOW_SECONDS = 60;
+const CLEANUP_PROBABILITY = 0.01;
 
 const PLAN_LIMITS: Record<string, number> = {
   free: 60,
@@ -28,7 +38,10 @@ const PLAN_LIMITS: Record<string, number> = {
 };
 
 function limitForTenant(tenant: Tenant): number | null {
-  const features = (tenant.features ?? {}) as { rate_limit_per_min?: number; rate_limit_disabled?: boolean };
+  const features = (tenant.features ?? {}) as {
+    rate_limit_per_min?: number;
+    rate_limit_disabled?: boolean;
+  };
   if (features.rate_limit_disabled) return null;
   if (typeof features.rate_limit_per_min === "number" && features.rate_limit_per_min > 0) {
     return features.rate_limit_per_min;
@@ -36,47 +49,55 @@ function limitForTenant(tenant: Tenant): number | null {
   return PLAN_LIMITS[tenant.plan] ?? PLAN_LIMITS.free;
 }
 
-interface UpstashCounter {
+interface CounterResult {
   count: number;
   reset: number;
 }
 
 /**
- * Fixed-window counter. Stores {count, reset} as a JSON string
- * with TTL = WINDOW_SECONDS so old buckets evict naturally.
+ * Atomic upsert + return current count. Uses a single round-trip via
+ * INSERT...ON CONFLICT...DO UPDATE...RETURNING.
+ *
+ * Bucket key: epoch second / WINDOW. Resets at the next bucket
+ * boundary. Returns null if the table doesn't exist (migration not
+ * applied) so callers fail open.
  */
-async function incrementWindow(env: CloudflareBindings, key: string): Promise<UpstashCounter | null> {
-  const url = env.UPSTASH_REDIS_REST_URL;
-  const token = env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return null;
+async function incrementWindow(
+  env: CloudflareBindings,
+  tenantId: string
+): Promise<CounterResult | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const bucketKey = Math.floor(now / WINDOW_SECONDS);
+  const reset = (bucketKey + 1) * WINDOW_SECONDS;
 
-  // INCR + EXPIRE in a Redis pipeline (Upstash REST supports it via
-  // /pipeline). Reset = ceil(now / window) * window — bucket boundary.
-  const now = Date.now();
-  const reset = Math.ceil(now / 1000 / WINDOW_SECONDS) * WINDOW_SECONDS;
-  const bucketKey = `${key}:${reset}`;
-  let res: Response;
   try {
-    res = await fetch(`${url.replace(/\/$/, "")}/pipeline`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify([
-        ["INCR", bucketKey],
-        ["EXPIRE", bucketKey, String(WINDOW_SECONDS + 5)],
-      ]),
-      signal: AbortSignal.timeout(2000),
-    });
-  } catch {
+    const db = createDbClient(env);
+    const rows = await db.execute(sql`
+      INSERT INTO rate_limit_buckets (tenant_id, bucket_key, count)
+      VALUES (${tenantId}::uuid, ${bucketKey}::bigint, 1)
+      ON CONFLICT (tenant_id, bucket_key)
+      DO UPDATE SET count = rate_limit_buckets.count + 1
+      RETURNING count
+    `);
+    const r = rows as unknown as Array<{ count: number }>;
+    const count = r[0]?.count ?? 1;
+
+    // Opportunistic cleanup — 1% chance per request to GC old buckets
+    // for this tenant. Bounded table size without a cron.
+    if (Math.random() < CLEANUP_PROBABILITY) {
+      void db
+        .execute(sql`
+          DELETE FROM rate_limit_buckets
+          WHERE tenant_id = ${tenantId}::uuid
+            AND bucket_key < ${bucketKey}::bigint
+        `)
+        .catch(() => undefined);
+    }
+    return { count, reset };
+  } catch (err) {
+    console.warn("[rate-limit] postgres increment failed:", err);
     return null;
   }
-  if (!res.ok) return null;
-  const json = (await res.json().catch(() => null)) as Array<{ result?: number }> | null;
-  const count = json?.[0]?.result;
-  if (typeof count !== "number") return null;
-  return { count, reset };
 }
 
 export async function rateLimitMiddleware(
@@ -94,10 +115,10 @@ export async function rateLimitMiddleware(
     return;
   }
 
-  const counter = await incrementWindow(c.env, `rl:${tenant.id}`);
+  const counter = await incrementWindow(c.env, tenant.id);
   if (!counter) {
-    // Upstash unreachable or unconfigured — fail open. Logging here
-    // would spam in dev, so stay silent.
+    // DB unreachable or migration missing — fail open. Logging here
+    // would spam in dev; the warning above fires once per request.
     await next();
     return;
   }
