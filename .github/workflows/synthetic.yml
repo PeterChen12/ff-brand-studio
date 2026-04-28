@@ -19,10 +19,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm i -g playwright@^1.49
-      - run: npx playwright install --with-deps chromium
+
+      # Install playwright LOCALLY (not -g) so the inline require() in the
+      # synthetic-checks step resolves it. Globally-installed modules aren't
+      # on the default require resolution path under Node 22.
+      - name: Install playwright (local to runner-temp)
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm init -y > /dev/null
+          npm i playwright@^1.49
+          npx playwright install --with-deps chromium
 
       - name: synthetic checks
+        working-directory: ${{ runner.temp }}
         env:
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL || 'https://image-generation.buyfishingrod.com' }}
           WORKER_URL: ${{ vars.WORKER_URL || 'https://ff-brand-studio-mcp.creatorain.workers.dev' }}
