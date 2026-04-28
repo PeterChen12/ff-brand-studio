@@ -177,6 +177,10 @@ app.use("/v1/audit", requireTenant);
 app.use("/v1/listings/*", requireTenant);
 app.use("/v1/assets/*", requireTenant);
 app.use("/v1/skus/*", requireTenant);
+app.use("/v1/api-keys", requireTenant);
+app.use("/v1/api-keys/*", requireTenant);
+app.use("/v1/webhooks", requireTenant);
+app.use("/v1/webhooks/*", requireTenant);
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -767,6 +771,267 @@ app.get("/v1/listings", async (c) => {
   }
 });
 
+// Phase L2 — OpenAPI 3.1 spec + Redoc renderer (both unauthenticated).
+app.get("/v1/openapi.yaml", async (c) => {
+  const { getOpenApiYaml } = await import("./openapi.js");
+  return new Response(getOpenApiYaml(), {
+    headers: { "content-type": "text/yaml; charset=utf-8" },
+  });
+});
+
+app.get("/docs", async (c) => {
+  const { getRedocHtml } = await import("./openapi.js");
+  return new Response(getRedocHtml(), {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+});
+
+// Phase L2 — single-product fetch, list, and soft-delete.
+app.get("/v1/products/:id", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const id = c.req.param("id");
+    const [row] = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, id))
+      .limit(1);
+    if (!row || !visibleTenantIds(tenant).includes(row.tenantId)) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return c.json({ product: row });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get("/v1/products", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10) || 20, 100);
+    const cursor = c.req.query("cursor");
+    const filters = [inArray(products.tenantId, visibleTenantIds(tenant))];
+    if (cursor) {
+      // Cursor is a created_at ISO string; rows older than it.
+      filters.push(sql`${products.createdAt} < ${cursor}`);
+    }
+    const rows = await db
+      .select()
+      .from(products)
+      .where(and(...filters))
+      .orderBy(desc(products.createdAt))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit);
+    const nextCursor = hasMore && items.length > 0
+      ? items[items.length - 1].createdAt?.toISOString() ?? null
+      : null;
+    return c.json({ products: items, hasMore, nextCursor });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.delete("/v1/products/:id", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const id = c.req.param("id");
+    const [row] = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, id))
+      .limit(1);
+    if (!row || row.tenantId !== tenant.id) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    // Soft delete = mark sku with a tombstone suffix; keeps FKs intact
+    // for audit. A future migration can hard-delete after retention.
+    const tombstone = `${row.sku}__deleted_${Date.now()}`;
+    await db
+      .update(products)
+      .set({ sku: tombstone })
+      .where(eq(products.id, id));
+    await auditEvent(db, {
+      tenantId: tenant.id,
+      actor: actor ?? null,
+      action: "product.delete",
+      targetType: "product",
+      targetId: id,
+      metadata: { originalSku: row.sku },
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get("/v1/launches", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10) || 20, 100);
+    const cursor = c.req.query("cursor");
+    const status = c.req.query("status");
+    const filters = [inArray(launchRuns.tenantId, visibleTenantIds(tenant))];
+    if (cursor) filters.push(sql`${launchRuns.createdAt} < ${cursor}`);
+    if (status) filters.push(eq(launchRuns.status, status));
+    const rows = await db
+      .select()
+      .from(launchRuns)
+      .where(and(...filters))
+      .orderBy(desc(launchRuns.createdAt))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit);
+    const nextCursor = hasMore && items.length > 0
+      ? items[items.length - 1].createdAt?.toISOString() ?? null
+      : null;
+    return c.json({ launches: items, hasMore, nextCursor });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get("/v1/listings/:id", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const id = c.req.param("id");
+    const [row] = await db
+      .select()
+      .from(platformListings)
+      .where(eq(platformListings.id, id))
+      .limit(1);
+    if (!row || !visibleTenantIds(tenant).includes(row.tenantId)) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return c.json({ listing: row });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase L4 — webhook subscription CRUD.
+app.post("/v1/webhooks", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const body = (await c.req.json()) as { url?: string; events?: string[] };
+    if (!body.url || typeof body.url !== "string" || !Array.isArray(body.events) || body.events.length === 0) {
+      return c.json({ error: "invalid_body", detail: "url + non-empty events[] required" }, 400);
+    }
+    try {
+      new URL(body.url);
+    } catch {
+      return c.json({ error: "invalid_url" }, 400);
+    }
+    const { createSubscription } = await import("./lib/webhooks.js");
+    const result = await createSubscription(db, {
+      tenantId: tenant.id,
+      url: body.url,
+      events: body.events.map(String).slice(0, 30),
+    });
+    return c.json({
+      subscription: {
+        id: result.subscription.id,
+        url: result.subscription.url,
+        events: result.subscription.events,
+        created_at: result.subscription.createdAt,
+      },
+      secret: result.secret, // returned exactly once
+    });
+  } catch (err) {
+    console.error("[/v1/webhooks POST]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get("/v1/webhooks", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const { listSubscriptions } = await import("./lib/webhooks.js");
+    const subs = await listSubscriptions(db, tenant.id);
+    return c.json({ subscriptions: subs });
+  } catch (err) {
+    console.error("[/v1/webhooks GET]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.delete("/v1/webhooks/:id", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const id = c.req.param("id");
+    const { disableSubscription } = await import("./lib/webhooks.js");
+    const ok = await disableSubscription(db, tenant.id, id);
+    return c.json({ ok }, ok ? 200 : 404);
+  } catch (err) {
+    console.error("[/v1/webhooks/:id DELETE]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase L1 — API key issuance / list / revoke.
+app.post("/v1/api-keys", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const body = (await c.req.json().catch(() => ({}))) as { name?: string };
+    const name = (body.name ?? "").trim();
+    if (!name || name.length > 80) {
+      return c.json({ error: "invalid_name", message: "name required (≤80 chars)" }, 400);
+    }
+    const { issueApiKey } = await import("./lib/api-keys.js");
+    const result = await issueApiKey(db, tenant.id, name, actor ?? null);
+    return c.json({
+      id: result.id,
+      key: result.fullKey, // returned exactly once
+      prefix: result.prefix,
+      name: result.name,
+      created_at: result.createdAt,
+    });
+  } catch (err) {
+    console.error("[/v1/api-keys POST]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get("/v1/api-keys", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const { listApiKeys } = await import("./lib/api-keys.js");
+    const keys = await listApiKeys(db, tenant.id);
+    return c.json({ keys });
+  } catch (err) {
+    console.error("[/v1/api-keys GET]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.delete("/v1/api-keys/:id", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const id = c.req.param("id");
+    const { revokeApiKey } = await import("./lib/api-keys.js");
+    const result = await revokeApiKey(db, c.env, tenant.id, id, actor ?? null);
+    if (!result.ok) return c.json({ error: result.error }, 404);
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error("[/v1/api-keys/:id DELETE]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // Phase K3 — approve all assets + listings for a SKU.
 app.post("/v1/skus/:productId/approve", async (c) => {
   try {
@@ -1107,6 +1372,12 @@ app.get("/v1/audit", async (c) => {
 
 // Transport registry — keyed by sessionId so GET /sse and POST /messages share state
 const transports = new Map<string, Transport>();
+// Phase L3 — per-session tenant binding. Populated when /sse connects with
+// a valid ff_live_* api_key query param. Tools read this via getSessionTenant().
+const sessionTenants = new Map<string, { tenantId: string; apiKeyId: string }>();
+export function getSessionTenant(sessionId: string): { tenantId: string; apiKeyId: string } | null {
+  return sessionTenants.get(sessionId) ?? null;
+}
 
 app.get("/health", async (c) => {
   // Phase B2 enriched health check — pings the dependencies so production
@@ -1154,9 +1425,28 @@ app.get("/health", async (c) => {
   );
 });
 
-// SSE endpoint — Claude Desktop connects here for MCP communication
+// SSE endpoint — Claude Desktop connects here for MCP communication.
+// Phase L3 — accepts an optional `?api_key=ff_live_*` query param. When
+// present and valid, tools resolve to the bound tenant; without it, the
+// session falls through to legacy read-only sample data.
 app.get("/sse", async (c) => {
   const sessionId = crypto.randomUUID();
+  const apiKey = c.req.query("api_key");
+  if (apiKey && apiKey.startsWith("ff_live_")) {
+    try {
+      const db = createDbClient(c.env);
+      const { verifyApiKey } = await import("./lib/api-keys.js");
+      const resolved = await verifyApiKey(c.env, db, apiKey);
+      if (resolved) {
+        sessionTenants.set(sessionId, {
+          tenantId: resolved.tenantId,
+          apiKeyId: resolved.apiKeyId,
+        });
+      }
+    } catch (err) {
+      console.warn("[/sse api_key resolve]", err);
+    }
+  }
   const mcpServer = new McpServer({ name: "ff-brand-studio", version: "0.1.0" });
   registerAllTools(mcpServer, c.env);
 
@@ -1180,6 +1470,7 @@ app.get("/sse", async (c) => {
 
     async close() {
       transports.delete(sessionId);
+      sessionTenants.delete(sessionId);
       await writer.close().catch(() => void 0);
     },
   };

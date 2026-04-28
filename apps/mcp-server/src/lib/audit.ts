@@ -45,21 +45,62 @@ export interface AuditEventInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Audit actions that are fan-out events for webhook delivery (Phase L4).
+ * Deliveries fire fire-and-forget; failures don't block the parent op.
+ */
+const WEBHOOK_FAN_OUT: ReadonlySet<AuditAction> = new Set<AuditAction>([
+  "launch.complete",
+  "launch.failed",
+  "listing.publish",
+  "listing.unpublish",
+  "billing.stripe_topup",
+]);
+
 export async function auditEvent(
   db: DbClient,
   input: AuditEventInput
 ): Promise<void> {
+  let insertedId: string | null = null;
   try {
-    await db.insert(auditEvents).values({
+    const [row] = await db.insert(auditEvents).values({
       tenantId: input.tenantId,
       actor: input.actor,
       action: input.action,
       targetType: input.targetType ?? null,
       targetId: input.targetId ?? null,
       metadata: (input.metadata ?? {}) as Record<string, unknown>,
-    });
+    }).returning({ id: auditEvents.id });
+    insertedId = row?.id ?? null;
   } catch (err) {
     // Audit is non-blocking — log but never fail the parent operation.
     console.error(`[audit ${input.action}] failed:`, err);
+    return;
+  }
+
+  // Phase L4 — webhook fan-out. Don't await; failures land in
+  // webhook_deliveries with next_attempt_at populated for the future
+  // queue-driven retry to pick up.
+  if (insertedId && WEBHOOK_FAN_OUT.has(input.action)) {
+    void (async () => {
+      try {
+        const { deliverEvent } = await import("./webhooks.js");
+        await deliverEvent(db, {
+          id: insertedId,
+          type: input.action,
+          tenant_id: input.tenantId,
+          created_at: new Date().toISOString(),
+          version: 1,
+          data: {
+            actor: input.actor,
+            target_type: input.targetType ?? null,
+            target_id: input.targetId ?? null,
+            metadata: input.metadata ?? {},
+          },
+        });
+      } catch (err) {
+        console.warn(`[webhook ${input.action}] fan-out failed:`, err);
+      }
+    })();
   }
 }

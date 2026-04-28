@@ -1,4 +1,37 @@
-# Session State — 2026-04-27 (Phase K shipped — iterate + publish)
+# Session State — 2026-04-27 (Phase L shipped — public API)
+
+A compact catch-up doc so the next session can resume in <5 min.
+
+---
+
+## Phase L — Public API — ✅ shipped 2026-04-27
+
+Plan: `plans/active-plan-saas-L.md`. Four iterations land in this push.
+
+| Iter | What ships |
+|---|---|
+| L1 | api_keys table + `ff_live_*` issuance/list/revoke + dual-auth middleware (Clerk JWT or API key Bearer). SHA-256 hash (not bcrypt; rationale in api-keys.ts header). 60s SESSION_KV cache by prefix → tenant. |
+| L2 | OpenAPI 3.1 spec at `/v1/openapi.yaml` + Redoc renderer at `/docs` (no auth). Coverage gap fills: `GET /v1/products`, `GET /v1/products/:id`, `DELETE /v1/products/:id` (soft delete via sku tombstone), `GET /v1/launches`, `GET /v1/listings/:id`. Cursor pagination on products + launches. |
+| L3 | MCP `/sse` accepts `?api_key=ff_live_*` query param; resolved tenant stored in `sessionTenants` map keyed by sessionId. Tools can call `getSessionTenant(sessionId)` to get a `{tenantId, apiKeyId}` binding. Without a key, sessions fall through to legacy read-only sample data. |
+| L4 | webhook_subscriptions + webhook_deliveries tables. CRUD `POST/GET/DELETE /v1/webhooks`. HMAC-SHA256 signed deliveries (`X-FF-Signature: t=<ts>,v1=<hex>`, Stripe pattern). auditEvent fan-out for launch.complete/failed, listing.publish/unpublish, billing.stripe_topup. Failures land in webhook_deliveries with next_attempt_at populated for the future Phase M cron-driven retry (1m/5m/30m/2h/12h schedule). |
+
+**Surface that's now machine-callable:**
+```
+curl -H "Authorization: Bearer ff_live_..." \
+     https://ff-brand-studio-mcp.creatorain.workers.dev/v1/products
+```
+
+**Rate limits:** not yet active. The OpenAPI doc + announcement note
+60 req/min/key default arrives in Phase M1.
+
+**Deferred but documented:**
+- `/settings/api-keys` dashboard page (use curl until first agency asks)
+- `packages/api-client/` (generate locally with `openapi-typescript`)
+- Cron-driven webhook retry loop (lands in Phase M alongside the queue)
+
+---
+
+## Phase K — Edit + Publish — ✅ shipped 2026-04-27
 
 A compact catch-up doc so the next session can resume in <5 min.
 

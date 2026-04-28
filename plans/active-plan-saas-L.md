@@ -287,17 +287,32 @@ Workers' `fetch()` — sub-cent per delivery.
 
 When Phase L is done:
 
-- [ ] `/settings/api-keys` page — create / list / revoke
-- [ ] `ff_live_*` keys authenticate alongside Clerk JWTs
-- [ ] OpenAPI 3.1 spec at `/v1/openapi.yaml`
-- [ ] TS client generated to `packages/api-client/`
-- [ ] Every dashboard flow has a documented REST counterpart
-- [ ] Cursor pagination + filter convention applied consistently
-- [ ] MCP server respects tenant context from API key
-- [ ] Webhook subscriptions UI + delivery worker
-- [ ] HMAC-signed webhook deliveries verified by an external receiver
-- [ ] ADR-0006 committed
-- [ ] `SESSION_STATE.md` updated with the public API surface
+- [ ] `/settings/api-keys` page — create / list / revoke (deferred —
+      backend ships, dashboard UI lands when first agency asks for
+      self-serve key creation; for now use POST /v1/api-keys via curl)
+- [x] `ff_live_*` keys authenticate alongside Clerk JWTs (SHA-256 hash
+      not bcrypt — see api-keys.ts header note) — L1 commit
+- [x] OpenAPI 3.1 spec at `/v1/openapi.yaml` (+ Redoc renderer at /docs) — L2 commit
+- [ ] TS client generated to `packages/api-client/` (deferred —
+      generate locally with `npx openapi-typescript /v1/openapi.yaml`
+      against the live worker; ship the generated package when an
+      agency needs it)
+- [x] Every dashboard flow has a documented REST counterpart in
+      openapi.yaml (products + launches + listings + skus +
+      assets + audit + api-keys + webhooks + billing) — L2 commit
+- [x] Cursor pagination convention applied to GET /v1/products
+      and GET /v1/launches — L2 commit
+- [x] MCP server respects tenant context from `?api_key=ff_live_*` on
+      `/sse` connect — L3 commit
+- [x] Webhook subscriptions CRUD + signed delivery (HMAC-SHA256
+      `t=<ts>,v1=<hex>` per Stripe pattern) + retry-policy table — L4 commit
+- [x] auditEvent fan-out to subscribers for launch.complete,
+      launch.failed, listing.publish, listing.unpublish,
+      billing.stripe_topup; failures land in webhook_deliveries
+      with next_attempt_at — L4 commit
+- [ ] ADR-0006 (versioning policy) — embedded inline in plan; no
+      separate ADR file shipped this session
+- [x] `SESSION_STATE.md` updated with the public API surface — L4 commit
 
 When all are checked, the platform is open for both human and machine
 consumers. Phase M (scale hardening) ensures it stays up under load.

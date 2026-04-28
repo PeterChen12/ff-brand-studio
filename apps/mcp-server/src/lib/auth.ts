@@ -19,9 +19,11 @@
 
 import type { Context, Next } from "hono";
 import { verifyToken } from "@clerk/backend";
+import { eq } from "drizzle-orm";
 import { createDbClient } from "../db/client.js";
 import { ensureTenantForOrg } from "./tenants.js";
-import type { Tenant } from "../db/schema.js";
+import { tenants, type Tenant } from "../db/schema.js";
+import { verifyApiKey } from "./api-keys.js";
 
 export interface AuthVars {
   tenant: Tenant;
@@ -51,6 +53,30 @@ export async function requireTenant(
   const token = extractToken(c);
   if (!token) {
     return c.json({ error: "unauthenticated", code: "missing_token" }, 401);
+  }
+
+  // Phase L1 — accept ff_live_* API keys as an alternative to Clerk JWTs.
+  if (token.startsWith("ff_live_")) {
+    const db = createDbClient(c.env);
+    const resolved = await verifyApiKey(c.env, db, token);
+    if (!resolved) {
+      return c.json({ error: "unauthenticated", code: "invalid_api_key" }, 401);
+    }
+    const [tenantRow] = await db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.id, resolved.tenantId))
+      .limit(1);
+    if (!tenantRow) {
+      return c.json({ error: "unauthenticated", code: "tenant_missing" }, 401);
+    }
+    if (tenantRow.plan === "deleted") {
+      return c.json({ error: "tenant_deleted", code: "tenant_deleted" }, 403);
+    }
+    c.set("tenant", tenantRow);
+    c.set("actor", `api_key:${resolved.prefix}`);
+    await next();
+    return;
   }
 
   let payload: Awaited<ReturnType<typeof verifyToken>>;

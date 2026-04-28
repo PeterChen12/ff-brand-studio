@@ -289,6 +289,68 @@ export const walletLedger = pgTable(
   })
 );
 
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    prefix: text("prefix").notNull(),
+    hash: text("hash").notNull(),
+    name: text("name").notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at").defaultNow(),
+    lastUsedAt: timestamp("last_used_at"),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (t) => ({
+    prefixIdx: index("idx_api_keys_prefix").on(t.prefix),
+    tenantIdx: index("idx_api_keys_tenant").on(t.tenantId),
+  })
+);
+
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type NewApiKey = typeof apiKeys.$inferInsert;
+
+export const webhookSubscriptions = pgTable(
+  "webhook_subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    url: text("url").notNull(),
+    events: text("events").array().notNull(),
+    secret: text("secret").notNull(),
+    createdAt: timestamp("created_at").defaultNow(),
+    disabledAt: timestamp("disabled_at"),
+  },
+  (t) => ({
+    tenantIdx: index("idx_webhook_subs_tenant").on(t.tenantId),
+  })
+);
+
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subscriptionId: uuid("subscription_id")
+      .notNull()
+      .references(() => webhookSubscriptions.id, { onDelete: "cascade" }),
+    eventId: uuid("event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").notNull(),
+    statusCode: integer("status_code"),
+    responseBody: text("response_body"),
+    attempt: integer("attempt").notNull().default(1),
+    deliveredAt: timestamp("delivered_at"),
+    nextAttemptAt: timestamp("next_attempt_at"),
+  },
+  (t) => ({
+    subIdx: index("idx_webhook_deliv_sub").on(t.subscriptionId),
+  })
+);
+
+export type WebhookSubscription = typeof webhookSubscriptions.$inferSelect;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+
 export const auditEvents = pgTable(
   "audit_events",
   {
