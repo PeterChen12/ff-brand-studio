@@ -182,6 +182,7 @@ app.use("/v1/api-keys", requireTenant);
 app.use("/v1/api-keys/*", requireTenant);
 app.use("/v1/webhooks", requireTenant);
 app.use("/v1/webhooks/*", requireTenant);
+app.use("/v1/tenant", requireTenant);
 app.use("/v1/tenant/*", requireTenant);
 
 // Phase M1 — rate limit AFTER auth so we have tenant context to scope
@@ -933,6 +934,65 @@ app.get("/v1/listings/:id", async (c) => {
     }
     return c.json({ listing: row });
   } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase N3 — tenant settings: read + patch.
+const TenantPatchInput = z.object({
+  brand_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  default_platforms: z.array(z.enum(["amazon", "shopify"])).optional(),
+  // gated booleans the operator can self-flip
+  amazon_a_plus_grid: z.boolean().optional(),
+  rate_limit_per_min: z.number().int().min(10).max(6000).optional(),
+  // not self-flippable from the dashboard:
+  // production_pipeline, feedback_regen, has_sample_access — operator
+  // (you) keeps those behind direct DB access.
+});
+
+app.patch("/v1/tenant", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const body = await c.req.json();
+    const parsed = TenantPatchInput.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_body", detail: parsed.error.flatten() }, 400);
+    }
+    const patch = parsed.data;
+    const currentFeatures = (tenant.features ?? {}) as Record<string, unknown>;
+    const nextFeatures = { ...currentFeatures };
+    if (patch.brand_hex !== undefined) nextFeatures.brand_hex = patch.brand_hex;
+    if (patch.default_platforms !== undefined) nextFeatures.default_platforms = patch.default_platforms;
+    if (patch.amazon_a_plus_grid !== undefined) nextFeatures.amazon_a_plus_grid = patch.amazon_a_plus_grid;
+    if (patch.rate_limit_per_min !== undefined) nextFeatures.rate_limit_per_min = patch.rate_limit_per_min;
+
+    const [updated] = await db
+      .update(tenants)
+      .set({ features: nextFeatures })
+      .where(eq(tenants.id, tenant.id))
+      .returning();
+
+    await auditEvent(db, {
+      tenantId: tenant.id,
+      actor: actor ?? null,
+      action: "tenant.updated",
+      targetType: "tenant",
+      targetId: tenant.id,
+      metadata: { fields: Object.keys(patch), nextFeatures: { ...patch } },
+    });
+
+    return c.json({
+      tenant: {
+        id: updated.id,
+        name: updated.name,
+        plan: updated.plan,
+        features: updated.features,
+      },
+    });
+  } catch (err) {
+    console.error("[/v1/tenant PATCH]", err);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });

@@ -209,6 +209,11 @@ export async function runProductionPipeline(
     // Each call still passes all 3 specs to the sidecar but the variantTag
     // varies the layout (different highlight + different padding).
     const variants: Array<"detail_1" | "detail_2" | "detail_3"> = ["detail_1", "detail_2", "detail_3"];
+    // Phase N3 — read tenant brand_hex from features; fall back to FF blue.
+    const brandHex = (() => {
+      const f = ctx.features as { brand_hex?: string };
+      return f.brand_hex && /^#[0-9a-fA-F]{6}$/.test(f.brand_hex) ? f.brand_hex : "#1C3FAA";
+    })();
     for (let i = 0; i < variants.length; i++) {
       const v = variants[i];
       const compRes = await compositeText(
@@ -221,7 +226,8 @@ export async function runProductionPipeline(
           specRes.specs[(i + 1) % 3],
           specRes.specs[(i + 2) % 3],
         ],
-        v
+        v,
+        brandHex
       );
       if (compRes.status === "ok") {
         if (v === "detail_1") outputs.composite_detail_1 = compRes.outputR2Key;
@@ -235,7 +241,11 @@ export async function runProductionPipeline(
 
   // ── Banner (Shopify-only target, but always produced if requested) ──
   if (outputs.refine_studio && platforms.includes("shopify")) {
-    const banRes = await bannerExtend(env, ctx, outputs.refine_studio);
+    const tenantBrand = (ctx.features as { brand_hex?: string }).brand_hex;
+    // Banner background sits behind the product — keep it neutral unless
+    // the tenant explicitly overrode brand_hex with a non-blue.
+    const bannerHex = tenantBrand && /^#[0-9a-fA-F]{6}$/.test(tenantBrand) ? tenantBrand : "#F2EEE6";
+    const banRes = await bannerExtend(env, ctx, outputs.refine_studio, bannerHex);
     if (banRes.status === "ok") outputs.banner = banRes.outputR2Key;
     else errors.push(`banner failed: ${stepError(banRes)}`);
   }

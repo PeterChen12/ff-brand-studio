@@ -51,3 +51,38 @@ export function useApiFetch() {
     [getToken, isSignedIn]
   );
 }
+
+/**
+ * Auth-aware download. Streams a blob from the Worker and triggers a
+ * browser save with the server's Content-Disposition filename. Use for
+ * binary endpoints (e.g. /v1/tenant/export, /v1/audit?format=csv).
+ */
+export function useApiDownload() {
+  const { getToken, isSignedIn } = useAuth();
+  return useCallback(
+    async (path: string, fallbackFilename: string): Promise<void> => {
+      const token = isSignedIn ? await getToken() : null;
+      const headers = new Headers();
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      const res = await fetch(`${MCP_URL}${path}`, { headers });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new ApiError(res.status, text, `${res.status} ${res.statusText}`);
+      }
+      const cd = res.headers.get("content-disposition") ?? "";
+      const m = cd.match(/filename="?([^";]+)"?/);
+      const filename = m?.[1] ?? fallbackFilename;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    },
+    [getToken, isSignedIn]
+  );
+}

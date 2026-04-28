@@ -32,6 +32,7 @@ const NAV: { href: string; label: string; sub: string; index: string }[] = [
   { href: "/library", label: "Library", sub: "资产库", index: "04" },
   { href: "/costs", label: "Costs", sub: "成本", index: "05" },
   { href: "/billing", label: "Billing", sub: "账户", index: "06" },
+  { href: "/settings", label: "Settings", sub: "设置", index: "07" },
 ];
 
 type HealthState = "ok" | "degraded" | "error" | "loading";
