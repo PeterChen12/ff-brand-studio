@@ -51,6 +51,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build dashboard (static export)
         run: pnpm --filter ff-dashboard run build
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_CLERK_SIGN_IN_URL: ${{ secrets.NEXT_PUBLIC_CLERK_SIGN_IN_URL }}
+          NEXT_PUBLIC_CLERK_SIGN_UP_URL: ${{ secrets.NEXT_PUBLIC_CLERK_SIGN_UP_URL }}
       - name: Deploy to Cloudflare Pages
         working-directory: apps/mcp-server
         run: pnpm exec wrangler pages deploy ../dashboard/out --project-name ff-brand-studio --branch master --commit-dirty=true
