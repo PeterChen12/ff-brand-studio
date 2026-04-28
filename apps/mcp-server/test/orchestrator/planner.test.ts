@@ -5,11 +5,13 @@ import type { Product } from "../../src/db/schema.js";
 function fakeProduct(overrides: Partial<Product> = {}): Product {
   return {
     id: "00000000-0000-0000-0000-000000000001",
+    tenantId: "00000000-0000-0000-0000-000000000001",
     sellerId: "00000000-0000-0000-0000-000000000002",
     sku: "FAKE-001",
     nameEn: "Fake",
     nameZh: null,
     category: "drinkware",
+    kind: "compact_square",
     dimensions: null,
     materials: null,
     colorsHex: null,

@@ -47,6 +47,28 @@ const CATEGORIES = [
   "other",
 ] as const;
 
+const KINDS = [
+  { value: "long_thin_vertical", label: "Long & vertical (rod, umbrella, pole)" },
+  { value: "long_thin_horizontal", label: "Long & horizontal (skis, paddle)" },
+  { value: "compact_square", label: "Compact square (handbag, drinkware, watch)" },
+  { value: "compact_round", label: "Compact round (hat, beanie)" },
+  { value: "horizontal_thin", label: "Horizontal thin (1.5–2.0 aspect)" },
+  { value: "multi_component", label: "Multi-component set" },
+  { value: "apparel_flat", label: "Apparel flat-lay (t-shirt, hoodie)" },
+  { value: "accessory_small", label: "Accessory small (jewelry, keychain)" },
+] as const;
+
+const KIND_DEFAULT_FROM_UI_CATEGORY: Record<string, (typeof KINDS)[number]["value"]> = {
+  "fishing-rod": "long_thin_vertical",
+  drinkware: "compact_square",
+  handbag: "compact_square",
+  watch: "compact_square",
+  shoe: "compact_square",
+  apparel: "apparel_flat",
+  accessory: "accessory_small",
+  other: "compact_square",
+};
+
 export default function NewProductPageInner() {
   const router = useRouter();
   const apiFetch = useApiFetch();
@@ -55,6 +77,10 @@ export default function NewProductPageInner() {
   const [nameEn, setNameEn] = useState("");
   const [nameZh, setNameZh] = useState("");
   const [category, setCategory] = useState<string>("fishing-rod");
+  const [kind, setKind] = useState<(typeof KINDS)[number]["value"]>(
+    KIND_DEFAULT_FROM_UI_CATEGORY["fishing-rod"]
+  );
+  const [kindManuallySet, setKindManuallySet] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -162,6 +188,7 @@ export default function NewProductPageInner() {
           name_en: nameEn,
           name_zh: nameZh.trim() || undefined,
           category,
+          kind,
           uploaded_keys: uploadedKeys,
         }),
       });
@@ -213,7 +240,14 @@ export default function NewProductPageInner() {
                 <select
                   className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
                   value={category}
-                  onChange={(e) => setCategory(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setCategory(next);
+                    if (!kindManuallySet) {
+                      const suggested = KIND_DEFAULT_FROM_UI_CATEGORY[next];
+                      if (suggested) setKind(suggested);
+                    }
+                  }}
                   required
                 >
                   {CATEGORIES.map((cat) => (
@@ -222,6 +256,27 @@ export default function NewProductPageInner() {
                     </option>
                   ))}
                 </select>
+              </Field>
+              <Field label="Image kind" required>
+                <select
+                  className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
+                  value={kind}
+                  onChange={(e) => {
+                    setKind(e.target.value as (typeof KINDS)[number]["value"]);
+                    setKindManuallySet(true);
+                  }}
+                  required
+                >
+                  {KINDS.map((k) => (
+                    <option key={k.value} value={k.value}>
+                      {k.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="md-typescale-body-small text-on-surface-variant block mt-1">
+                  Drives the shape-aware crops. Auto-suggested from category;
+                  override if your product is unusual.
+                </span>
               </Field>
             </CardContent>
             <CardFooter>

@@ -319,6 +319,7 @@ app.post("/v1/products", async (c) => {
       nameEn: p.name_en,
       nameZh: p.name_zh ?? null,
       category: p.category,
+      kind: p.kind ?? "compact_square",
       dimensions: p.dimensions ?? null,
       materials: p.materials ?? null,
       colorsHex: p.colors_hex ?? null,
@@ -603,6 +604,7 @@ app.post("/v1/launches", async (c) => {
       openai_api_key: c.env.OPENAI_API_KEY,
       dataforseo_login: c.env.DATAFORSEO_LOGIN,
       dataforseo_password: c.env.DATAFORSEO_PASSWORD,
+      env: c.env,
     });
 
     // Refund the difference between predicted and actual cost (we charged
@@ -1232,6 +1234,7 @@ app.post("/demo/launch-sku", async (c) => {
       openai_api_key: c.env.OPENAI_API_KEY,
       dataforseo_login: c.env.DATAFORSEO_LOGIN,
       dataforseo_password: c.env.DATAFORSEO_PASSWORD,
+      env: c.env,
     });
     return c.json(result);
   } catch (err) {

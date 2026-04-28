@@ -36,6 +36,7 @@ export function registerLaunchProductSku(
         openai_api_key: env.OPENAI_API_KEY,
         dataforseo_login: env.DATAFORSEO_LOGIN,
         dataforseo_password: env.DATAFORSEO_PASSWORD,
+        env,
       });
 
       return {

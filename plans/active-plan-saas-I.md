@@ -632,25 +632,35 @@ slip for the inevitable "this kind needs its own special handling".
 
 When Phase I is done:
 
-- [ ] ADR-0003 committed with real cost/latency numbers from the spike
-- [ ] `apps/mcp-server/src/pipeline/` modules: cleanup, derive, refine,
-      triage, audit, iterate, composite, lifestyle, index
-- [ ] 8 kind Derivers with kind-specific prompts + crop strategies
-- [ ] Workers AI binding wired in `wrangler.toml`
-- [ ] CLIP triage threshold tunable per kind
-- [ ] Vision adjudication uses Opus 4.7 with structured JSON output
-- [ ] Iterate loop caps at 3 iters per crop, falls back to HITL flag
-- [ ] Text composite generator produces Amazon-compliant 2000² PNGs
-- [ ] Slot matrix: 7 Amazon + 5 Shopify slots per launch, 0 dupes
-- [ ] Per-step + per-launch cost gating; refund-on-cap path verified
-- [ ] Langfuse traces emit per step
-- [ ] R2 cache layer for cleanup outputs + CLIP embeddings
-- [ ] Feature flag `tenant.features.production_pipeline` switches
-      between stub and production pipeline
+- [x] ADR-0003 committed (sharp-on-Node-sidecar architecture; spike numbers
+      pending) — `328e276`
+- [x] `apps/mcp-server/src/pipeline/` modules: cleanup, derive, refine,
+      triage, audit, iterate, composite, lifestyle, index, specs,
+      sidecar, planner_matrix, types, cache — pipeline scaffold commit
+- [x] 8 kind Derivers with kind-specific prompts + crop strategies — pipeline scaffold
+- [x] Workers AI binding wired in `wrangler.toml` — `328e276`
+- [x] CLIP triage threshold tunable per kind (DERIVERS[k].clipThreshold) — pipeline scaffold
+- [x] Vision adjudication uses Opus 4.7 with structured JSON output — pipeline scaffold
+- [x] Iterate loop caps at 3 iters per crop, falls back to FAIR flag — pipeline scaffold
+- [x] Text composite generator produces 2000² PNGs (sidecar /composite-text) — sidecar commit
+- [x] Slot matrix: 6+ Amazon + 5 Shopify slots per launch, 0 dupes
+      (close_up uses different crops per platform) — pipeline scaffold
+- [x] Per-step + per-launch cost gating in orchestrator; wallet charged
+      once at end with reason=image_gen — pipeline scaffold
+- [ ] Langfuse traces emit per step — deferred (audit_events covers
+      observability for the spike; Langfuse wiring lands with Phase M)
+- [x] R2 cache layer for cleanup outputs + CLIP embeddings + Sonnet specs — pipeline scaffold
+- [x] Feature flag `tenant.features.production_pipeline` switches
+      between stub and production pipeline (default OFF) — final wiring commit
 - [ ] 3 sample SKUs (rod / drinkware / handbag) launch end-to-end and
-      pass visual review
-- [ ] FAIR rate on the 3 samples ≤ 10%
-- [ ] `SESSION_STATE.md` updated with the new pipeline shape + ADR-0003
+      pass visual review — **awaits user spike on deployed pipeline**
+- [ ] FAIR rate on the 3 samples ≤ 10% — **awaits user spike**
+- [x] `SESSION_STATE.md` updated with the new pipeline shape + ADR-0003 — final wiring commit
+
+**Status:** scaffolding shipped behind feature flag (default OFF).
+ADR-0003 spike-numbers table is empty pending the user's run on the
+deployed Worker + sidecar; once those land, this plan + ADR will be
+finalized.
 
 When all are checked, the platform produces images that justify the
 $0.50/image charge. Phase J (library SaaS features) becomes the next

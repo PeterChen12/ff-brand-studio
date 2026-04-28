@@ -29,9 +29,13 @@ import {
   sellerProfiles,
   launchRuns,
   platformListings,
+  tenants,
   type Product,
 } from "../db/schema.js";
 import { planSkuLaunch, type LaunchPlatform, type PlannedWork } from "./planner.js";
+import { runProductionPipeline } from "../pipeline/index.js";
+import type { TenantFeatures, PipelineCtx } from "../pipeline/types.js";
+import type { KindType } from "@ff/types";
 import {
   generateWhiteBgWorker,
   generateLifestyleWorker,
@@ -70,6 +74,10 @@ export interface LaunchPipelineInput {
   openai_api_key?: string;
   dataforseo_login?: string;
   dataforseo_password?: string;
+  /** Phase I — pass the Worker env so the production pipeline (when
+   *  flag is on) can reach R2, AI binding, FAL, OpenAI, Anthropic, sidecar.
+   *  When undefined, the legacy stub pipeline runs regardless of flag. */
+  env?: CloudflareBindings;
 }
 
 export interface LaunchPipelineResult {
@@ -298,6 +306,93 @@ export async function runLaunchPipeline(
       .returning();
     variantId = newVar[0].id;
     notes.push(`auto-created default product_variant ${variantId}`);
+  }
+
+  // ── 5.5 Phase I — production pipeline dispatch ────────────────────────
+  // When tenant.features.production_pipeline is true AND the caller passed
+  // env, route to the production pipeline. Otherwise fall through to the
+  // legacy stub workers. This branch writes platform_assets directly,
+  // skips the canonical pool + adapter loop, and returns the launch result.
+  if (input.env) {
+    const [tenantRow] = await db
+      .select({ features: tenants.features })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    const features = (tenantRow?.features ?? {}) as TenantFeatures;
+    if (features.production_pipeline) {
+      const refRows = await db
+        .select({ r2Url: productReferences.r2Url })
+        .from(productReferences)
+        .where(eq(productReferences.productId, product.id));
+      // Convert public URLs back to R2 keys: strip the public host prefix.
+      const r2Public = input.env.R2_PUBLIC_URL.replace(/\/$/, "");
+      const referenceR2Keys = refRows
+        .map((r) => r.r2Url.replace(`${r2Public}/`, "").replace(/^https?:\/\/[^/]+\//, ""))
+        .filter((k) => k.length > 0);
+
+      const ctx: PipelineCtx = {
+        tenantId,
+        productId: product.id,
+        variantId,
+        runId,
+        sku: product.sku,
+        productName: product.nameEn,
+        productNameZh: product.nameZh,
+        category: product.category,
+        kind: (product.kind ?? "compact_square") as KindType,
+        referenceR2Keys,
+        features,
+        perLaunchCapCents: input.cost_cap_cents ?? 1000, // default $10 ceiling
+      };
+
+      const pipelineRes = await runProductionPipeline(input.env, db, {
+        ctx,
+        platforms: input.platforms,
+        product: {
+          id: product.id,
+          nameEn: product.nameEn,
+          category: product.category,
+          dimensions: product.dimensions,
+          materials: product.materials,
+        },
+      });
+
+      const status: LaunchPipelineResult["status"] = pipelineRes.ok
+        ? pipelineRes.fairCount > 0
+          ? "hitl_blocked"
+          : "succeeded"
+        : "failed";
+
+      await db
+        .update(launchRuns)
+        .set({
+          status,
+          totalCostCents: pipelineRes.totalCostCents,
+          hitlInterventions: pipelineRes.fairCount,
+          durationMs: Date.now() - startedAt,
+        })
+        .where(eq(launchRuns.id, runId));
+
+      return {
+        run_id: runId,
+        product_id: product.id,
+        product_sku: product.sku,
+        status,
+        duration_ms: Date.now() - startedAt,
+        total_cost_cents: pipelineRes.totalCostCents,
+        plan,
+        canonicals: [],
+        adapter_results: [],
+        hitl_count: pipelineRes.fairCount,
+        notes: [
+          ...notes,
+          `production_pipeline: ${pipelineRes.slotsWritten} slot(s) written, ` +
+            `${pipelineRes.fairCount} FAIR, ${pipelineRes.totalCostCents}¢ spent`,
+          ...pipelineRes.errors.map((e) => `pipeline error: ${e}`),
+        ],
+      };
+    }
   }
 
   // ── 6. Evaluator-optimizer per adapter target ──────────────────────────

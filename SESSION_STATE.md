@@ -1,6 +1,47 @@
-# Session State — 2026-04-27 (Phase J shipped — library SaaS)
+# Session State — 2026-04-27 (Phase I scaffolded; Phase J shipped)
 
 A compact catch-up doc so the next session can resume in <5 min. For deeper context read in this order: HANDOFF.md → V2_STATUS.md → V2_FINAL_AUDIT.md → V2_OPTIMIZATION_PLAN.md → docs/RUNBOOK.md → plans/active-plan-saas-G.md.
+
+---
+
+## Phase I — Production image pipeline — 🟡 scaffolded behind feature flag 2026-04-27
+
+Plan: `plans/active-plan-saas-I.md`. ADR-0003: `docs/adr/0003-image-pipeline-runtime.md`.
+
+**Architectural correction before build:** ADR-0003 was rewritten — `sharp` cannot run inside a Cloudflare Worker (V8 isolate, no native modules, even with `nodejs_compat`). Phase I now runs as a **Worker orchestrator + Node sidecar** split. The Worker owns all HTTP-call steps + billing + audit; sharp ops (4 endpoints) live in `apps/image-sidecar/`, called via HMAC-SHA256(`${ts}.${sha256(body)}`) over `IMAGE_SIDECAR_SECRET`.
+
+**Worker pipeline modules** at `apps/mcp-server/src/pipeline/`:
+- `cleanup.ts` — gpt-image-2 image-edit, R2-cached
+- `derive.ts` — calls sidecar `/derive` for kind-aware crops
+- `refine.ts` — FAL Nano Banana Pro `[studio, crop]` dual-ref + parallel pool with retry
+- `triage.ts` — Workers AI CLIP cosine, R2-cached embeddings
+- `audit.ts` — Opus 4.7 vision JSON verdict against per-kind checklist
+- `iterate.ts` — ≤3 iter loop with vision-feedback prompt amend; FAIR fallback
+- `lifestyle.ts` — single FAL render reused across Amazon + Shopify
+- `composite.ts` — sidecar `/composite-text` + `/banner-extend`
+- `specs.ts` — metadata→3 specs, Sonnet fallback (R2-cached)
+- `derivers/index.ts` — 8 Kind Derivers with refinePrompt + visionChecklist + lifestylePrompt + clipThreshold
+- `planner_matrix.ts` — 6 Amazon + 5 Shopify slot matrix → PipelineSource
+- `index.ts` — orchestrator, charges wallet once at end with reason=image_gen, runs the slot matrix to write platform_assets
+
+**Sidecar** at `apps/image-sidecar/` — Hono+Node service, Dockerfile, Render-ready. Endpoints: `/derive`, `/composite-text`, `/banner-extend`, `/force-white`, `/healthz`. Reads/writes R2 via @aws-sdk/client-s3.
+
+**Feature flag:** `tenant.features.production_pipeline` (default **OFF**). Existing tenants stay on the stubbed Phase 3 pipeline. `runLaunchPipeline` now accepts an optional `env: CloudflareBindings`; when present and the flag is on, it dispatches to `runProductionPipeline` and returns early.
+
+**Schema:** `products.kind text NOT NULL DEFAULT 'compact_square'` migration applied to prod (5 existing products → all `compact_square`). New product create form has a Kind selector with category-driven auto-suggest (overridable).
+
+**Tests:** 14 new unit tests (8 deriver coverage + 6 planner matrix) all green; existing 8 orchestrator tests still pass.
+
+**What ships dark:**
+- Pipeline does not run in production until per-tenant `production_pipeline=true` is set.
+- Sidecar URL+secret not yet provisioned — `IMAGE_SIDECAR_URL` is optional in bindings; calls return `{kind: "config_missing"}` until set.
+
+**To finish Phase I (next session):**
+1. Deploy `apps/image-sidecar` to Render free tier (or Fly $5/mo). Set `IMAGE_SIDECAR_URL` + `IMAGE_SIDECAR_SECRET` as Worker secrets (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET` go on the sidecar host).
+2. Enable `production_pipeline` on a dogfood tenant.
+3. Run the 3-SKU spike (rod/drinkware/handbag). Record per-step costs in ADR-0003 spike-numbers table.
+4. Tune deriver prompts based on visual review.
+5. When FAIR rate ≤ 10% across 200 launches, default-on `production_pipeline` for new tenants.
 
 ---
 
