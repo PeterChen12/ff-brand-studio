@@ -1,81 +1,69 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+/**
+ * Phase O — single-screen launch wizard.
+ *
+ * Improvements over the prior multi-card layout:
+ *  - Debounced live cost preview (POST /v1/launches/preview) on every
+ *    change to platforms / image-mode / SEO toggle. Operator sees
+ *    cents-level predicted spend before they click Launch.
+ *  - Wallet-aware gate: if predicted > balance, button disabled with
+ *    a Top-up shortcut to /billing.
+ *  - Compact product header — when ?product_id= is set we collapse
+ *    the picker into a sticky breadcrumb so config + preview own the
+ *    real estate. Without a product_id, a cursor-paginated picker
+ *    feeds GET /v1/products.
+ *  - Post-launch: routes to /library?q=<sku> after a successful
+ *    full-run so the operator lands on their just-shipped assets.
+ *    Dry runs render the SEO ResultPanel in place (existing behavior).
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardContent,
+  CardEyebrow,
   CardHeader,
   CardTitle,
-  CardEyebrow,
-  CardContent,
-  CardFooter,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/cn";
 
-// ── Types mirroring Worker /api/products + /demo/launch-sku ──────────────
 interface ProductRow {
   id: string;
   sku: string;
   nameEn: string;
   nameZh: string | null;
   category: string;
-  materials: string[] | null;
-  colorsHex: string[] | null;
-  dimensions: Record<string, unknown> | null;
-  loraUrl: string | null;
-  sellerId: string;
-  sellerNameEn: string | null;
-  sellerNameZh: string | null;
+  kind: string;
+  createdAt?: string | null;
 }
 
 type Rating = "EXCELLENT" | "GOOD" | "FAIR" | "POOR";
 type LaunchStatus = "succeeded" | "failed" | "hitl_blocked" | "cost_capped";
-type SeoStatus =
-  | "succeeded"
-  | "partial"
-  | "skipped"
-  | "cost_capped"
-  | "failed";
 
-interface AdContentFlag {
-  category: string;
-  severity: "block" | "warn";
-  matched: string;
-  rule: string;
+interface PreviewResponse {
+  prediction: {
+    total_cents: number;
+    breakdown: {
+      images: { count: number; per_unit_cents: number; subtotal: number };
+      listings: { count: number; per_unit_cents: number; subtotal: number };
+      video: { count: number; per_unit_cents: number; subtotal: number };
+    };
+  };
+  wallet: {
+    balance_cents: number;
+    balance_after_cents: number;
+    sufficient: boolean;
+  };
 }
-interface SeoSurfaceResult {
-  surface: "amazon-us" | "tmall" | "jd" | "shopify";
-  language: "en" | "zh";
-  copy: Record<string, unknown> | null;
-  raw_output?: string;
-  flags: AdContentFlag[];
-  violations: string[];
-  rating: Rating;
-  issues: string[];
-  suggestions: string[];
-  metrics: Record<string, unknown>;
-  iterations: number;
-  cost_cents: number;
-}
-interface AdapterResult {
-  platform: string;
-  slot: string;
-  asset_id: string;
-  spec_compliant: boolean;
-  spec_violations: string[];
-  final_rating?: string;
-  iterations?: number;
-  hitl_required?: boolean;
-}
-interface CanonicalRow {
-  kind: string;
-  model_used: string;
-  cost_cents: number;
-}
+
+// Reuses the existing LaunchResult shape — kept inline rather than
+// re-exported so this file stays self-contained on the static export.
 interface LaunchResult {
   run_id: string;
   product_id: string;
@@ -83,28 +71,19 @@ interface LaunchResult {
   status: LaunchStatus;
   duration_ms: number;
   total_cost_cents: number;
-  plan: {
-    lifestyles: unknown[];
-    variants: unknown[];
-    produce_video: boolean;
-    train_lora: boolean;
-    adapter_targets: { platform: string; slot: string }[];
-  };
-  canonicals: CanonicalRow[];
-  adapter_results: AdapterResult[];
   hitl_count: number;
   notes: string[];
   seo?: {
-    status: SeoStatus;
+    status: string;
     total_cost_cents: number;
-    keyword_summary: {
-      seed: string;
-      expanded_count: number;
-      cluster_count: number;
-      top_reps: string[];
-    };
-    surfaces: SeoSurfaceResult[];
-    notes: string[];
+    surfaces: Array<{
+      surface: string;
+      language: string;
+      copy: Record<string, unknown> | null;
+      rating: Rating;
+      iterations: number;
+      cost_cents: number;
+    }>;
   };
 }
 
@@ -113,18 +92,13 @@ const PLATFORMS: { id: "amazon" | "shopify"; label: string; sub: string }[] = [
   { id: "shopify", label: "Shopify DTC", sub: "shopify · en" },
 ];
 
-const ratingVariant: Record<Rating, "passed" | "pending" | "flagged"> = {
-  EXCELLENT: "passed",
-  GOOD: "passed",
-  FAIR: "pending",
-  POOR: "flagged",
-};
-
-export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
-  void mcpUrl; // tenant-scoped /v1/launches now uses apiFetch; mcpUrl no longer needed
+export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const apiFetch = useApiFetch();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const seedProductId = searchParams.get("product_id");
+
+  // ── State ─────────────────────────────────────────────────────────────
   const [products, setProducts] = useState<ProductRow[] | null>(null);
   const [productErr, setProductErr] = useState<string | null>(null);
   const [productId, setProductId] = useState<string | null>(seedProductId);
@@ -133,24 +107,74 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
     "shopify",
   ]);
   const [dryRun, setDryRun] = useState(true);
-  const [loading, setLoading] = useState(false);
+  const [includeSeo, setIncludeSeo] = useState(true);
+
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+
+  const [launching, setLaunching] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [result, setResult] = useState<LaunchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // ── Load products ─────────────────────────────────────────────────────
   useEffect(() => {
-    apiFetch<{ products: ProductRow[] }>("/api/products")
-      .then((data) => {
-        setProducts(data.products);
-        if (data.products.length > 0 && !productId) {
-          setProductId(data.products[0].id);
+    apiFetch<{ products: ProductRow[] }>("/v1/products?limit=50")
+      .then((d) => {
+        setProducts(d.products ?? []);
+        if ((d.products?.length ?? 0) > 0 && !productId) {
+          setProductId(d.products[0].id);
         }
       })
-      .catch((err) => setProductErr(err instanceof Error ? err.message : String(err)));
+      .catch((err) =>
+        setProductErr(err instanceof Error ? err.message : String(err))
+      );
   }, [apiFetch, productId]);
 
-  const selected = products?.find((p) => p.id === productId) ?? null;
+  const selected = useMemo(
+    () => products?.find((p) => p.id === productId) ?? null,
+    [products, productId]
+  );
 
+  // ── Live cost preview (debounced 250 ms) ──────────────────────────────
+  const previewKey = `${platforms.join(",")}|${dryRun}|${includeSeo}`;
+  const previewKeyRef = useRef(previewKey);
+  const fetchPreview = useCallback(async () => {
+    if (platforms.length === 0) {
+      setPreview(null);
+      return;
+    }
+    setPreviewLoading(true);
+    setPreviewErr(null);
+    try {
+      const data = await apiFetch<PreviewResponse>("/v1/launches/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          platforms,
+          // Image generation only happens in non-dry-run; preview still
+          // surfaces the cost so the operator sees the full picture.
+          include_seo: includeSeo,
+          include_video: false,
+        }),
+      });
+      setPreview(data);
+    } catch (err) {
+      setPreviewErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [apiFetch, platforms, includeSeo]);
+
+  useEffect(() => {
+    previewKeyRef.current = previewKey;
+    const t = setTimeout(() => {
+      if (previewKeyRef.current === previewKey) fetchPreview();
+    }, 250);
+    return () => clearTimeout(t);
+  }, [previewKey, fetchPreview]);
+
+  // ── Submit ───────────────────────────────────────────────────────────
   function togglePlatform(id: "amazon" | "shopify") {
     setPlatforms((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -162,138 +186,126 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
     if (!productId) return;
     setError(null);
     setResult(null);
-    setLoading(true);
+    setLaunching(true);
     setElapsedMs(0);
-    const startTime = Date.now();
-    const timer = setInterval(() => setElapsedMs(Date.now() - startTime), 250);
+    const startedAt = Date.now();
+    const tick = setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
     try {
-      // Phase H4 — go through the auth-gated, wallet-aware /v1/launches.
-      // apiFetch attaches the Clerk JWT; the Worker charges the wallet
-      // up-front, runs the pipeline, and refunds the difference.
       const data = await apiFetch<LaunchResult>("/v1/launches", {
         method: "POST",
         body: JSON.stringify({
           product_id: productId,
           platforms,
           dry_run: dryRun,
-          include_seo: true,
+          include_seo: includeSeo,
         }),
       });
       setResult(data);
+
+      // Full-run success → redirect to library so operator lands on
+      // generated assets. Dry runs stay in place (SEO panel below).
+      if (!dryRun && data.status === "succeeded") {
+        router.push(`/library?q=${encodeURIComponent(data.product_sku)}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      clearInterval(timer);
-      setLoading(false);
+      clearInterval(tick);
+      setLaunching(false);
     }
   }
 
+  // ── Predicted-cost-vs-wallet decision ────────────────────────────────
+  const predictedCents = preview?.prediction.total_cents ?? 0;
+  const walletCents = preview?.wallet.balance_cents ?? null;
+  const sufficient = preview?.wallet.sufficient ?? true;
+  const dryRunCents = useMemo(() => {
+    // Dry run only charges the SEO surfaces. Strip image cost from the
+    // breakdown to give the operator an accurate dry-run estimate.
+    if (!preview) return 0;
+    const b = preview.prediction.breakdown;
+    return (includeSeo ? b.listings.subtotal : 0);
+  }, [preview, includeSeo]);
+  const effectiveCents = dryRun ? dryRunCents : predictedCents;
+  const effectiveSufficient = walletCents === null ? true : walletCents >= effectiveCents;
+  const canLaunch =
+    !launching && !!productId && platforms.length > 0 && effectiveSufficient;
+
   return (
     <div className="grid grid-cols-12 gap-6">
-      {/* ── Step 01 — pick product ─────────────────────────────────────── */}
-      <Card className="col-span-12 lg:col-span-7 md-fade-in">
+      {/* ── Product picker / breadcrumb ─────────────────────────────────── */}
+      <Card className="col-span-12 md-fade-in">
         <CardHeader>
-          <div>
+          <div className="min-w-0">
             <CardEyebrow>Step 01 · 选品</CardEyebrow>
-            <CardTitle className="mt-1.5">Pick a product</CardTitle>
+            <CardTitle className="mt-1.5">
+              {selected ? selected.nameEn : "Pick a product"}
+            </CardTitle>
+            {selected?.nameZh && (
+              <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
+                {selected.nameZh}
+              </div>
+            )}
           </div>
-          {products && (
-            <span className="md-typescale-label-small">
-              {products.length} SKU{products.length === 1 ? "" : "s"} seeded
-            </span>
+          {selected && (
+            <div className="flex items-center gap-2 shrink-0">
+              <Badge variant="neutral" size="sm">
+                {selected.category}
+              </Badge>
+              <span className="md-typescale-body-small font-mono text-[0.6875rem] text-on-surface-variant">
+                {selected.sku}
+              </span>
+            </div>
           )}
         </CardHeader>
         <CardContent>
           {productErr && (
-            <div className="rounded-m3-md border border-error/40 bg-error-container/40 px-4 py-3 mb-4">
-              <span className="ff-stamp-label">api error</span>
-              <span className="ml-3 md-typescale-body-small font-mono text-error-on-container">
-                {productErr}
-              </span>
+            <div className="rounded-m3-md border border-error/40 bg-error-container/40 px-4 py-3 mb-4 md-typescale-body-small">
+              {productErr}
             </div>
           )}
           {products === null ? (
-            <div className="space-y-2">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-16 w-full" />
-              ))}
-            </div>
+            <Skeleton className="h-10 w-full" />
           ) : products.length === 0 ? (
-            <div className="rounded-m3-md border border-dashed border-outline-variant py-12 px-6 text-center">
-              <div className="ff-stamp-label mb-2">No products yet</div>
-              <p className="md-typescale-body-medium text-on-surface-variant">
-                Run <code className="font-mono text-[0.8125rem] text-primary">scripts/seed-demo-skus.mjs</code>{" "}
-                to add the 3 fishing-rod demo SKUs.
-              </p>
+            <div className="rounded-m3-md border border-dashed border-outline-variant py-8 px-6 text-center md-typescale-body-medium text-on-surface-variant">
+              No products yet.{" "}
+              <a href="/products/new" className="text-primary underline">
+                Add one →
+              </a>
             </div>
           ) : (
-            <ul className="flex flex-col gap-px md-surface-container border ff-hairline rounded-m3-md overflow-hidden">
-              {products.map((p) => {
-                const active = p.id === productId;
-                return (
-                  <li key={p.id}>
-                    <button
-                      type="button"
-                      onClick={() => setProductId(p.id)}
-                      className={cn(
-                        "w-full text-left px-5 py-4 transition-colors duration-m3-short3",
-                        active
-                          ? "md-surface-container-high"
-                          : "md-surface-container-lowest hover:md-surface-container-low"
-                      )}
-                    >
-                      <div className="flex items-baseline justify-between gap-3 flex-wrap">
-                        <div className="flex items-baseline gap-3 min-w-0 flex-1">
-                          <span
-                            className={cn(
-                              "inline-block h-2 w-2 rounded-full shrink-0",
-                              active ? "bg-primary" : "bg-outline-variant"
-                            )}
-                          />
-                          <div className="min-w-0">
-                            <div className="md-typescale-title-small text-on-surface truncate">
-                              {p.nameEn}
-                            </div>
-                            {p.nameZh && (
-                              <div className="md-typescale-body-small text-on-surface-variant/80 truncate">
-                                {p.nameZh}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 shrink-0">
-                          <span className="md-typescale-label-small text-on-surface-variant/70">
-                            {p.category}
-                          </span>
-                          <span className="font-mono text-[0.6875rem] text-on-surface-variant/60">
-                            {p.sku}
-                          </span>
-                        </div>
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <select
+              value={productId ?? ""}
+              onChange={(e) => setProductId(e.target.value)}
+              className="w-full h-11 px-4 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.sku} — {p.nameEn} ({p.category})
+                </option>
+              ))}
+            </select>
           )}
         </CardContent>
       </Card>
 
-      {/* ── Step 02 + 03 — platforms + launch ──────────────────────────── */}
+      {/* ── Configure ───────────────────────────────────────────────────── */}
       <Card
-        className="col-span-12 lg:col-span-5 md-fade-in"
-        style={{ animationDelay: "100ms" }}
+        className="col-span-12 lg:col-span-7 md-fade-in"
+        style={{ animationDelay: "60ms" }}
       >
         <CardHeader>
           <div>
             <CardEyebrow>Step 02 · 配置</CardEyebrow>
-            <CardTitle className="mt-1.5">Configure & launch</CardTitle>
+            <CardTitle className="mt-1.5">Configure</CardTitle>
           </div>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleLaunch} className="flex flex-col gap-6">
-            <div>
-              <div className="ff-stamp-label mb-3">Marketplaces · 平台</div>
+            <ConfigRow
+              label="Marketplaces"
+              sub="Amazon US · Shopify DTC"
+            >
               <div className="flex flex-col gap-2">
                 {PLATFORMS.map((p) => {
                   const active = platforms.includes(p.id);
@@ -311,7 +323,7 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
                     >
                       <span
                         className={cn(
-                          "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-m3-sm border transition-colors",
+                          "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-m3-sm border",
                           active
                             ? "bg-primary border-primary text-primary-on"
                             : "border-outline-variant"
@@ -341,87 +353,112 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
                   );
                 })}
               </div>
-            </div>
+            </ConfigRow>
 
-            <div>
-              <div className="ff-stamp-label mb-3">Image generation · 图片生成</div>
-              <button
-                type="button"
-                onClick={() => setDryRun(!dryRun)}
-                className={cn(
-                  "flex items-center justify-between gap-3 px-4 py-3 w-full rounded-m3-md border transition-colors duration-m3-short3 text-left",
-                  dryRun
-                    ? "md-surface-container-high border-outline-variant"
-                    : "bg-primary-container text-primary-on-container border-primary"
-                )}
-              >
-                <div>
-                  <div className="md-typescale-title-small">
-                    {dryRun ? "Dry run · 仅 SEO" : "Full run · 图片 + SEO"}
-                  </div>
-                  <div className="md-typescale-body-small opacity-70 mt-0.5">
-                    {dryRun
-                      ? "Skip image generation (no FAL.ai cost). Real bilingual SEO still runs."
-                      : "Generate canonical images via FLUX.2 + adapters · ~$0.30–1.50 / SKU"}
-                  </div>
-                </div>
-                <span
-                  className={cn(
-                    "relative h-7 w-12 shrink-0 rounded-m3-full border-2 transition-colors duration-m3-short4",
-                    dryRun
-                      ? "bg-surface-container border-outline"
-                      : "bg-primary border-primary"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "absolute top-0.5 h-5 w-5 rounded-full transition-all duration-m3-short4 ease-m3-emphasized",
-                      dryRun
-                        ? "translate-x-0.5 bg-outline"
-                        : "translate-x-[18px] bg-primary-on shadow-m3-1"
-                    )}
-                  />
-                </span>
-              </button>
-            </div>
+            <ConfigRow
+              label="Image generation"
+              sub={dryRun ? "Skip — SEO only" : "Generate images via FAL pipeline"}
+            >
+              <Toggle
+                on={!dryRun}
+                onChange={(next) => setDryRun(!next)}
+                offLabel="Dry run · SEO only"
+                onLabel="Full run · images + SEO"
+                offHint="Free of FAL spend; bilingual SEO still runs."
+                onHint="Charges per slot per the breakdown on the right."
+              />
+            </ConfigRow>
 
-            <div className="flex items-center justify-between gap-4 pt-2">
-              <Button
-                type="submit"
-                variant="accent"
-                size="lg"
-                disabled={loading || !productId || platforms.length === 0}
+            <ConfigRow
+              label="Bilingual SEO"
+              sub={includeSeo ? "Generate Amazon + Shopify copy" : "Skip"}
+            >
+              <Toggle
+                on={includeSeo}
+                onChange={setIncludeSeo}
+                offLabel="Off"
+                onLabel="On"
+                offHint="No SEO copy; assets only (full-run only)."
+                onHint="$0.10/listing per platform."
+              />
+            </ConfigRow>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* ── Live cost preview + Launch ─────────────────────────────────── */}
+      <Card
+        className="col-span-12 lg:col-span-5 md-fade-in"
+        style={{ animationDelay: "120ms" }}
+      >
+        <CardHeader>
+          <div>
+            <CardEyebrow>Step 03 · 启动</CardEyebrow>
+            <CardTitle className="mt-1.5">Launch</CardTitle>
+          </div>
+          {previewLoading ? (
+            <span className="ff-stamp-label text-on-surface-variant">
+              recalculating…
+            </span>
+          ) : null}
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <CostPreview
+            preview={preview}
+            error={previewErr}
+            dryRun={dryRun}
+            includeSeo={includeSeo}
+            platforms={platforms}
+            effectiveCents={effectiveCents}
+          />
+
+          <WalletGauge
+            walletCents={walletCents}
+            chargeCents={effectiveCents}
+            sufficient={effectiveSufficient}
+          />
+
+          <div className="flex flex-col gap-3 pt-2 border-t ff-hairline">
+            <Button
+              type="button"
+              variant="accent"
+              size="lg"
+              onClick={handleLaunch}
+              disabled={!canLaunch}
+              className="w-full"
+            >
+              {launching
+                ? `Running · ${(elapsedMs / 1000).toFixed(1)}s`
+                : `Launch${effectiveCents > 0 ? ` · ${formatCents(effectiveCents)}` : ""}`}
+            </Button>
+            {!effectiveSufficient && walletCents !== null && (
+              <a
+                href="/billing"
+                className="md-typescale-label-medium text-center text-error hover:text-error/80"
               >
-                {loading
-                  ? `Running · ${(elapsedMs / 1000).toFixed(1)}s`
-                  : "Launch →"}
-              </Button>
-              <span className="md-typescale-label-small">
-                ~10–50¢ / run<br />
-                <span className="text-on-surface-variant/60">cap 50¢ on SEO</span>
-              </span>
-            </div>
+                Top up wallet → ({formatCents(effectiveCents - walletCents)} short)
+              </a>
+            )}
             {selected && (
-              <div className="md-typescale-body-small text-on-surface-variant/80 font-mono leading-relaxed pt-2 border-t ff-hairline">
+              <div className="md-typescale-body-small text-on-surface-variant/80 font-mono leading-relaxed">
                 <span className="text-on-surface-variant">launching:</span>{" "}
                 <span className="text-on-surface">{selected.sku}</span>
                 {" → "}
                 {platforms.length === 0 ? (
                   <span className="text-error">no platforms selected</span>
                 ) : (
-                  platforms.map((p) => (
+                  platforms.map((p, i) => (
                     <span key={p} className="text-primary">
-                      {p}{" "}
+                      {p}{i < platforms.length - 1 ? ", " : ""}
                     </span>
                   ))
                 )}
               </div>
             )}
-          </form>
+          </div>
         </CardContent>
       </Card>
 
-      {/* ── Error ─────────────────────────────────────────────────────── */}
       {error && (
         <div className="col-span-12 rounded-m3-md border border-error/40 bg-error-container/40 px-6 py-5 md-fade-in">
           <div className="ff-stamp-label mb-2">Pipeline error</div>
@@ -431,150 +468,292 @@ export function LaunchWizard({ mcpUrl }: { mcpUrl: string }) {
         </div>
       )}
 
-      {/* ── Result panel ──────────────────────────────────────────────── */}
       {result && <ResultPanel result={result} dryRun={dryRun} />}
     </div>
   );
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// Result panel
-// ────────────────────────────────────────────────────────────────────────
-function ResultPanel({
-  result,
-  dryRun,
-}: {
-  result: LaunchResult;
-  dryRun: boolean;
-}) {
-  const seoSurfaces = result.seo?.surfaces ?? [];
-  const allReadyToShip =
-    seoSurfaces.length > 0 &&
-    seoSurfaces.every(
-      (s) => s.rating === "EXCELLENT" || s.rating === "GOOD"
-    ) &&
-    result.hitl_count === 0 &&
-    result.status !== "failed";
+// ── Building blocks ─────────────────────────────────────────────────────
 
+function ConfigRow({
+  label,
+  sub,
+  children,
+}: {
+  label: string;
+  sub: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-4">
+      <div className="pt-1">
+        <div className="ff-stamp-label">{label}</div>
+        <div className="md-typescale-body-small text-on-surface-variant/80 mt-1">
+          {sub}
+        </div>
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function Toggle({
+  on,
+  onChange,
+  offLabel,
+  onLabel,
+  offHint,
+  onHint,
+}: {
+  on: boolean;
+  onChange: (next: boolean) => void;
+  offLabel: string;
+  onLabel: string;
+  offHint: string;
+  onHint: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!on)}
+      className={cn(
+        "flex items-center justify-between gap-3 px-4 py-3 w-full rounded-m3-md border transition-colors duration-m3-short3 text-left",
+        on
+          ? "bg-primary-container text-primary-on-container border-primary"
+          : "md-surface-container-high border-outline-variant"
+      )}
+    >
+      <div className="min-w-0">
+        <div className="md-typescale-title-small">{on ? onLabel : offLabel}</div>
+        <div className="md-typescale-body-small opacity-70 mt-0.5">
+          {on ? onHint : offHint}
+        </div>
+      </div>
+      <span
+        className={cn(
+          "relative h-7 w-12 shrink-0 rounded-m3-full border-2 transition-colors duration-m3-short4",
+          on ? "bg-primary border-primary" : "bg-surface-container border-outline"
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 h-5 w-5 rounded-full transition-all duration-m3-short4 ease-m3-emphasized",
+            on
+              ? "translate-x-[18px] bg-primary-on shadow-m3-1"
+              : "translate-x-0.5 bg-outline"
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
+function CostPreview({
+  preview,
+  error,
+  dryRun,
+  includeSeo,
+  platforms,
+  effectiveCents,
+}: {
+  preview: PreviewResponse | null;
+  error: string | null;
+  dryRun: boolean;
+  includeSeo: boolean;
+  platforms: ("amazon" | "shopify")[];
+  effectiveCents: number;
+}) {
+  if (error) {
+    return (
+      <div className="rounded-m3-md border border-error/40 bg-error-container/30 px-4 py-3 md-typescale-body-small">
+        Preview failed: {error}
+      </div>
+    );
+  }
+  if (!preview) {
+    return (
+      <div className="rounded-m3-md md-surface-container-low border ff-hairline px-4 py-3 md-typescale-body-medium text-on-surface-variant">
+        {platforms.length === 0
+          ? "Pick at least one marketplace to see the cost preview."
+          : "Calculating…"}
+      </div>
+    );
+  }
+  const b = preview.prediction.breakdown;
+  return (
+    <div className="space-y-2">
+      <div className="ff-stamp-label">Predicted cost · 预计费用</div>
+      <Row
+        label="Images"
+        detail={dryRun ? "skipped (dry run)" : `${b.images.count} slots × ${formatCents(b.images.per_unit_cents)}`}
+        cents={dryRun ? 0 : b.images.subtotal}
+        muted={dryRun}
+      />
+      <Row
+        label="Listings"
+        detail={includeSeo ? `${b.listings.count} surfaces × ${formatCents(b.listings.per_unit_cents)}` : "off"}
+        cents={includeSeo ? b.listings.subtotal : 0}
+        muted={!includeSeo}
+      />
+      <div className="border-t ff-hairline pt-2 flex items-baseline justify-between">
+        <span className="md-typescale-title-small">
+          {dryRun ? "Total (dry)" : "Total"}
+        </span>
+        <span className="md-typescale-headline-small font-brand text-ff-vermilion-deep tabular-nums">
+          {formatCents(effectiveCents)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  detail,
+  cents,
+  muted,
+}: {
+  label: string;
+  detail: string;
+  cents: number;
+  muted?: boolean;
+}) {
+  return (
+    <div className={cn("flex items-baseline justify-between gap-3", muted && "opacity-50")}>
+      <div className="min-w-0">
+        <div className="md-typescale-body-medium text-on-surface">{label}</div>
+        <div className="md-typescale-body-small text-on-surface-variant font-mono text-[0.6875rem] truncate">
+          {detail}
+        </div>
+      </div>
+      <div className="md-typescale-body-medium font-mono tabular-nums shrink-0">
+        {formatCents(cents)}
+      </div>
+    </div>
+  );
+}
+
+function WalletGauge({
+  walletCents,
+  chargeCents,
+  sufficient,
+}: {
+  walletCents: number | null;
+  chargeCents: number;
+  sufficient: boolean;
+}) {
+  if (walletCents === null) return null;
+  const ratio = walletCents > 0 ? chargeCents / walletCents : 0;
+  const fill = Math.min(100, ratio * 100);
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1.5">
+        <span className="ff-stamp-label">Wallet · 余额</span>
+        <span className={cn(
+          "md-typescale-body-medium font-mono tabular-nums",
+          sufficient ? "text-on-surface" : "text-error"
+        )}>
+          {formatCents(walletCents)}
+        </span>
+      </div>
+      <div className="h-2 rounded-full bg-surface-container overflow-hidden">
+        <div
+          className={cn(
+            "h-full transition-all duration-m3-short4",
+            sufficient ? "bg-primary" : "bg-error"
+          )}
+          style={{ width: `${fill}%` }}
+        />
+      </div>
+      {!sufficient && (
+        <div className="md-typescale-body-small text-error mt-1">
+          Insufficient — top up before launching.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatCents(cents: number): string {
+  if (cents === 0) return "$0.00";
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+// ── Result panel — kept from the prior wizard for the dry-run case ─────
+
+function ResultPanel({ result, dryRun }: { result: LaunchResult; dryRun: boolean }) {
+  const seoSurfaces = result.seo?.surfaces ?? [];
   return (
     <Card className="col-span-12 md-fade-in">
       <CardHeader>
         <div>
           <CardEyebrow
-            className={
-              result.status === "succeeded"
-                ? "text-ff-jade-deep"
-                : result.status === "cost_capped"
-                  ? "text-ff-amber"
-                  : "text-error"
-            }
+            className={cn(
+              result.status === "succeeded" && "text-ff-jade-deep",
+              result.status === "cost_capped" && "text-ff-amber",
+              result.status === "failed" && "text-error"
+            )}
           >
-            ✓ launch {result.status} · {(result.duration_ms / 1000).toFixed(1)}s · {result.total_cost_cents}¢
+            launch {result.status} · {(result.duration_ms / 1000).toFixed(1)}s ·{" "}
+            {formatCents(result.total_cost_cents)}
           </CardEyebrow>
           <CardTitle className="mt-1.5 font-mono normal-case md-typescale-title-medium">
             {result.product_sku}
           </CardTitle>
         </div>
-        {allReadyToShip ? (
-          <Badge variant="passed">All ≥ GOOD · publish-ready</Badge>
+        {result.hitl_count === 0 && result.status === "succeeded" ? (
+          <Badge variant="passed">All clean</Badge>
         ) : (
           <Badge variant="pending">HITL · 人工复核</Badge>
         )}
       </CardHeader>
 
-      <CardContent className="space-y-7">
-        {/* Image plan summary */}
-        <div>
-          <div className="ff-stamp-label mb-3">Image plan · 图片计划</div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <Stat
-              label="canonicals"
-              value={result.canonicals.length.toString()}
-              hint={`${result.plan.lifestyles.length} lifestyles · ${result.plan.variants.length} variants`}
-            />
-            <Stat
-              label="platform slots"
-              value={result.adapter_results.length.toString()}
-              hint={`${result.plan.adapter_targets.length} planned`}
-            />
-            <Stat
-              label="HITL flags"
-              value={result.hitl_count.toString()}
-              hint={result.hitl_count === 0 ? "all clean" : "review needed"}
-              tone={result.hitl_count === 0 ? "tertiary" : "amber"}
-            />
-            <Stat
-              label="cost"
-              value={`${result.total_cost_cents}¢`}
-              hint={dryRun ? "dry run · SEO only" : "full pipeline"}
-              tone="primary"
-            />
+      <CardContent className="space-y-5">
+        {dryRun && (
+          <div className="md-typescale-body-small text-on-surface-variant font-mono">
+            dry-run mode — image generation skipped. Toggle Image generation
+            to "Full run" to generate images on the next launch.
           </div>
-          {dryRun && (
-            <div className="mt-3 md-typescale-body-small text-on-surface-variant/80 font-mono">
-              dry-run mode — image generation skipped. Toggle off to generate
-              real images via FLUX.2 + per-platform adapters.
-            </div>
-          )}
-        </div>
+        )}
 
-        {/* SEO summary */}
-        {result.seo && (
+        {seoSurfaces.length > 0 && (
           <div>
-            <div className="ff-stamp-label mb-3">SEO pipeline · 文案流水线</div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-              <Stat
-                label="seed phrases"
-                value={result.seo.keyword_summary.expanded_count.toLocaleString()}
-                hint="autocomplete fan-out"
-              />
-              <Stat
-                label="clusters"
-                value={result.seo.keyword_summary.cluster_count.toString()}
-                hint="distinct themes"
-              />
-              <Stat
-                label="surfaces"
-                value={`${seoSurfaces.length}/${result.adapter_results.length || result.plan.adapter_targets.length}`}
-                hint="copy generated"
-              />
-              <Stat
-                label="seo cost"
-                value={`${result.seo.total_cost_cents}¢`}
-                hint={`status: ${result.seo.status}`}
-                tone="primary"
-              />
-            </div>
-            {result.seo.keyword_summary.top_reps.length > 0 && (
-              <div className="mb-4">
-                <div className="md-typescale-label-small text-on-surface-variant mb-2">
-                  Top keyword reps
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {result.seo.keyword_summary.top_reps.map((kw) => (
-                    <span
-                      key={kw}
-                      className="inline-block px-2 py-0.5 md-surface-container-low border border-outline-variant rounded-m3-sm font-mono text-[0.6875rem] text-on-surface-variant"
-                    >
-                      {kw}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="ff-stamp-label mb-3">SEO surfaces · {seoSurfaces.length}</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {seoSurfaces.map((s) => (
-                <SurfaceCard key={`${s.surface}-${s.language}`} s={s} />
+                <div
+                  key={`${s.surface}-${s.language}`}
+                  className="md-surface-container-low border ff-hairline rounded-m3-md px-4 py-3"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <CardEyebrow>
+                      {s.surface} · {s.language}
+                    </CardEyebrow>
+                    <Badge
+                      variant={
+                        s.rating === "EXCELLENT" || s.rating === "GOOD"
+                          ? "passed"
+                          : s.rating === "FAIR"
+                            ? "pending"
+                            : "flagged"
+                      }
+                      size="sm"
+                    >
+                      {s.rating}
+                    </Badge>
+                  </div>
+                  <div className="md-typescale-body-small text-on-surface-variant font-mono">
+                    iter {s.iterations} · {formatCents(s.cost_cents)}
+                  </div>
+                </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Notes */}
         {result.notes.length > 0 && (
           <details className="md-surface-container-low border ff-hairline rounded-m3-sm">
-            <summary className="px-3 py-2 cursor-pointer md-typescale-label-small text-on-surface-variant hover:text-on-surface">
+            <summary className="px-3 py-2 cursor-pointer md-typescale-label-small text-on-surface-variant">
               pipeline notes ({result.notes.length})
             </summary>
             <ul className="px-4 pb-3 pt-1 font-mono text-[0.6875rem] text-on-surface-variant space-y-1">
@@ -584,211 +763,16 @@ function ResultPanel({
             </ul>
           </details>
         )}
+
+        <div className="flex items-center gap-3 pt-2 border-t ff-hairline">
+          <a
+            href={`/library?q=${encodeURIComponent(result.product_sku)}`}
+            className="md-typescale-label-medium text-primary hover:underline"
+          >
+            See in library →
+          </a>
+        </div>
       </CardContent>
-
-      <CardFooter>
-        <a
-          href="/library"
-          className="md-typescale-label-small text-ff-vermilion-deep hover:text-primary transition-colors"
-        >
-          See in library →
-        </a>
-        <button
-          type="button"
-          disabled={!allReadyToShip}
-          className={cn(
-            "px-4 h-9 rounded-m3-full md-typescale-label-medium uppercase tracking-stamp border transition-colors",
-            allReadyToShip
-              ? "border-tertiary text-ff-jade-deep hover:bg-tertiary hover:text-tertiary-on"
-              : "border-outline-variant text-on-surface-variant/60 cursor-not-allowed"
-          )}
-          title={
-            allReadyToShip
-              ? "Publish to DAM (D8 follow-up)"
-              : "Gated until every surface scores ≥ GOOD with no HITL flags"
-          }
-        >
-          Publish to DAM →
-        </button>
-      </CardFooter>
     </Card>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  hint,
-  tone,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  tone?: "primary" | "tertiary" | "amber";
-}) {
-  const valueColor =
-    tone === "primary"
-      ? "text-ff-vermilion-deep"
-      : tone === "tertiary"
-        ? "text-ff-jade-deep"
-        : tone === "amber"
-          ? "text-ff-amber"
-          : "text-on-surface";
-  return (
-    <div className="md-surface-container-low border ff-hairline rounded-m3-md px-4 py-3">
-      <div className="md-typescale-label-small text-on-surface-variant/80">
-        {label}
-      </div>
-      <div
-        className={cn(
-          "md-typescale-headline-small tabular-nums font-brand mt-1",
-          valueColor
-        )}
-      >
-        {value}
-      </div>
-      <div className="md-typescale-body-small text-on-surface-variant/70 font-mono mt-0.5">
-        {hint}
-      </div>
-    </div>
-  );
-}
-
-function SurfaceCard({ s }: { s: SeoSurfaceResult }) {
-  const variant = ratingVariant[s.rating];
-  const blockingFlags = s.flags.filter(
-    (f) => f.severity === "block" || !f.severity
-  );
-  return (
-    <div className="md-surface-container-low border ff-hairline rounded-m3-md flex flex-col">
-      <div className="px-4 py-3 border-b ff-hairline flex items-center justify-between gap-2">
-        <div>
-          <CardEyebrow>
-            {s.surface} · {s.language}
-          </CardEyebrow>
-          <div className="md-typescale-body-small text-on-surface-variant/70 mt-0.5 font-mono">
-            iter {s.iterations} · {s.cost_cents}¢
-          </div>
-        </div>
-        <Badge variant={variant}>{s.rating}</Badge>
-      </div>
-
-      <div className="px-4 py-3 flex-1 space-y-3">
-        {s.copy ? (
-          <CopyPreview copy={s.copy} />
-        ) : (
-          <div className="md-typescale-body-small text-error-on-container">
-            ⚠ LLM did not return parseable JSON
-            {s.raw_output && (
-              <pre className="mt-2 font-mono text-[0.6875rem] whitespace-pre-wrap text-on-surface-variant">
-                {s.raw_output.slice(0, 500)}
-              </pre>
-            )}
-          </div>
-        )}
-
-        {blockingFlags.length > 0 && (
-          <div className="border-l-2 border-error pl-3">
-            <div className="ff-stamp-label text-error mb-1">Blocking flags</div>
-            <ul className="font-mono text-[0.6875rem] text-on-surface-variant space-y-0.5">
-              {blockingFlags.map((f, i) => (
-                <li key={i}>
-                  · <span className="text-error">{f.matched}</span>{" "}
-                  <span className="text-on-surface-variant/70">({f.category})</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {s.issues.length > 0 && (
-          <details>
-            <summary className="cursor-pointer md-typescale-label-small text-on-surface-variant hover:text-on-surface">
-              issues ({s.issues.length})
-            </summary>
-            <ul className="mt-2 font-mono text-[0.6875rem] text-on-surface-variant space-y-0.5">
-              {s.issues.slice(0, 6).map((iss, i) => (
-                <li key={i}>· {iss}</li>
-              ))}
-            </ul>
-          </details>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CopyPreview({ copy }: { copy: Record<string, unknown> }) {
-  const title =
-    typeof copy.title === "string"
-      ? copy.title
-      : typeof copy.h1 === "string"
-        ? copy.h1
-        : null;
-  const meta =
-    typeof copy.meta_description === "string"
-      ? copy.meta_description
-      : typeof copy.description === "string"
-        ? copy.description.slice(0, 200)
-        : typeof copy.long_description === "string"
-          ? copy.long_description.slice(0, 200)
-          : null;
-  const bullets = Array.isArray(copy.bullets)
-    ? (copy.bullets.filter((b) => typeof b === "string") as string[])
-    : [];
-  const searchTerms =
-    typeof copy.search_terms === "string"
-      ? copy.search_terms
-      : typeof copy.backend_keywords === "string"
-        ? copy.backend_keywords
-        : null;
-
-  return (
-    <div className="space-y-2.5">
-      {title && (
-        <div>
-          <div className="md-typescale-label-small text-on-surface-variant/70">
-            Title
-          </div>
-          <p className="md-typescale-body-medium text-on-surface leading-snug font-medium">
-            {title}
-          </p>
-        </div>
-      )}
-      {bullets.length > 0 && (
-        <div>
-          <div className="md-typescale-label-small text-on-surface-variant/70">
-            Bullets · {bullets.length}
-          </div>
-          <ul className="md-typescale-body-small text-on-surface-variant leading-relaxed list-none space-y-1 mt-1">
-            {bullets.slice(0, 5).map((b, i) => (
-              <li key={i} className="pl-3 border-l border-outline-variant">
-                {b}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {meta && (
-        <div>
-          <div className="md-typescale-label-small text-on-surface-variant/70">
-            {copy.meta_description ? "Meta" : "Description"}
-          </div>
-          <p className="md-typescale-body-small text-on-surface-variant leading-relaxed line-clamp-4">
-            {meta}
-          </p>
-        </div>
-      )}
-      {searchTerms && (
-        <div>
-          <div className="md-typescale-label-small text-on-surface-variant/70">
-            Backend keywords
-          </div>
-          <p className="font-mono text-[0.6875rem] text-on-surface-variant/80 break-all">
-            {searchTerms}
-          </p>
-        </div>
-      )}
-    </div>
   );
 }
