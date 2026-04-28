@@ -767,6 +767,71 @@ app.get("/v1/listings", async (c) => {
   }
 });
 
+// Phase K2 — feedback-driven asset regeneration. Behind tenant.features.feedback_regen.
+app.post("/v1/assets/:id/regenerate", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const id = c.req.param("id");
+    const body = (await c.req.json()) as { feedback?: string; chips?: string[] };
+
+    const features = (tenant.features ?? {}) as Record<string, unknown>;
+    if (features.feedback_regen !== true) {
+      return c.json({ error: "feature_disabled", feature: "feedback_regen" }, 403);
+    }
+
+    const { checkRegenCap } = await import("./lib/regen-cap.js");
+    const cap = await checkRegenCap(db, tenant.id);
+    if (!cap.allowed) {
+      return c.json(
+        { error: "monthly_cap_reached", used: cap.used, cap: cap.cap },
+        429
+      );
+    }
+
+    const { regenerateAsset } = await import("./lib/regenerate-asset.js");
+    const result = await regenerateAsset(c.env, db, {
+      assetId: id,
+      tenantIdsInScope: visibleTenantIds(tenant),
+      tenantId: tenant.id,
+      actor: actor ?? null,
+      feedback: typeof body.feedback === "string" ? body.feedback : "",
+      chips: Array.isArray(body.chips) ? body.chips.slice(0, 6).map(String) : [],
+    });
+    if (!result.ok) {
+      const status = result.reason === "not_found" ? 404
+        : result.reason === "wallet" ? 402
+        : result.reason === "fal_missing" ? 503
+        : 500;
+      return c.json({ error: result.reason, message: result.message }, status);
+    }
+    return c.json({
+      asset: result.asset,
+      r2Url: result.newR2Url,
+      costCents: result.costCents,
+      cap: { used: cap.used + 1, cap: cap.cap },
+    });
+  } catch (err) {
+    console.error("[/v1/assets/:id/regenerate]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase K2 — read current month's regen cap status.
+app.get("/v1/assets/regen-cap", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const { checkRegenCap } = await import("./lib/regen-cap.js");
+    const cap = await checkRegenCap(db, tenant.id);
+    return c.json(cap);
+  } catch (err) {
+    console.error("[/v1/assets/regen-cap]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // Phase K1 — PATCH a listing with version-trail + brand-rules validation.
 app.patch("/v1/listings/:id", async (c) => {
   try {

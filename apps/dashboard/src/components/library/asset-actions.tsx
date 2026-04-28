@@ -8,6 +8,7 @@ import {
   BundleTooLargeError,
   type BundleSku,
 } from "@/lib/zip-bundler";
+import { RegenModal } from "@/components/library/regen-modal";
 
 const baseBtn =
   "inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full md-typescale-label-medium transition-colors duration-m3-short3";
@@ -31,6 +32,40 @@ export function DownloadAssetButton({
     >
       ↓ Download
     </button>
+  );
+}
+
+export function RegenAssetButton({
+  item,
+  onRegenerated,
+}: {
+  item: PlatformAssetRow;
+  onRegenerated?: (newR2Url: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        className={`${baseBtn} bg-surface-container text-on-surface hover:bg-surface-container-high border ff-hairline`}
+        aria-label={`Regenerate ${item.platform} ${item.slot}`}
+      >
+        ↻ Regenerate
+      </button>
+      <RegenModal
+        asset={item}
+        open={open}
+        onClose={() => setOpen(false)}
+        onRegenerated={(url) => {
+          onRegenerated?.(url);
+          setOpen(false);
+        }}
+      />
+    </>
   );
 }
 

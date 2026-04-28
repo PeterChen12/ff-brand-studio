@@ -21,6 +21,7 @@ import { isImageFormat, type SkuGroupShape } from "@/components/library/types";
 import {
   BundleSkuButton,
   DownloadAssetButton,
+  RegenAssetButton,
 } from "@/components/library/asset-actions";
 import {
   FilterBar,
@@ -384,8 +385,9 @@ function PlatformAssetTile({
           </span>
         </div>
         {isImage && (
-          <div className="pt-1">
+          <div className="pt-1 flex gap-2 flex-wrap">
             <DownloadAssetButton item={item} sku={sku} />
+            <RegenAssetButton item={item} />
           </div>
         )}
       </div>
