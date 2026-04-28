@@ -142,6 +142,7 @@ export const platformAssets = pgTable(
     modelUsed: text("model_used"),
     costCents: integer("cost_cents"),
     generationParams: jsonb("generation_params"),
+    approvedAt: timestamp("approved_at"),
     createdAt: timestamp("created_at").defaultNow(),
   },
   (t) => ({
@@ -228,6 +229,7 @@ export const platformListings = pgTable(
     iterations: integer("iterations").notNull().default(1),
     costCents: integer("cost_cents").notNull().default(0),
     status: text("status").notNull().default("draft"),
+    approvedAt: timestamp("approved_at"),
     createdAt: timestamp("created_at").defaultNow(),
     updatedAt: timestamp("updated_at").defaultNow(),
   },

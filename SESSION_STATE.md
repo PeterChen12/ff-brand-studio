@@ -1,4 +1,32 @@
-# Session State — 2026-04-27 (Phase I scaffolded; Phase J shipped)
+# Session State — 2026-04-27 (Phase K shipped — iterate + publish)
+
+A compact catch-up doc so the next session can resume in <5 min.
+
+---
+
+## Phase K — Edit + Publish — ✅ shipped 2026-04-27
+
+Plan: `plans/active-plan-saas-K.md`. Three iterations: `c62c1dd` (K1) →
+`ebf0847` (K2) → K3 (this commit).
+
+| Iter | What ships | Commit |
+|---|---|---|
+| K1 | Inline editor with per-surface brand-rule validation; PATCH /v1/listings/:id with version trail (platform_listings_versions row before each save); GET /v1/listings/:id/versions; word-level diff side panel | `c62c1dd` |
+| K2 | POST /v1/assets/:id/regenerate (30¢ charge with refund-on-fail, behind tenant.features.feedback_regen); per-tenant monthly cap (default 200, ceiling 1000); GET /v1/assets/regen-cap; library tile gets Regenerate button + chip-palette modal | `ebf0847` |
+| K3 | Migration adds platform_listings.approved_at + platform_assets.approved_at (applied to prod); approve/unapprove/publish endpoints; in-Worker ZIP builder produces tenant/<tid>/exports/<runId>/<sku>-bundle.zip with Amazon Inventory File CSV + Shopify Product CSV + manifest.json + per-slot image folders; Resend email with 7-day presigned link | this commit |
+
+**Non-trivial implementation notes:**
+- ZIP builder is hand-rolled store-only (no jszip dependency in the
+  Worker — keeps cold-start lean). CRC-32 table precomputed at module
+  load; supports up to ~16 image entries before memory pressure.
+- presignGetUrl uses the same aws4fetch SigV4 pattern as Phase H1's PUT
+  presign; reuses the R2 access keys.
+- Email is opt-in: client passes `email` in the publish body or it's
+  skipped. Free Resend tier (3K/mo) covers projected K+L volume.
+
+---
+
+## Phase I — Production image pipeline — 🟡 scaffolded behind feature flag 2026-04-27
 
 A compact catch-up doc so the next session can resume in <5 min. For deeper context read in this order: HANDOFF.md → V2_STATUS.md → V2_FINAL_AUDIT.md → V2_OPTIMIZATION_PLAN.md → docs/RUNBOOK.md → plans/active-plan-saas-G.md.
 

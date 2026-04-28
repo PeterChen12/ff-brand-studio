@@ -224,18 +224,24 @@ volume rates with FAL.
 
 When Phase K is done:
 
-- [ ] Inline editor with per-field validators on every Amazon /
-      Shopify field
-- [ ] Edits persist; `platform_listings_versions` rows written
-- [ ] Side-panel diff viewer shows last vs current
-- [ ] Right-click any asset → regen modal with feedback chips
-- [ ] Regen charges $0.30, refunds on failure
-- [ ] Per-tenant monthly regen cap enforced
-- [ ] SKU approval flow sets `approved_at` everywhere
-- [ ] Publish-to-R2 produces a ZIP + manifest at
-      `tenant/<tid>/exports/...`
-- [ ] Operator gets a Resend email with a presigned download link
-- [ ] `SESSION_STATE.md` updated with the iterate-then-publish flow
+- [x] Inline editor with per-field validators on every Amazon /
+      Shopify field — `c62c1dd` (K1)
+- [x] Edits persist; `platform_listings_versions` rows written via
+      applyListingEdit() — `c62c1dd`
+- [x] Side-panel diff viewer with word-level diff — `c62c1dd`
+- [x] Right-click any asset → regen modal with feedback chips — `ebf0847` (K2)
+- [x] Regen charges $0.30 with refund-on-fail (matches H4 pattern) — `ebf0847`
+- [x] Per-tenant monthly regen cap (default 200, ceiling 1000 via
+      tenant.features.max_regens_per_month) — `ebf0847`
+- [x] SKU approval flow sets `approved_at` on every listing + asset
+      via /v1/skus/:productId/approve — K3 commit
+- [x] Publish-to-R2 produces ZIP at
+      `tenant/<tid>/exports/<runId>/<sku>-bundle.zip` with
+      Amazon Inventory File CSV + Shopify Product CSV + manifest.json
+      + per-slot image folders — K3 commit
+- [x] Operator gets a Resend email with a 7-day presigned download
+      link (when email passed in publish body) — K3 commit
+- [x] `SESSION_STATE.md` updated with the iterate-then-publish flow — K3 commit
 
 When all are checked, the platform shifts from "show-and-tell" to
 "ship-it". Phase L (public API) opens the iteration to programmatic

@@ -51,4 +51,7 @@ interface CloudflareBindings {
   // Phase I — image sidecar (sharp ops in Node)
   IMAGE_SIDECAR_URL?: string;
   IMAGE_SIDECAR_SECRET?: string;
+
+  // Phase K3 — Resend email API key
+  RESEND_API_KEY?: string;
 }

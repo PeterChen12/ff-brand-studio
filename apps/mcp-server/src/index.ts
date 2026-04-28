@@ -767,6 +767,182 @@ app.get("/v1/listings", async (c) => {
   }
 });
 
+// Phase K3 — approve all assets + listings for a SKU.
+app.post("/v1/skus/:productId/approve", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const productId = c.req.param("productId");
+
+    const [product] = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, productId))
+      .limit(1);
+    if (!product || !visibleTenantIds(tenant).includes(product.tenantId)) {
+      return c.json({ error: "not_found" }, 404);
+    }
+
+    const variantsList = await db
+      .select({ id: productVariants.id })
+      .from(productVariants)
+      .where(eq(productVariants.productId, product.id));
+    const variantIds = variantsList.map((v) => v.id);
+    if (variantIds.length === 0) return c.json({ error: "no_variants" }, 400);
+
+    const now = new Date();
+    await db
+      .update(platformAssets)
+      .set({ approvedAt: now })
+      .where(inArray(platformAssets.variantId, variantIds));
+    await db
+      .update(platformListings)
+      .set({ approvedAt: now })
+      .where(inArray(platformListings.variantId, variantIds));
+
+    await auditEvent(db, {
+      tenantId: product.tenantId,
+      actor: actor ?? null,
+      action: "listing.publish",
+      targetType: "product",
+      targetId: product.id,
+      metadata: { sku: product.sku, approvedAt: now.toISOString() },
+    });
+
+    return c.json({ ok: true, approvedAt: now.toISOString() });
+  } catch (err) {
+    console.error("[/v1/skus/:productId/approve]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.post("/v1/skus/:productId/unapprove", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const productId = c.req.param("productId");
+
+    const [product] = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, productId))
+      .limit(1);
+    if (!product || !visibleTenantIds(tenant).includes(product.tenantId)) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    const variantsList = await db
+      .select({ id: productVariants.id })
+      .from(productVariants)
+      .where(eq(productVariants.productId, product.id));
+    const variantIds = variantsList.map((v) => v.id);
+
+    await db
+      .update(platformAssets)
+      .set({ approvedAt: null })
+      .where(inArray(platformAssets.variantId, variantIds));
+    await db
+      .update(platformListings)
+      .set({ approvedAt: null })
+      .where(inArray(platformListings.variantId, variantIds));
+
+    await auditEvent(db, {
+      tenantId: product.tenantId,
+      actor: actor ?? null,
+      action: "listing.unpublish",
+      targetType: "product",
+      targetId: product.id,
+      metadata: { sku: product.sku },
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error("[/v1/skus/:productId/unapprove]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase K3 — publish a SKU bundle to R2 + email a presigned link.
+app.post("/v1/skus/:productId/publish", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const productId = c.req.param("productId");
+    const body = (await c.req.json().catch(() => ({}))) as { target?: string; email?: string };
+
+    const target = body.target ?? "r2_export";
+    if (target !== "r2_export") {
+      return c.json({ error: "not_implemented", target }, 501);
+    }
+
+    const [product] = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, productId))
+      .limit(1);
+    if (!product || !visibleTenantIds(tenant).includes(product.tenantId)) {
+      return c.json({ error: "not_found" }, 404);
+    }
+
+    const { exportSkuToR2 } = await import("./lib/publish/r2-export.js");
+    const runId = nanoid(12);
+    const result = await exportSkuToR2(c.env, db, {
+      tenantId: product.tenantId,
+      productId: product.id,
+      runId,
+    });
+    if (!result.ok) {
+      return c.json({ error: "export_failed", reason: result.reason }, 500);
+    }
+
+    let emailResult: { ok: boolean; id?: string; error?: string } | null = null;
+    if (body.email) {
+      const { sendEmail, buildPublishEmail } = await import("./lib/email.js");
+      const tpl = buildPublishEmail({
+        sku: product.sku,
+        productName: product.nameEn,
+        presignedUrl: result.presignedUrl ?? "",
+        amazonAssetCount: 0, // approximated in the manifest already
+        shopifyAssetCount: 0,
+      });
+      emailResult = await sendEmail(c.env, {
+        to: body.email,
+        subject: tpl.subject,
+        html: tpl.html,
+        text: tpl.text,
+      });
+    }
+
+    await auditEvent(db, {
+      tenantId: product.tenantId,
+      actor: actor ?? null,
+      action: "listing.publish",
+      targetType: "product",
+      targetId: product.id,
+      metadata: {
+        target,
+        runId,
+        zipKey: result.zipKey,
+        fileCount: result.fileCount,
+        emailed: !!emailResult?.ok,
+      },
+    });
+
+    return c.json({
+      ok: true,
+      runId,
+      zipKey: result.zipKey,
+      presignedUrl: result.presignedUrl,
+      fileCount: result.fileCount,
+      email: emailResult,
+    });
+  } catch (err) {
+    console.error("[/v1/skus/:productId/publish]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // Phase K2 — feedback-driven asset regeneration. Behind tenant.features.feedback_regen.
 app.post("/v1/assets/:id/regenerate", async (c) => {
   try {
