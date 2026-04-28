@@ -2,6 +2,7 @@ interface CloudflareBindings {
   // Cloudflare bindings
   R2: R2Bucket;
   SESSION_KV: KVNamespace;
+  AI: Ai;
 
   // Env vars (set as wrangler secrets)
   ENVIRONMENT: string;
@@ -46,4 +47,8 @@ interface CloudflareBindings {
   STRIPE_PRICE_TOPUP_25: string;
   STRIPE_PRICE_TOPUP_50: string;
   STRIPE_PRICE_TOPUP_100: string;
+
+  // Phase I — image sidecar (sharp ops in Node)
+  IMAGE_SIDECAR_URL?: string;
+  IMAGE_SIDECAR_SECRET?: string;
 }

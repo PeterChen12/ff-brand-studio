@@ -11,6 +11,10 @@ bucket_name = "ff-brand-studio-assets"
 binding = "SESSION_KV"
 id = "63a0417c93894f988b1293f6909a7e61"
 
+# Phase I — Workers AI binding for CLIP triage (free tier)
+[ai]
+binding = "AI"
+
 [vars]
 ENVIRONMENT = "production"
 R2_PUBLIC_URL = "https://pub-db3f39e3386347d58359ba96517eec84.r2.dev"

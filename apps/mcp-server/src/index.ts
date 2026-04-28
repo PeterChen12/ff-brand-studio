@@ -1162,6 +1162,7 @@ app.post("/demo/seo-preview", async (c) => {
     nameEn: p.product_name_en,
     nameZh: p.product_name_zh ?? null,
     category: p.product_category,
+    kind: "compact_square",
     dimensions: null,
     materials: null,
     colorsHex: null,
