@@ -3,6 +3,31 @@
 AI-powered bilingual marketing content generation for Faraday Future.
 Generates EN/ZH hero images, infographics, LinkedIn/Weibo copy, and video assets — scored against brand guidelines — directly inside Claude Desktop.
 
+> **Status (2026-04-28):** v2 SaaS pivot complete. Phases G–O ✅ live.
+> Multi-tenant, self-serve, machine-callable. See `SESSION_STATE.md`
+> for the current state in 5 minutes.
+
+---
+
+## What's where
+
+| Folder | Purpose |
+|---|---|
+| `apps/mcp-server/` | Cloudflare Worker — `/v1/*` REST + `/sse` MCP. Phase G–O backend. Hono + Drizzle + zod. |
+| `apps/dashboard/` | Next.js 15 static export deployed to Cloudflare Pages. 10 routes incl. `/library`, `/launch`, `/settings`. |
+| `apps/image-sidecar/` | Node + sharp service on AWS App Runner — kind-aware crops, SVG composites, banner extends, white-bg force. Phase I sidecar (sharp can't run in Workers). |
+| `apps/proxy-worker/` | Tiny edge router — historical. |
+| `packages/types/` | Zod schemas + types. Source-of-truth re-exported by all consumers. |
+| `packages/brand-rules/` | Brand voice + per-platform SEO rubric (Amazon US, Tmall, JD, Shopify). |
+| `packages/seo-clients/` | DataForSEO + Apify wrappers. |
+| `packages/media-clients/` | fal.ai + OpenAI + Anthropic + R2 SDK helpers. |
+| `plans/` | Per-phase plans (`active-plan-saas-G.md` … `-M.md`) + master `saas-iteration-plan.md`. |
+| `docs/adr/` | ADRs. 0003 = image pipeline runtime split. |
+| `docs/RUNBOOK_*.md` | Activation playbooks: Phase I spike, feature flags, secret rotation. |
+| `.github/workflows/` | CI, deploy, sidecar build (ECR), daily Postgres dump, synthetic check. |
+
+---
+
 ## Architecture
 
 ```mermaid

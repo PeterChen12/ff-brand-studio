@@ -2,11 +2,11 @@
 
 /**
  * Browser-only Clerk runtime — loaded via next/dynamic({ ssr: false })
- * from clerk-app-shell.tsx so the @clerk/clerk-react module is never
+ * from clerk-app-shell.tsx so the @clerk/react module is never
  * imported during prerender. See clerk-app-shell.tsx for the rationale.
  */
 
-import { ClerkProvider } from "@clerk/clerk-react";
+import { ClerkProvider } from "@clerk/react";
 import { Shell } from "@/components/layout/shell";
 
 const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";

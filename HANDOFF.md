@@ -68,7 +68,7 @@ Pipeline = Planner (Claude Sonnet) → Copy → Translate → Image (Flux Pro / 
 - [ ] **Connect Pages project to GitHub natively** — currently auto-deploy goes via wrangler in our Action. Cloudflare's GitHub integration would give per-PR previews but isn't required.
 - [ ] **OpenAI key fix** — current key 401s, need to provision a new one (or pivot infographic to fal.ai's GPT Image 2 endpoint per the user's note)
 - [ ] **Video step in production** — Kling 2.6 wired but never run end-to-end (slow, 30-90s polling)
-- [ ] **AWS Amplify app `d1a431ll6nyfk4`** — created but unused, can be deleted via `aws amplify delete-app --app-id d1a431ll6nyfk4`
+- [x] **AWS Amplify app `d1a431ll6nyfk4`** — ~~created but unused, can be deleted via `aws amplify delete-app --app-id d1a431ll6nyfk4`~~ deleted 2026-04-28 (Phase T2)
 - [ ] **pgvector extension + brand_knowledge table** — RAG-future, server doesn't have pgvector installed
 - [ ] **Custom domain on Pages** — currently only `ff-brand-studio.pages.dev`
 - [ ] **Better error UI in dashboard** — currently shows raw error strings on the campaign form

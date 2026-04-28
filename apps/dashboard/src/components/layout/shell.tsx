@@ -7,7 +7,7 @@ import {
   OrganizationSwitcher,
   UserButton,
   useAuth,
-} from "@clerk/clerk-react";
+} from "@clerk/react";
 import { cn } from "@/lib/cn";
 import { MCP_URL } from "@/lib/config";
 

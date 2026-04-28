@@ -9,9 +9,9 @@
  *
  *   1. @clerk/nextjs's ClerkProvider uses Server Actions for keyless
  *      session sync — Next refuses to compile that under static export.
- *      So we use @clerk/clerk-react's pure-React provider instead.
+ *      So we use @clerk/react's pure-React provider instead.
  *
- *   2. @clerk/clerk-react bundles browser-only webpack constants
+ *   2. @clerk/react bundles browser-only webpack constants
  *      (`packageName`) that the Next prerender server doesn't define,
  *      producing a "packageName is not defined" ReferenceError when the
  *      MODULE is imported during prerender. A mounted-gate alone isn't

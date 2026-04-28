@@ -11,7 +11,7 @@
     "lint": "biome check ."
   },
   "dependencies": {
-    "@clerk/clerk-react": "^5.61.6",
+    "@clerk/react": "^6.4.5",
     "@ff/types": "workspace:*",
     "@material/web": "^2.4.1",
     "@tanstack/react-form": "^0.31.0",

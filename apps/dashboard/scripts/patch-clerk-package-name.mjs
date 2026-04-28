@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Phase G follow-up — fix `@clerk/clerk-react@5.61.x`'s broken
+ * Clerk SDK bug workaround — fixes broken
  * `r7.setPackageName({packageName})` shorthand in compiled chunks.
  *
  * The minified bundle inlines a literal `{packageName}` shorthand
@@ -8,13 +8,14 @@
  * `ReferenceError: packageName is not defined` and crashes the
  * dashboard before any UI mounts.
  *
- * Bug observed in 5.61.3 and 5.61.6. Vendor patch is non-trivial
- * (deprecated package; migration to @clerk/react@6 is a major
- * version with API changes). For now we patch the compiled output
- * post-build — the pattern is unique to Clerk's IIFE so collateral
- * damage is zero.
+ * Bug observed in @clerk/clerk-react 5.61.3 + 5.61.6 AND @clerk/react
+ * 6.4.5 (same minifier pattern carried over after the v6 rename).
+ * Vendor fix would be one character; Phase R follow-up to drop this
+ * patch once Clerk ships the upstream fix.
  *
- * Runs as `postbuild` in apps/dashboard/package.json. Safe to re-run.
+ * The replacement injects the literal package name string. Pattern is
+ * unique to Clerk's IIFE so collateral damage is zero. Runs as
+ * `postbuild` in apps/dashboard/package.json. Safe to re-run.
  */
 
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
@@ -34,7 +35,7 @@ if (!existsSync(chunkDir)) {
 // replacement injects the literal package name string so the call
 // is well-formed at runtime.
 const BROKEN = /(\b[a-zA-Z_$][\w$]*)\.setPackageName\(\{packageName\}\)/g;
-const FIXED = (_m, ident) => `${ident}.setPackageName({packageName:"@clerk/clerk-react"})`;
+const FIXED = (_m, ident) => `${ident}.setPackageName({packageName:"@clerk/react"})`;
 
 let totalFiles = 0;
 let totalReplacements = 0;
