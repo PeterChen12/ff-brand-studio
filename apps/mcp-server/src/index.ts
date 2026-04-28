@@ -174,6 +174,9 @@ app.use("/v1/products/*", requireTenant);
 app.use("/v1/me/*", requireTenant);
 app.use("/v1/billing/*", requireTenant);
 app.use("/v1/audit", requireTenant);
+app.use("/v1/listings/*", requireTenant);
+app.use("/v1/assets/*", requireTenant);
+app.use("/v1/skus/*", requireTenant);
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -761,6 +764,53 @@ app.get("/v1/listings", async (c) => {
   } catch (err) {
     console.error("[/v1/listings]", err);
     return c.json({ listings: [], error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase K1 — PATCH a listing with version-trail + brand-rules validation.
+app.patch("/v1/listings/:id", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const actor = c.get("actor") as string | undefined;
+    const id = c.req.param("id");
+
+    const body = await c.req.json();
+    if (!body || typeof body !== "object" || typeof body.patch !== "object") {
+      return c.json({ error: "patch object required" }, 400);
+    }
+
+    const { applyListingEdit } = await import("./lib/listing-edit.js");
+    const result = await applyListingEdit(db, {
+      listingId: id,
+      tenantIdsInScope: visibleTenantIds(tenant),
+      actor: actor ?? null,
+      patch: body.patch,
+    });
+
+    if (!result.ok) {
+      return c.json({ error: result.reason, issues: result.issues }, result.reason === "not_found" ? 404 : 400);
+    }
+    return c.json({ listing: result.listing, rating: result.rating, issues: result.issues });
+  } catch (err) {
+    console.error("[/v1/listings/:id PATCH]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase K1 — list version history for a listing.
+app.get("/v1/listings/:id/versions", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const id = c.req.param("id");
+    const { listListingVersions } = await import("./lib/listing-edit.js");
+    const versions = await listListingVersions(db, id, visibleTenantIds(tenant));
+    if (versions === null) return c.json({ error: "not_found" }, 404);
+    return c.json({ versions });
+  } catch (err) {
+    console.error("[/v1/listings/:id/versions]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
 
