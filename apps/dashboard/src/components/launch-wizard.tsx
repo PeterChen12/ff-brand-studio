@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/lib/api";
 import { formatCents } from "@/lib/format";
+import { useTenant } from "@/lib/tenant-context";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -98,6 +99,18 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const seedProductId = searchParams.get("product_id");
+  const tenant = useTenant();
+
+  // Read tenant.features.default_platforms once for the initial state.
+  // Tenant data may be null on first render (Shell's poll hasn't
+  // resolved yet); fall back to ["amazon","shopify"]. The
+  // initial-sync effect below patches platforms once tenant arrives,
+  // unless the user has already touched the toggles.
+  const initialPlatformsFromTenant = (
+    Array.isArray(tenant?.features.default_platforms)
+      ? tenant.features.default_platforms
+      : null
+  ) as ("amazon" | "shopify")[] | null;
 
   // ── State ─────────────────────────────────────────────────────────────
   const [products, setProducts] = useState<ProductRow[] | null>(null);
@@ -107,10 +120,12 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // replaces the dropdown with a retry block — see Bug 4 fix.
   const [productNotice, setProductNotice] = useState<string | null>(null);
   const [productId, setProductId] = useState<string | null>(seedProductId);
-  const [platforms, setPlatforms] = useState<("amazon" | "shopify")[]>([
-    "amazon",
-    "shopify",
-  ]);
+  const [platforms, setPlatforms] = useState<("amazon" | "shopify")[]>(
+    initialPlatformsFromTenant ?? ["amazon", "shopify"]
+  );
+  // Track whether the user manually toggled platforms — once they do,
+  // late-arriving tenant defaults must not stomp their choice.
+  const platformsUserTouched = useRef(false);
   const [dryRun, setDryRun] = useState(true);
   const [includeSeo, setIncludeSeo] = useState(true);
 
@@ -162,6 +177,21 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
     }
   }, [products, seedProductId]);
 
+  // ── Sync platforms from tenant defaults once they load ──────────────
+  // Initial useState ran before tenant context resolved; if it arrives
+  // later AND the user hasn't toggled, apply the saved default. Don't
+  // stomp user choices.
+  useEffect(() => {
+    if (platformsUserTouched.current) return;
+    const saved = tenant?.features.default_platforms;
+    if (!Array.isArray(saved) || saved.length === 0) return;
+    const valid = saved.filter(
+      (p): p is "amazon" | "shopify" => p === "amazon" || p === "shopify"
+    );
+    if (valid.length === 0) return;
+    setPlatforms(valid);
+  }, [tenant]);
+
   const selected = useMemo(
     () => products?.find((p) => p.id === productId) ?? null,
     [products, productId]
@@ -206,6 +236,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
 
   // ── Submit ───────────────────────────────────────────────────────────
   function togglePlatform(id: "amazon" | "shopify") {
+    platformsUserTouched.current = true;
     setPlatforms((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );

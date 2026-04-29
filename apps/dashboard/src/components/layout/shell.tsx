@@ -11,6 +11,7 @@ import {
 import { cn } from "@/lib/cn";
 import { MCP_URL } from "@/lib/config";
 import { formatCents } from "@/lib/format";
+import { TenantProvider, type TenantSnapshot } from "@/lib/tenant-context";
 import { OrgGate } from "@/components/layout/org-gate";
 
 /**
@@ -89,6 +90,10 @@ function ShellInner({
     | { kind: "auth-error" }
     | { kind: "unknown-error" }
   >({ kind: "loading" });
+  // Tenant snapshot — flows down via TenantProvider so descendants
+  // (e.g. LaunchWizard) can read default_platforms without a second
+  // /v1/me/state call.
+  const [tenant, setTenant] = useState<TenantSnapshot | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -157,12 +162,30 @@ function ShellInner({
           return;
         }
         const data = (await res.json()) as {
-          tenant?: { wallet_balance_cents?: number };
+          tenant?: {
+            id?: string;
+            name?: string;
+            plan?: string;
+            wallet_balance_cents?: number;
+            features?: Record<string, unknown>;
+          };
         };
         if (typeof data.tenant?.wallet_balance_cents === "number") {
           setWalletState({ kind: "ok", cents: data.tenant.wallet_balance_cents });
         } else {
           setWalletState({ kind: "unknown-error" });
+        }
+        if (
+          data.tenant?.id &&
+          data.tenant?.name &&
+          data.tenant?.plan
+        ) {
+          setTenant({
+            id: data.tenant.id,
+            name: data.tenant.name,
+            plan: data.tenant.plan,
+            features: (data.tenant.features as Record<string, unknown>) ?? {},
+          });
         }
       } catch {
         if (alive) setWalletState({ kind: "unknown-error" });
@@ -184,6 +207,7 @@ function ShellInner({
   }[health];
 
   return (
+    <TenantProvider value={tenant}>
     <div className="min-h-screen md-surface flex">
       {/* ── M3 navigation drawer (left) ──────────────────────────────────── */}
       <aside
@@ -450,5 +474,6 @@ function ShellInner({
         {children}
       </main>
     </div>
+    </TenantProvider>
   );
 }
