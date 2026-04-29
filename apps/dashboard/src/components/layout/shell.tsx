@@ -75,6 +75,7 @@ function ShellInner({
   pathname: string;
   children: React.ReactNode;
 }) {
+  const { getToken, isSignedIn } = useAuth();
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -102,19 +103,15 @@ function ShellInner({
   }, []);
 
   // Phase H4 — wallet pill in the sidebar. Polls /v1/me/state every
-  // 60s OR after a successful launch (TODO: emit event from launch wizard).
+  // 60s. Uses Clerk's getToken (with skipCache so the JWT reflects the
+  // currently-active org) — the prior cookie-reading approach broke
+  // when __session became HttpOnly and was a workaround anyway.
   useEffect(() => {
+    if (!isSignedIn) return;
     let alive = true;
     async function poll() {
       try {
-        // Read the Clerk session token off the cookie. This duplicates a
-        // bit of logic from useApiFetch but Shell sits above that hook
-        // tree and hooking up an apiFetch here would require routing
-        // through ClerkProvider's auth state in two places.
-        // Worker is permissive on /v1/me/state (it's behind requireTenant
-        // so a missing token returns 401 and we just hide the pill).
-        const cookieMatch = document.cookie.match(/(?:^|;\s*)__session=([^;]+)/);
-        const token = cookieMatch?.[1];
+        const token = await getToken({ skipCache: true });
         if (!token) return;
         const res = await fetch(`${MCP_URL}/v1/me/state`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -146,7 +143,7 @@ function ShellInner({
       alive = false;
       clearInterval(id);
     };
-  }, [pathname]);
+  }, [pathname, isSignedIn, getToken]);
 
   const dotClass = {
     ok: "bg-tertiary",

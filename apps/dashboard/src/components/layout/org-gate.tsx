@@ -39,8 +39,28 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
     if (!orgLoaded || !listLoaded) return;
     if (organization) return;
     if (memberships.length === 0) return;
-    void setActive({ organization: memberships[0].organization.id });
-  }, [orgLoaded, listLoaded, organization, memberships, setActive]);
+    const targetId = memberships[0].organization.id;
+    if (typeof console !== "undefined") {
+      // eslint-disable-next-line no-console
+      console.log("[org-gate] activating", targetId);
+    }
+    setActive({ organization: targetId })
+      .then(() => {
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.log("[org-gate] activation resolved");
+        }
+      })
+      .catch((err: unknown) => {
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.error("[org-gate] setActive failed", err);
+        }
+      });
+    // memberships array reference changes every render; depend on the
+    // first id only so we don't re-fire setActive in a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgLoaded, listLoaded, organization, memberships[0]?.organization.id, setActive]);
 
   if (!orgLoaded || !listLoaded) {
     return (

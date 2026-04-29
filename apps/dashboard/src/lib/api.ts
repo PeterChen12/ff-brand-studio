@@ -28,7 +28,13 @@ export function useApiFetch() {
   const { getToken, isSignedIn } = useAuth();
   return useCallback(
     async <T = unknown>(path: string, init: RequestInit = {}): Promise<T> => {
-      const token = isSignedIn ? await getToken() : null;
+      // skipCache forces a fresh JWT mint on every call. Without this,
+      // Clerk caches the original signed-in token (no org_id) and keeps
+      // serving it even after setActive({ organization }) updates the
+      // active org client-side — Worker keeps 401-ing with
+      // missing_org_context. Cache miss penalty is ~50ms; correctness
+      // matters more than the savings here.
+      const token = isSignedIn ? await getToken({ skipCache: true }) : null;
       const headers = new Headers(init.headers);
       if (token) headers.set("Authorization", `Bearer ${token}`);
       if (!headers.has("Content-Type") && init.body) {
@@ -73,7 +79,13 @@ export function useApiDownload() {
   const { getToken, isSignedIn } = useAuth();
   return useCallback(
     async (path: string, fallbackFilename: string): Promise<void> => {
-      const token = isSignedIn ? await getToken() : null;
+      // skipCache forces a fresh JWT mint on every call. Without this,
+      // Clerk caches the original signed-in token (no org_id) and keeps
+      // serving it even after setActive({ organization }) updates the
+      // active org client-side — Worker keeps 401-ing with
+      // missing_org_context. Cache miss penalty is ~50ms; correctness
+      // matters more than the savings here.
+      const token = isSignedIn ? await getToken({ skipCache: true }) : null;
       const headers = new Headers();
       if (token) headers.set("Authorization", `Bearer ${token}`);
       const res = await fetch(`${MCP_URL}${path}`, { headers });
