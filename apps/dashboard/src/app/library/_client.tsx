@@ -305,8 +305,10 @@ function SkuGroup({
             {group.sku} · {group.category}
             {group.sellerName ? ` · ${group.sellerName}` : ""}
           </CardEyebrow>
-          <CardTitle className="mt-1.5">{group.nameEn}</CardTitle>
-          {group.nameZh && (
+          <CardTitle className="mt-1.5">
+            {group.nameEn || group.nameZh || "(unnamed)"}
+          </CardTitle>
+          {group.nameZh && group.nameZh !== group.nameEn && (
             <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
               {group.nameZh}
             </div>

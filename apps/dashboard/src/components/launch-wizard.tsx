@@ -329,9 +329,11 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           <div className="min-w-0">
             <CardEyebrow>Step 01 · 选品</CardEyebrow>
             <CardTitle className="mt-1.5">
-              {selected ? selected.nameEn : "Pick a product"}
+              {selected
+                ? selected.nameEn || selected.nameZh || "(unnamed)"
+                : "Pick a product"}
             </CardTitle>
-            {selected?.nameZh && (
+            {selected?.nameZh && selected.nameZh !== selected.nameEn && (
               <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
                 {selected.nameZh}
               </div>
@@ -392,7 +394,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
             >
               {products.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.sku} — {p.nameEn} ({p.category})
+                  {p.sku} — {p.nameEn || p.nameZh || "(unnamed)"} ({p.category})
                 </option>
               ))}
             </select>

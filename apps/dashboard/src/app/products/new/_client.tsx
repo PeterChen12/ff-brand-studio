@@ -74,8 +74,12 @@ export default function NewProductPageInner() {
   const apiFetch = useApiFetch();
 
   const [files, setFiles] = useState<PendingFile[]>([]);
-  const [nameEn, setNameEn] = useState("");
-  const [nameZh, setNameZh] = useState("");
+  // Single bilingual name field (Issue 1). Detected language drives
+  // which DB column carries the value alongside the always-populated
+  // name_en — see handleSubmit. The "name_en is required" Zod schema
+  // is preserved without migration; for Chinese inputs we duplicate
+  // the value into name_en too so the NOT NULL column stays satisfied.
+  const [name, setName] = useState("");
   const [category, setCategory] = useState<string>("fishing-rod");
   const [kind, setKind] = useState<(typeof KINDS)[number]["value"]>(
     KIND_DEFAULT_FROM_UI_CATEGORY["fishing-rod"]
@@ -121,7 +125,7 @@ export default function NewProductPageInner() {
   }
 
   const canSubmit =
-    !submitting && nameEn.trim().length >= 2 && category && files.length >= 1;
+    !submitting && name.trim().length >= 2 && category && files.length >= 1;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -177,6 +181,13 @@ export default function NewProductPageInner() {
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
       // 3. Finalize the product create
+      // Detect CJK ideographs to route the single-field name into the
+      // right DB column. name_en stays always-populated (required by
+      // the Zod schema and the NOT NULL column constraint); when the
+      // input is Chinese we duplicate it into name_zh too so the SEO
+      // step has a language hint at launch time.
+      const trimmedName = name.trim();
+      const isCjk = /[一-鿿㐀-䶿]/.test(trimmedName);
       const created = await apiFetch<{
         product_id: string;
         sku: string;
@@ -185,8 +196,8 @@ export default function NewProductPageInner() {
         method: "POST",
         body: JSON.stringify({
           intent_id: intent.intent_id,
-          name_en: nameEn,
-          name_zh: nameZh.trim() || undefined,
+          name_en: trimmedName,
+          name_zh: isCjk ? trimmedName : undefined,
           category,
           kind,
           uploaded_keys: uploadedKeys,
@@ -217,24 +228,19 @@ export default function NewProductPageInner() {
               </div>
             </CardHeader>
             <CardContent className="space-y-5">
-              <Field label="Product name (English)" required>
+              <Field label="Product name · 产品名 (Chinese or English)" required>
                 <input
                   className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
-                  value={nameEn}
-                  onChange={(e) => setNameEn(e.target.value)}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                   maxLength={200}
-                  placeholder="CastMaster Apex 12ft Surf Rod"
+                  placeholder="渔王 Apex 12英尺海钓鱼竿  ·  CastMaster Apex 12ft Surf Rod"
                   required
                 />
-              </Field>
-              <Field label="Product name (中文)">
-                <input
-                  className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
-                  value={nameZh}
-                  onChange={(e) => setNameZh(e.target.value)}
-                  maxLength={200}
-                  placeholder="渔王 Apex 12英尺海钓鱼竿"
-                />
+                <span className="md-typescale-body-small text-on-surface-variant block mt-1">
+                  Type whichever language you have on hand. The other will
+                  be generated automatically when you launch SEO copy.
+                </span>
               </Field>
               <Field label="Category" required>
                 <select
