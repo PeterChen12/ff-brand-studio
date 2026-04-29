@@ -543,6 +543,15 @@ app.get("/v1/billing/ledger", async (c) => {
 
 // ── Phase H4 — launch preview + versioned launch endpoint ────────────────
 
+// Issue 7+10 — explicit per-surface SEO targeting. When the dashboard
+// supplies `surfaces`, it overrides the legacy `platforms` × `include_seo`
+// inference and the cost predictor uses the exact surface count. Older
+// clients (CLI, integration tests) keep working with the simpler shape.
+const SeoSurfaceInput = z.object({
+  surface: z.enum(["amazon-us", "shopify", "tmall", "jd"]),
+  language: z.enum(["en", "zh"]),
+});
+
 const LaunchPreviewInput = z.object({
   platforms: z
     .array(z.enum(["amazon", "shopify"]))
@@ -550,6 +559,7 @@ const LaunchPreviewInput = z.object({
     .default(["amazon", "shopify"]),
   include_seo: z.boolean().default(true),
   include_video: z.boolean().default(false),
+  surfaces: z.array(SeoSurfaceInput).optional(),
 });
 
 app.post("/v1/launches/preview", async (c) => {
@@ -558,10 +568,14 @@ app.post("/v1/launches/preview", async (c) => {
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
   const tenant = c.get("tenant") as Tenant;
 
+  const surfaceCount = parsed.data.surfaces?.length;
   const prediction = predictLaunchCost({
     platforms: parsed.data.platforms as LaunchPlatform[],
-    include_seo: parsed.data.include_seo,
+    include_seo: surfaceCount !== undefined
+      ? surfaceCount > 0
+      : parsed.data.include_seo,
     include_video: parsed.data.include_video,
+    surface_count: surfaceCount,
   });
 
   return c.json({
@@ -584,6 +598,10 @@ const LaunchInput = z.object({
   include_seo: z.boolean().default(true),
   seo_cost_cap_cents: z.number().int().positive().max(500).default(50),
   cost_cap_cents: z.number().int().positive().max(2000).optional(),
+  // Issue 7+10 — explicit per-surface SEO targeting. Each marketplace
+  // can have one or more languages. When provided, this overrides
+  // include_seo (treated as "true if surfaces is non-empty").
+  surfaces: z.array(SeoSurfaceInput).optional(),
 });
 
 app.post("/v1/launches", async (c) => {
@@ -609,9 +627,12 @@ app.post("/v1/launches", async (c) => {
   if (!product) return c.json({ error: "product_not_found_or_forbidden" }, 404);
 
   // 2. Pre-flight cost prediction + wallet charge
+  const surfaceCount = p.surfaces?.length;
   const prediction = predictLaunchCost({
     platforms: p.platforms as LaunchPlatform[],
-    include_seo: p.include_seo,
+    include_seo:
+      surfaceCount !== undefined ? surfaceCount > 0 : p.include_seo,
+    surface_count: surfaceCount,
   });
 
   if (!p.dry_run) {
@@ -656,7 +677,9 @@ app.post("/v1/launches", async (c) => {
       platforms: p.platforms as LaunchPlatform[],
       include_video: false,
       dry_run: p.dry_run,
-      include_seo: p.include_seo,
+      include_seo:
+        surfaceCount !== undefined ? surfaceCount > 0 : p.include_seo,
+      seo_surfaces: p.surfaces,
       seo_cost_cap_cents: p.seo_cost_cap_cents,
       cost_cap_cents: p.cost_cap_cents,
       anthropic_api_key: c.env.ANTHROPIC_API_KEY,

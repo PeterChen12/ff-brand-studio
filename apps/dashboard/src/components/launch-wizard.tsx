@@ -94,10 +94,18 @@ interface LaunchResult {
   };
 }
 
-const PLATFORMS: { id: "amazon" | "shopify"; label: string; sub: string }[] = [
-  { id: "amazon", label: "Amazon US", sub: "amazon-us · en" },
-  { id: "shopify", label: "Shopify DTC", sub: "shopify · en" },
+const PLATFORMS: {
+  id: "amazon" | "shopify";
+  label: string;
+  sub: string;
+  surface: "amazon-us" | "shopify";
+}[] = [
+  { id: "amazon", label: "Amazon US", sub: "amazon-us · select language(s)", surface: "amazon-us" },
+  { id: "shopify", label: "Shopify DTC", sub: "shopify · select language(s)", surface: "shopify" },
 ];
+
+type SeoLang = "en" | "zh";
+const LANG_LABELS: Record<SeoLang, string> = { en: "English", zh: "中文" };
 
 export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const apiFetch = useApiFetch();
@@ -124,14 +132,29 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // replaces the dropdown with a retry block — see Bug 4 fix.
   const [productNotice, setProductNotice] = useState<string | null>(null);
   const [productId, setProductId] = useState<string | null>(seedProductId);
-  const [platforms, setPlatforms] = useState<("amazon" | "shopify")[]>(
-    initialPlatformsFromTenant ?? ["amazon", "shopify"]
-  );
-  // Track whether the user manually toggled platforms — once they do,
-  // late-arriving tenant defaults must not stomp their choice.
+  // Issue 7+10 — per-platform language config replaces the legacy
+  // platforms+includeSeo split. Each entry is one marketplace and the
+  // SEO languages requested for it. Empty `langs` array means "skip
+  // SEO copy on that marketplace" (assets only). Default: both
+  // marketplaces, English only.
+  const initialPlatformConfigs: { id: "amazon" | "shopify"; langs: SeoLang[] }[] =
+    (initialPlatformsFromTenant ?? ["amazon", "shopify"]).map((id) => ({
+      id,
+      langs: ["en"],
+    }));
+  const [platformConfigs, setPlatformConfigs] = useState(initialPlatformConfigs);
+  // Track whether the user manually toggled platforms/languages — once
+  // they do, late-arriving tenant defaults must not stomp their choice.
   const platformsUserTouched = useRef(false);
+  // Derived for legacy callsites + cost preview key
+  const platforms: ("amazon" | "shopify")[] = platformConfigs.map((p) => p.id);
+  const surfaces = platformConfigs.flatMap((p) =>
+    p.langs.map((lang) => ({
+      surface: p.id === "amazon" ? ("amazon-us" as const) : ("shopify" as const),
+      language: lang,
+    }))
+  );
   const [dryRun, setDryRun] = useState(true);
-  const [includeSeo, setIncludeSeo] = useState(true);
 
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -199,7 +222,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
       (p): p is "amazon" | "shopify" => p === "amazon" || p === "shopify"
     );
     if (valid.length === 0) return;
-    setPlatforms(valid);
+    setPlatformConfigs(valid.map((id) => ({ id, langs: ["en"] })));
   }, [tenant]);
 
   const selected = useMemo(
@@ -208,7 +231,11 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   );
 
   // ── Live cost preview (debounced 250 ms) ──────────────────────────────
-  const previewKey = `${platforms.join(",")}|${dryRun}|${includeSeo}`;
+  const seoEnabled = surfaces.length > 0;
+  const surfacesKey = surfaces
+    .map((s) => `${s.surface}:${s.language}`)
+    .join(",");
+  const previewKey = `${platforms.join(",")}|${dryRun}|${surfacesKey}`;
   const previewKeyRef = useRef(previewKey);
   const fetchPreview = useCallback(async () => {
     if (platforms.length === 0) {
@@ -222,9 +249,10 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
         method: "POST",
         body: JSON.stringify({
           platforms,
-          // Image generation only happens in non-dry-run; preview still
-          // surfaces the cost so the operator sees the full picture.
-          include_seo: includeSeo,
+          // Issue 7+10 — explicit per-surface targeting. The worker
+          // computes surface_count from this; falls back to legacy
+          // include_seo if surfaces is omitted.
+          surfaces,
           include_video: false,
         }),
       });
@@ -234,7 +262,11 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
     } finally {
       setPreviewLoading(false);
     }
-  }, [apiFetch, platforms, includeSeo]);
+    // surfacesKey is the stable serialization of `surfaces`; using it as
+    // the dep avoids re-creating fetchPreview on every render of an
+    // identical surface list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiFetch, platforms.join(","), surfacesKey]);
 
   useEffect(() => {
     previewKeyRef.current = previewKey;
@@ -247,8 +279,26 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // ── Submit ───────────────────────────────────────────────────────────
   function togglePlatform(id: "amazon" | "shopify") {
     platformsUserTouched.current = true;
-    setPlatforms((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    setPlatformConfigs((prev) =>
+      prev.some((p) => p.id === id)
+        ? prev.filter((p) => p.id !== id)
+        : [...prev, { id, langs: ["en"] }]
+    );
+  }
+
+  function togglePlatformLanguage(id: "amazon" | "shopify", lang: SeoLang) {
+    platformsUserTouched.current = true;
+    setPlatformConfigs((prev) =>
+      prev.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              langs: p.langs.includes(lang)
+                ? p.langs.filter((x) => x !== lang)
+                : [...p.langs, lang],
+            }
+          : p
+      )
     );
   }
 
@@ -269,7 +319,11 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           product_id: productId,
           platforms,
           dry_run: dryRun,
-          include_seo: includeSeo,
+          // Issue 7+10 — surfaces drives both per-surface SEO and the
+          // cost prediction. Worker treats include_seo as derived from
+          // surfaces.length when surfaces is provided.
+          surfaces,
+          include_seo: seoEnabled,
         }),
       });
       setResult(data);
@@ -314,8 +368,8 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
     // breakdown to give the operator an accurate dry-run estimate.
     if (!preview) return 0;
     const b = preview.prediction.breakdown;
-    return (includeSeo ? b.listings.subtotal : 0);
-  }, [preview, includeSeo]);
+    return seoEnabled ? b.listings.subtotal : 0;
+  }, [preview, seoEnabled]);
   const effectiveCents = dryRun ? dryRunCents : predictedCents;
   const effectiveSufficient = walletCents === null ? true : walletCents >= effectiveCents;
   const canLaunch =
@@ -417,52 +471,90 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           <form onSubmit={handleLaunch} className="flex flex-col gap-6">
             <ConfigRow
               label="Marketplaces"
-              sub="Amazon US · Shopify DTC"
+              sub="Pick channels and languages"
             >
               <div className="flex flex-col gap-2">
                 {PLATFORMS.map((p) => {
-                  const active = platforms.includes(p.id);
+                  const config = platformConfigs.find((c) => c.id === p.id);
+                  const active = !!config;
                   return (
-                    <button
-                      type="button"
+                    <div
                       key={p.id}
-                      onClick={() => togglePlatform(p.id)}
                       className={cn(
-                        "flex items-center gap-3 px-4 py-3 rounded-m3-md border transition-colors duration-m3-short4 ease-m3-emphasized text-left",
+                        "flex flex-col gap-3 px-4 py-3 rounded-m3-md border transition-colors duration-m3-short4 ease-m3-emphasized",
                         active
                           ? "bg-primary-container text-primary-on-container border-primary"
-                          : "md-surface-container-low text-on-surface-variant border-outline-variant hover:border-outline hover:text-on-surface"
+                          : "md-surface-container-low text-on-surface-variant border-outline-variant"
                       )}
                     >
-                      <span
-                        className={cn(
-                          "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-m3-sm border",
-                          active
-                            ? "bg-primary border-primary text-primary-on"
-                            : "border-outline-variant"
-                        )}
+                      <button
+                        type="button"
+                        onClick={() => togglePlatform(p.id)}
+                        className="flex items-center gap-3 text-left -m-1 p-1 rounded-m3-sm hover:bg-black/5"
                       >
-                        {active && (
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                            <path
-                              d="M2 6.5L4.5 9L10 3"
-                              stroke="currentColor"
-                              strokeWidth="1.6"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                        )}
-                      </span>
-                      <span className="flex-1 min-w-0">
-                        <div className="md-typescale-title-small leading-tight">
-                          {p.label}
+                        <span
+                          className={cn(
+                            "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-m3-sm border",
+                            active
+                              ? "bg-primary border-primary text-primary-on"
+                              : "border-outline-variant"
+                          )}
+                        >
+                          {active && (
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                              <path
+                                d="M2 6.5L4.5 9L10 3"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          )}
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <div className="md-typescale-title-small leading-tight">
+                            {p.label}
+                          </div>
+                          <div className="md-typescale-body-small opacity-70 font-mono">
+                            {p.sub}
+                          </div>
+                        </span>
+                      </button>
+                      {active && (
+                        <div className="flex items-center gap-2 pl-8">
+                          <span className="ff-stamp-label opacity-70 mr-1">
+                            SEO copy ·
+                          </span>
+                          {(["en", "zh"] as SeoLang[]).map((lang) => {
+                            const on = config!.langs.includes(lang);
+                            return (
+                              <button
+                                type="button"
+                                key={lang}
+                                onClick={() =>
+                                  togglePlatformLanguage(p.id, lang)
+                                }
+                                className={cn(
+                                  "px-3 h-7 rounded-m3-full border md-typescale-label-small transition-colors",
+                                  on
+                                    ? "bg-primary text-primary-on border-primary"
+                                    : "bg-surface-container border-outline-variant hover:bg-surface-container-high"
+                                )}
+                              >
+                                {on ? "✓ " : ""}
+                                {LANG_LABELS[lang]}
+                              </button>
+                            );
+                          })}
+                          {config!.langs.length === 0 && (
+                            <span className="md-typescale-body-small text-error">
+                              · assets only, no copy
+                            </span>
+                          )}
                         </div>
-                        <div className="md-typescale-body-small opacity-70">
-                          {p.sub}
-                        </div>
-                      </span>
-                    </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -477,22 +569,8 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                 onChange={(next) => setDryRun(!next)}
                 offLabel="Dry run · SEO only"
                 onLabel="Full run · images + SEO"
-                offHint="Free of FAL spend; bilingual SEO still runs."
+                offHint="Free of FAL spend; SEO surfaces still run."
                 onHint="Charges per slot per the breakdown on the right."
-              />
-            </ConfigRow>
-
-            <ConfigRow
-              label="Bilingual SEO"
-              sub={includeSeo ? "Generate Amazon + Shopify copy" : "Skip"}
-            >
-              <Toggle
-                on={includeSeo}
-                onChange={setIncludeSeo}
-                offLabel="Off"
-                onLabel="On"
-                offHint="No SEO copy; assets only (full-run only)."
-                onHint="$0.10/listing per platform."
               />
             </ConfigRow>
           </form>
@@ -520,7 +598,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
             preview={preview}
             error={previewErr}
             dryRun={dryRun}
-            includeSeo={includeSeo}
+            seoEnabled={seoEnabled}
             platforms={platforms}
             effectiveCents={effectiveCents}
           />
@@ -683,14 +761,14 @@ function CostPreview({
   preview,
   error,
   dryRun,
-  includeSeo,
+  seoEnabled,
   platforms,
   effectiveCents,
 }: {
   preview: PreviewResponse | null;
   error: string | null;
   dryRun: boolean;
-  includeSeo: boolean;
+  seoEnabled: boolean;
   platforms: ("amazon" | "shopify")[];
   effectiveCents: number;
 }) {
@@ -722,9 +800,9 @@ function CostPreview({
       />
       <Row
         label="Listings"
-        detail={includeSeo ? `${b.listings.count} surfaces × ${formatCents(b.listings.per_unit_cents)}` : "off"}
-        cents={includeSeo ? b.listings.subtotal : 0}
-        muted={!includeSeo}
+        detail={seoEnabled ? `${b.listings.count} surfaces × ${formatCents(b.listings.per_unit_cents)}` : "off — assets only"}
+        cents={seoEnabled ? b.listings.subtotal : 0}
+        muted={!seoEnabled}
       />
       <div className="border-t ff-hairline pt-2 flex items-baseline justify-between">
         <span className="md-typescale-title-small">
