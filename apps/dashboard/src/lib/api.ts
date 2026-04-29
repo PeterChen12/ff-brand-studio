@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuth, useOrganization } from "@clerk/react";
+import { useAuth, useClerk } from "@clerk/react";
 import { useCallback } from "react";
 import { MCP_URL } from "./config";
 
@@ -10,8 +10,6 @@ export class ApiError extends Error {
   }
 }
 
-// Decode a JWT payload (no signature check — just for logging the
-// claims so we can confirm org_id is present).
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
@@ -27,39 +25,40 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
 /**
  * Phase G — auth-aware fetch wrapper.
  *
- * Uses Clerk's getToken() to attach a session JWT to every Worker
- * request, so the requireTenant middleware can verify it and resolve
- * to a tenant. The hook returns a stable callback; pages can pass it
- * to useEffect dependency arrays without retriggering on every render.
- *
- * Usage:
- *   const apiFetch = useApiFetch();
- *   useEffect(() => {
- *     apiFetch("/api/products").then(setProducts);
- *   }, [apiFetch]);
+ * Reads `orgId` from `useAuth()` (the session-truth — what the JWT will
+ * actually carry) rather than `useOrganization()` (which can lag behind
+ * setActive and report a stale active org). Before every request we
+ * call `clerk.session?.touch()` to force the server to sync the active
+ * org into the session token; without this, a stale client-side cache
+ * can keep handing out tokens with no `org_id` even when an org is
+ * active client-side.
  */
 export function useApiFetch() {
-  const { getToken, isSignedIn } = useAuth();
-  const { organization } = useOrganization();
-  const orgId = organization?.id;
+  const { getToken, isSignedIn, orgId } = useAuth();
+  const { session } = useClerk();
   return useCallback(
     async <T = unknown>(path: string, init: RequestInit = {}): Promise<T> => {
-      // Explicitly scope the token to the active organization. Without
-      // organizationId, getToken returns the session's cached JWT,
-      // which can lag behind setActive({ organization }) and arrive at
-      // the Worker without org_id → missing_org_context 401. Passing
-      // organizationId forces Clerk's API to mint a fresh JWT for THIS
-      // org, with org_id set.
+      if (isSignedIn && session) {
+        try {
+          await session.touch();
+        } catch {
+          // touch is best-effort; continue and let the token mint speak
+        }
+      }
       const token = isSignedIn
-        ? await getToken({ skipCache: true, organizationId: orgId })
+        ? await getToken({ skipCache: true, organizationId: orgId ?? undefined })
         : null;
       if (token && typeof console !== "undefined") {
         const payload = decodeJwtPayload(token);
+        // Use console.warn so the diagnostic survives filters that hide
+        // info-level logs. The JWT is a transient bearer with a 60s TTL
+        // and is already going to the network anyway — logging the
+        // claims subset has no marginal exposure.
         // eslint-disable-next-line no-console
-        console.log("[jwt]", path, {
+        console.warn("[jwt]", path, {
           org_id: payload?.org_id,
           sub: payload?.sub,
-          orgIdPassed: orgId,
+          orgIdFromUseAuth: orgId,
         });
       }
       const headers = new Headers(init.headers);
@@ -77,10 +76,6 @@ export function useApiFetch() {
         body = text;
       }
       if (!res.ok) {
-        // Surface the Worker's structured error (code + detail) into the
-        // thrown message so the dashboard error UI is diagnostic rather
-        // than just "401 Unauthorized". Worker shape:
-        // { error: "unauthenticated", code: "missing_org_context", detail?: "..." }
         const b = body as { code?: string; detail?: string } | null;
         const codePart = b?.code ? ` · ${b.code}` : "";
         const detailPart = b?.detail ? ` (${b.detail})` : "";
@@ -93,7 +88,7 @@ export function useApiFetch() {
       }
       return body as T;
     },
-    [getToken, isSignedIn, orgId]
+    [getToken, isSignedIn, orgId, session]
   );
 }
 
@@ -103,19 +98,19 @@ export function useApiFetch() {
  * binary endpoints (e.g. /v1/tenant/export, /v1/audit?format=csv).
  */
 export function useApiDownload() {
-  const { getToken, isSignedIn } = useAuth();
-  const { organization } = useOrganization();
-  const orgId = organization?.id;
+  const { getToken, isSignedIn, orgId } = useAuth();
+  const { session } = useClerk();
   return useCallback(
     async (path: string, fallbackFilename: string): Promise<void> => {
-      // skipCache forces a fresh JWT mint on every call. Without this,
-      // Clerk caches the original signed-in token (no org_id) and keeps
-      // serving it even after setActive({ organization }) updates the
-      // active org client-side — Worker keeps 401-ing with
-      // missing_org_context. Cache miss penalty is ~50ms; correctness
-      // matters more than the savings here.
+      if (isSignedIn && session) {
+        try {
+          await session.touch();
+        } catch {
+          // best-effort
+        }
+      }
       const token = isSignedIn
-        ? await getToken({ skipCache: true, organizationId: orgId })
+        ? await getToken({ skipCache: true, organizationId: orgId ?? undefined })
         : null;
       const headers = new Headers();
       if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -138,6 +133,6 @@ export function useApiDownload() {
       a.remove();
       URL.revokeObjectURL(url);
     },
-    [getToken, isSignedIn, orgId]
+    [getToken, isSignedIn, orgId, session]
   );
 }
