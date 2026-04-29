@@ -259,12 +259,20 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           )}
         </CardHeader>
         <CardContent>
-          {productErr && (
-            <div className="rounded-m3-md border border-error/40 bg-error-container/40 px-4 py-3 mb-4 md-typescale-body-small">
-              {productErr}
+          {productErr ? (
+            <div className="rounded-m3-md border border-error/40 bg-error-container/40 px-4 py-3 md-typescale-body-small flex items-center gap-3">
+              <span className="flex-1">
+                Failed to load products: {productErr}
+              </span>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="px-3 h-8 rounded-m3-full bg-error/20 hover:bg-error/30 md-typescale-label-small shrink-0"
+              >
+                Retry
+              </button>
             </div>
-          )}
-          {products === null ? (
+          ) : products === null ? (
             <Skeleton className="h-10 w-full" />
           ) : products.length === 0 ? (
             <div className="rounded-m3-md border border-dashed border-outline-variant py-8 px-6 text-center md-typescale-body-medium text-on-surface-variant">
@@ -441,17 +449,28 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
             )}
             {selected && (
               <div className="md-typescale-body-small text-on-surface-variant/80 font-mono leading-relaxed">
-                <span className="text-on-surface-variant">launching:</span>{" "}
-                <span className="text-on-surface">{selected.sku}</span>
-                {" → "}
                 {platforms.length === 0 ? (
-                  <span className="text-error">no platforms selected</span>
-                ) : (
-                  platforms.map((p, i) => (
-                    <span key={p} className="text-primary">
-                      {p}{i < platforms.length - 1 ? ", " : ""}
+                  <>
+                    <span className="text-error">
+                      Pick at least one marketplace to launch
                     </span>
-                  ))
+                    {" · "}
+                    <span className="text-on-surface-variant">
+                      {selected.sku}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-on-surface-variant">launching:</span>{" "}
+                    <span className="text-on-surface">{selected.sku}</span>
+                    {" → "}
+                    {platforms.map((p, i) => (
+                      <span key={p} className="text-primary">
+                        {p}
+                        {i < platforms.length - 1 ? ", " : ""}
+                      </span>
+                    ))}
+                  </>
                 )}
               </div>
             )}

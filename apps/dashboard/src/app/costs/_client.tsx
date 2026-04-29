@@ -124,7 +124,7 @@ export default function CostsPage() {
             label="HITL holds"
             value={stats === null ? null : stats.hitl.toString()}
             sub="needing review"
-            tone={stats && stats.hitl > 0 ? "amber" : undefined}
+            tone={!stats ? undefined : stats.hitl > 0 ? "amber" : "tertiary"}
           />
           <MetricCell
             label="Avg duration"

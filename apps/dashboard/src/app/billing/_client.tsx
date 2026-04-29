@@ -74,12 +74,12 @@ export default function BillingPageInner() {
       if ("error" in res) {
         setError(`Stripe not configured yet: ${res.error}`);
       } else {
-        // Phase H3 — open the embedded Checkout in a new tab using the
-        // hosted return URL. Inline embed UI lands when Stripe products
-        // are created and we wire up @stripe/stripe-js. This stub keeps
-        // the UX functional with a clear "configure Stripe" message.
-        window.alert(
-          "Stripe checkout client_secret returned — embed UI lands once Price IDs are configured."
+        // Phase H3 — Stripe checkout returned a client_secret but the
+        // embed UI (@stripe/stripe-js) isn't wired yet. Show an inline
+        // banner instead of a native alert so non-operator users
+        // understand this is a config gap, not a JS error.
+        setError(
+          "Stripe checkout is being prepared — embed UI activates once Price IDs are configured. Contact support to enable top-ups."
         );
       }
     } catch (e) {
@@ -143,27 +143,35 @@ export default function BillingPageInner() {
                 <CardTitle className="mt-1.5">Add credits</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-3">
-              {TOPUP_AMOUNTS.map((t) => (
-                <button
-                  key={t.cents}
-                  type="button"
-                  onClick={() => handleTopUp(t.cents)}
-                  disabled={topUpInflight !== null}
-                  className={cn(
-                    "rounded-m3-md border ff-hairline px-5 py-4 text-left",
-                    "transition-colors hover:bg-surface-container-high",
-                    topUpInflight === t.cents && "bg-primary-container/40"
-                  )}
-                >
-                  <div className="md-typescale-headline-small font-brand text-on-surface">
-                    {t.label}
-                  </div>
-                  <div className="md-typescale-body-small text-on-surface-variant/70 mt-0.5 font-mono">
-                    {topUpInflight === t.cents ? "Opening Stripe…" : t.sub}
-                  </div>
-                </button>
-              ))}
+            <CardContent>
+              <div className="grid grid-cols-2 gap-3">
+                {TOPUP_AMOUNTS.map((t) => (
+                  <button
+                    key={t.cents}
+                    type="button"
+                    onClick={() => handleTopUp(t.cents)}
+                    disabled={topUpInflight !== null}
+                    className={cn(
+                      "rounded-m3-md border ff-hairline px-5 py-4 text-left",
+                      "transition-colors hover:bg-surface-container-high",
+                      "disabled:cursor-not-allowed disabled:opacity-60",
+                      topUpInflight === t.cents && "bg-primary-container/40 opacity-100"
+                    )}
+                  >
+                    <div className="md-typescale-headline-small font-brand text-on-surface">
+                      {t.label}
+                    </div>
+                    <div className="md-typescale-body-small text-on-surface-variant/70 mt-0.5 font-mono">
+                      {topUpInflight === t.cents ? "Opening Stripe…" : t.sub}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {topUpInflight !== null && (
+                <div className="md-typescale-body-small text-on-surface-variant/70 text-center mt-3 font-mono">
+                  Opening Stripe checkout — other amounts disabled until this completes.
+                </div>
+              )}
             </CardContent>
             <CardFooter>
               <span className="md-typescale-label-small">Stripe · test mode</span>
