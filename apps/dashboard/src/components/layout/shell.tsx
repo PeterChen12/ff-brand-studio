@@ -7,6 +7,7 @@ import {
   OrganizationSwitcher,
   UserButton,
   useAuth,
+  useOrganization,
 } from "@clerk/react";
 import { cn } from "@/lib/cn";
 import { MCP_URL } from "@/lib/config";
@@ -76,6 +77,8 @@ function ShellInner({
   children: React.ReactNode;
 }) {
   const { getToken, isSignedIn } = useAuth();
+  const { organization } = useOrganization();
+  const orgId = organization?.id;
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -111,7 +114,10 @@ function ShellInner({
     let alive = true;
     async function poll() {
       try {
-        const token = await getToken({ skipCache: true });
+        const token = await getToken({
+          skipCache: true,
+          organizationId: orgId,
+        });
         if (!token) return;
         const res = await fetch(`${MCP_URL}/v1/me/state`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -143,7 +149,7 @@ function ShellInner({
       alive = false;
       clearInterval(id);
     };
-  }, [pathname, isSignedIn, getToken]);
+  }, [pathname, isSignedIn, getToken, orgId]);
 
   const dotClass = {
     ok: "bg-tertiary",
