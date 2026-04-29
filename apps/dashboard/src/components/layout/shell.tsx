@@ -7,7 +7,6 @@ import {
   OrganizationSwitcher,
   UserButton,
   useAuth,
-  useClerk,
 } from "@clerk/react";
 import { cn } from "@/lib/cn";
 import { MCP_URL } from "@/lib/config";
@@ -77,7 +76,6 @@ function ShellInner({
   children: React.ReactNode;
 }) {
   const { getToken, isSignedIn, orgId } = useAuth();
-  const { session } = useClerk();
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -113,13 +111,6 @@ function ShellInner({
     let alive = true;
     async function poll() {
       try {
-        if (session) {
-          try {
-            await session.touch();
-          } catch {
-            // best-effort session sync
-          }
-        }
         const token = await getToken({
           skipCache: true,
           organizationId: orgId ?? undefined,
@@ -155,7 +146,7 @@ function ShellInner({
       alive = false;
       clearInterval(id);
     };
-  }, [pathname, isSignedIn, getToken, orgId, session]);
+  }, [pathname, isSignedIn, getToken, orgId]);
 
   const dotClass = {
     ok: "bg-tertiary",

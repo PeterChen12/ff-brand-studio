@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuth, useClerk } from "@clerk/react";
+import { useAuth } from "@clerk/react";
 import { useCallback } from "react";
 import { MCP_URL } from "./config";
 
@@ -25,26 +25,16 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
 /**
  * Phase G — auth-aware fetch wrapper.
  *
- * Reads `orgId` from `useAuth()` (the session-truth — what the JWT will
- * actually carry) rather than `useOrganization()` (which can lag behind
- * setActive and report a stale active org). Before every request we
- * call `clerk.session?.touch()` to force the server to sync the active
- * org into the session token; without this, a stale client-side cache
- * can keep handing out tokens with no `org_id` even when an org is
- * active client-side.
+ * Source of truth for active org is `useAuth().orgId`. Server-side org
+ * activation is owned by `OrgGate` (which calls `setActive` once on
+ * mount). Do NOT call `session.touch()` here — it gets rate-limited
+ * (429) when fired on every request and the touch failure leaves the
+ * mint endpoint with stale state, producing tokens with no `org_id`.
  */
 export function useApiFetch() {
   const { getToken, isSignedIn, orgId } = useAuth();
-  const { session } = useClerk();
   return useCallback(
     async <T = unknown>(path: string, init: RequestInit = {}): Promise<T> => {
-      if (isSignedIn && session) {
-        try {
-          await session.touch();
-        } catch {
-          // touch is best-effort; continue and let the token mint speak
-        }
-      }
       const token = isSignedIn
         ? await getToken({ skipCache: true, organizationId: orgId ?? undefined })
         : null;
@@ -88,7 +78,7 @@ export function useApiFetch() {
       }
       return body as T;
     },
-    [getToken, isSignedIn, orgId, session]
+    [getToken, isSignedIn, orgId]
   );
 }
 
@@ -99,16 +89,8 @@ export function useApiFetch() {
  */
 export function useApiDownload() {
   const { getToken, isSignedIn, orgId } = useAuth();
-  const { session } = useClerk();
   return useCallback(
     async (path: string, fallbackFilename: string): Promise<void> => {
-      if (isSignedIn && session) {
-        try {
-          await session.touch();
-        } catch {
-          // best-effort
-        }
-      }
       const token = isSignedIn
         ? await getToken({ skipCache: true, organizationId: orgId ?? undefined })
         : null;
@@ -133,6 +115,6 @@ export function useApiDownload() {
       a.remove();
       URL.revokeObjectURL(url);
     },
-    [getToken, isSignedIn, orgId, session]
+    [getToken, isSignedIn, orgId]
   );
 }

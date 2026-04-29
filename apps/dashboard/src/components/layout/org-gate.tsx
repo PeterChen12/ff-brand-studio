@@ -4,33 +4,43 @@
  * Phase G follow-up — organization activation gate.
  *
  * Clerk's session JWT only includes `org_id` when the user has an
- * active organization selected. Users with multiple orgs (or one org
- * but no auto-selection) get a JWT without org_id, and the Worker's
- * requireTenant middleware rejects every request with 401
- * `missing_org_context` (apps/mcp-server/src/lib/auth.ts:102).
+ * active organization on the SERVER side. The client-side
+ * `useAuth().orgId` can be populated from local SDK state while the
+ * server's session has no active org — in which case every token
+ * mint returns without `org_id` and the Worker rejects every request
+ * with 401 `missing_org_context` (apps/mcp-server/src/lib/auth.ts:102).
  *
- * This gate sits between Shell's auth check and the page content:
- *   - If an org is already active, render children unchanged.
- *   - If the user has memberships but none active, auto-activate the
- *     first one (silent — they can switch via the OrganizationSwitcher
- *     in the sidebar).
- *   - If the user has zero memberships, render the create-org gate.
- *     They can't proceed until they create one.
+ * The fix: on mount, mint a token, decode it, and check for `org_id`.
+ * If missing but the user has memberships, call `setActive` and BLOCK
+ * children from rendering until the next mint actually carries
+ * `org_id`. We only trust the JWT, not the SDK cache.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CreateOrganization,
   useAuth,
   useClerk,
-  useOrganization,
   useOrganizationList,
 } from "@clerk/react";
 
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "===".slice(0, (4 - (b64.length % 4)) % 4);
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+}
+
+type GateState = "checking" | "needs-create" | "ready";
+
 export function OrgGate({ children }: { children: React.ReactNode }) {
   const { setActive } = useClerk();
-  const { orgId: sessionOrgId } = useAuth();
-  const { organization, isLoaded: orgLoaded } = useOrganization();
+  const { isSignedIn, getToken, orgId: sessionOrgId } = useAuth();
   const { userMemberships, isLoaded: listLoaded } = useOrganizationList({
     userMemberships: true,
   });
@@ -38,45 +48,105 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
   const memberships = userMemberships?.data ?? [];
   const firstMembershipOrgId = memberships[0]?.organization.id;
 
-  // Activate when the session has no org_id, even if useOrganization()
-  // reports a non-null `organization` (client-side cache can lag the
-  // session). useAuth().orgId is the SESSION truth — it's what the JWT
-  // mint will read. If it's undefined, we MUST setActive or every API
-  // call returns missing_org_context.
+  const [state, state_set] = useState<GateState>("checking");
+  const ranRef = useRef(false);
+
   useEffect(() => {
-    if (!orgLoaded || !listLoaded) return;
-    if (sessionOrgId) return;
-    if (!firstMembershipOrgId) return;
-    if (typeof console !== "undefined") {
-      // eslint-disable-next-line no-console
-      console.warn("[org-gate] activating", firstMembershipOrgId, {
-        sessionOrgId,
-        cachedOrg: organization?.id,
-      });
+    if (!isSignedIn) return;
+    if (!listLoaded) return;
+    if (ranRef.current) return;
+    ranRef.current = true;
+
+    let cancelled = false;
+
+    async function ensureOrgInJwt() {
+      // Mint a token, check for org_id. Do NOT trust useAuth().orgId —
+      // that's an SDK cache that can lie about server-side state.
+      try {
+        const initial = await getToken({ skipCache: true });
+        const initialPayload = initial ? decodeJwtPayload(initial) : null;
+        const initialOrg = initialPayload?.org_id as string | undefined;
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.warn("[org-gate] initial check", {
+            jwt_org_id: initialOrg,
+            useAuth_orgId: sessionOrgId,
+            firstMembership: firstMembershipOrgId,
+            membershipCount: memberships.length,
+          });
+        }
+
+        if (initialOrg) {
+          if (!cancelled) state_set("ready");
+          return;
+        }
+
+        // No org_id in JWT. If user has no memberships, show create-org
+        // gate. If they have one, force setActive and re-mint to verify.
+        if (!firstMembershipOrgId) {
+          if (!cancelled) state_set("needs-create");
+          return;
+        }
+
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.warn("[org-gate] activating", firstMembershipOrgId);
+        }
+        await setActive({ organization: firstMembershipOrgId });
+
+        // Verify: re-mint with skipCache. If org_id appears, we're good.
+        const after = await getToken({
+          skipCache: true,
+          organizationId: firstMembershipOrgId,
+        });
+        const afterPayload = after ? decodeJwtPayload(after) : null;
+        const afterOrg = afterPayload?.org_id as string | undefined;
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.warn("[org-gate] post-setActive check", {
+            jwt_org_id: afterOrg,
+          });
+        }
+
+        if (cancelled) return;
+        if (afterOrg) {
+          state_set("ready");
+        } else {
+          // setActive succeeded but JWT still lacks org_id — likely a
+          // Clerk JWT-template config issue. Render children anyway so
+          // the user sees the underlying API errors instead of an
+          // infinite loading state; we've already logged the diagnostic.
+          // eslint-disable-next-line no-console
+          console.error(
+            "[org-gate] JWT still missing org_id after setActive — " +
+              "check Clerk session-token claims include org_id"
+          );
+          state_set("ready");
+        }
+      } catch (err: unknown) {
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.error("[org-gate] ensureOrgInJwt failed", err);
+        }
+        if (!cancelled) state_set("ready");
+      }
     }
-    setActive({ organization: firstMembershipOrgId })
-      .then(() => {
-        if (typeof console !== "undefined") {
-          // eslint-disable-next-line no-console
-          console.warn("[org-gate] activation resolved");
-        }
-      })
-      .catch((err: unknown) => {
-        if (typeof console !== "undefined") {
-          // eslint-disable-next-line no-console
-          console.error("[org-gate] setActive failed", err);
-        }
-      });
+
+    void ensureOrgInJwt();
+    return () => {
+      cancelled = true;
+    };
   }, [
-    orgLoaded,
+    isSignedIn,
     listLoaded,
-    sessionOrgId,
     firstMembershipOrgId,
-    organization,
+    sessionOrgId,
+    memberships.length,
+    getToken,
     setActive,
   ]);
 
-  if (!orgLoaded || !listLoaded) {
+  if (!listLoaded || state === "checking") {
     return (
       <div className="min-h-screen md-surface flex items-center justify-center">
         <div className="md-typescale-label-small text-on-surface-variant tracking-stamp uppercase">
@@ -86,7 +156,7 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!sessionOrgId && memberships.length === 0) {
+  if (state === "needs-create") {
     return (
       <div className="min-h-screen md-surface flex items-center justify-center px-6 py-12">
         <div className="max-w-lg w-full">
@@ -114,16 +184,6 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
               }}
             />
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!sessionOrgId) {
-    return (
-      <div className="min-h-screen md-surface flex items-center justify-center">
-        <div className="md-typescale-label-small text-on-surface-variant tracking-stamp uppercase">
-          Selecting organization…
         </div>
       </div>
     );
