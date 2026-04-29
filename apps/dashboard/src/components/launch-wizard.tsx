@@ -522,9 +522,21 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           <form onSubmit={handleLaunch} className="flex flex-col gap-6">
             <ConfigRow
               label="Marketplaces"
-              sub="Pick channels and languages"
+              sub="Output formats — auto-publish via Enterprise"
             >
               <div className="flex flex-col gap-2">
+                <div className="md-typescale-body-small text-on-surface-variant/70 -mt-1 mb-1">
+                  Selection here picks which compliance-shaped image
+                  slots and SEO copy languages get generated. Auto-push
+                  to Seller Central / Shopify Admin lives in the
+                  Enterprise tier —{" "}
+                  <a
+                    href="/settings?tab=channels"
+                    className="text-primary hover:underline"
+                  >
+                    Connect a channel →
+                  </a>
+                </div>
                 {PLATFORMS.map((p) => {
                   const config = platformConfigs.find((c) => c.id === p.id);
                   return (

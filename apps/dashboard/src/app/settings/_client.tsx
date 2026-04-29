@@ -14,33 +14,42 @@ import { PageHeader } from "@/components/layout/page-header";
 import { ApiKeysPanel } from "@/components/settings/api-keys-panel";
 import { WebhooksPanel } from "@/components/settings/webhooks-panel";
 import { TenantPanel } from "@/components/settings/tenant-panel";
+import { ChannelsPanel } from "@/components/settings/channels-panel";
 
-type Tab = "api-keys" | "webhooks" | "tenant";
+type Tab = "api-keys" | "webhooks" | "tenant" | "channels";
 
 const TABS: { id: Tab; label: string; sub: string }[] = [
+  { id: "channels", label: "Channels", sub: "销售渠道" },
   { id: "api-keys", label: "API keys", sub: "密钥" },
   { id: "webhooks", label: "Webhooks", sub: "事件订阅" },
   { id: "tenant", label: "Tenant", sub: "租户配置" },
 ];
 
 function readTabFromUrl(): Tab {
-  if (typeof window === "undefined") return "api-keys";
+  if (typeof window === "undefined") return "channels";
   const sp = new URLSearchParams(window.location.search);
   const t = sp.get("tab");
-  if (t === "webhooks" || t === "tenant") return t;
-  return "api-keys";
+  if (
+    t === "webhooks" ||
+    t === "tenant" ||
+    t === "api-keys" ||
+    t === "channels"
+  ) {
+    return t;
+  }
+  return "channels";
 }
 
 function writeTabToUrl(tab: Tab) {
   if (typeof window === "undefined") return;
-  const url = tab === "api-keys"
+  const url = tab === "channels"
     ? window.location.pathname
     : `${window.location.pathname}?tab=${tab}`;
   window.history.replaceState({}, "", url);
 }
 
 export default function SettingsClient() {
-  const [tab, setTab] = useState<Tab>("api-keys");
+  const [tab, setTab] = useState<Tab>("channels");
 
   useEffect(() => {
     setTab(readTabFromUrl());
@@ -82,6 +91,7 @@ export default function SettingsClient() {
           ))}
         </div>
 
+        {tab === "channels" && <ChannelsPanel />}
         {tab === "api-keys" && <ApiKeysPanel />}
         {tab === "webhooks" && <WebhooksPanel />}
         {tab === "tenant" && <TenantPanel />}
