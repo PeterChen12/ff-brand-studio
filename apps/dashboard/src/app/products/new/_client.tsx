@@ -195,6 +195,14 @@ export default function NewProductPageInner() {
         title="Onboard a new SKU"
         description="Drop 1-10 reference images plus the basic facts. We'll charge $0.50 to onboard the product, then you can launch it to Amazon and Shopify with one click. Reference images train the model on what your real product looks like."
       />
+      <section className="px-6 md:px-12 pt-2 max-w-7xl mx-auto">
+        <a
+          href="/products/bulk"
+          className="md-typescale-label-medium text-primary hover:underline inline-flex items-center gap-1.5"
+        >
+          Or bulk-upload a folder of SKUs →
+        </a>
+      </section>
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto">
         <form onSubmit={handleSubmit} className="grid grid-cols-12 gap-6">
           <Card className="col-span-12 md:col-span-7">
