@@ -84,6 +84,7 @@ export const products = pgTable("products", {
   sku: text("sku").notNull().unique(),
   nameEn: text("name_en").notNull(),
   nameZh: text("name_zh"),
+  description: text("description"),
   category: text("category").notNull(),
   kind: text("kind").notNull().default("compact_square"),
   dimensions: jsonb("dimensions"),

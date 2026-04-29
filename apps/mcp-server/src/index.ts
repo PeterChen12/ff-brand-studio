@@ -252,6 +252,9 @@ const ProductCreateInput = z.object({
   sku: z.string().min(2).max(64).optional(),
   name_en: z.string().min(2).max(200),
   name_zh: z.string().max(200).optional(),
+  // Issue 2 — optional long-form description. Cap matches Amazon
+  // listing-description max so SEO can use it verbatim where needed.
+  description: z.string().max(2000).optional(),
   category: z.string().min(2).max(80),
   kind: z.string().min(2).max(40).optional(),
   dimensions: z.record(z.unknown()).optional(),
@@ -348,6 +351,7 @@ app.post("/v1/products", async (c) => {
       sku,
       nameEn: p.name_en,
       nameZh: p.name_zh ?? null,
+      description: p.description?.trim() || null,
       category: p.category,
       kind: p.kind ?? "compact_square",
       dimensions: p.dimensions ?? null,
@@ -1878,6 +1882,7 @@ app.post("/demo/seo-preview", async (c) => {
     sku: `DEMO-${Date.now()}`,
     nameEn: p.product_name_en,
     nameZh: p.product_name_zh ?? null,
+    description: null,
     category: p.product_category,
     kind: "compact_square",
     dimensions: null,

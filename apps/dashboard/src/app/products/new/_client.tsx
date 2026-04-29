@@ -80,6 +80,10 @@ export default function NewProductPageInner() {
   // is preserved without migration; for Chinese inputs we duplicate
   // the value into name_en too so the NOT NULL column stays satisfied.
   const [name, setName] = useState("");
+  // Issue 2 — optional long-form description. Drives SEO copy quality.
+  // Cap matches Amazon listing-description max (2000 chars) and is
+  // enforced by Zod server-side too.
+  const [description, setDescription] = useState("");
   const [category, setCategory] = useState<string>("fishing-rod");
   const [kind, setKind] = useState<(typeof KINDS)[number]["value"]>(
     KIND_DEFAULT_FROM_UI_CATEGORY["fishing-rod"]
@@ -198,6 +202,7 @@ export default function NewProductPageInner() {
           intent_id: intent.intent_id,
           name_en: trimmedName,
           name_zh: isCjk ? trimmedName : undefined,
+          description: description.trim() || undefined,
           category,
           kind,
           uploaded_keys: uploadedKeys,
@@ -241,6 +246,25 @@ export default function NewProductPageInner() {
                   Type whichever language you have on hand. The other will
                   be generated automatically when you launch SEO copy.
                 </span>
+              </Field>
+              <Field label="Description · 产品描述">
+                <textarea
+                  className="w-full px-4 py-3 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary resize-y"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  maxLength={2000}
+                  rows={5}
+                  placeholder="What it does, materials, key features, what's in the box. The richer the input, the sharper the generated SEO copy. 描述产品功能、材质、卖点、包装。详细的输入能让生成的SEO文案更精准。"
+                />
+                <div className="flex items-baseline justify-between mt-1">
+                  <span className="md-typescale-body-small text-on-surface-variant">
+                    Optional but strongly recommended for high-quality
+                    listings. Up to 2000 characters.
+                  </span>
+                  <span className="md-typescale-body-small font-mono text-on-surface-variant/60 tabular-nums">
+                    {description.length} / 2000
+                  </span>
+                </div>
               </Field>
               <Field label="Category" required>
                 <select

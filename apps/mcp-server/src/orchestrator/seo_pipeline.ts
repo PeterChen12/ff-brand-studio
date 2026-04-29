@@ -249,6 +249,7 @@ export async function runSeoPipeline(
           ? (product.nameZh ?? product.nameEn)
           : product.nameEn,
       productCategory: product.category,
+      productDescription: product.description ?? undefined,
       keywordReps: topReps,
     });
 

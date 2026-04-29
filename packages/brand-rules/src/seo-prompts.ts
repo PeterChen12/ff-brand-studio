@@ -218,6 +218,7 @@ export function getSeoSurfaceConfig(
 export function buildUserPrompt(args: {
   productName: string;
   productCategory: string;
+  productDescription?: string;
   specs?: Record<string, string | number | undefined>;
   keywordReps: string[];
   brandHint?: string;
@@ -233,10 +234,21 @@ export function buildUserPrompt(args: {
     ? args.keywordReps.slice(0, 12).join(", ")
     : "(none — write generically)";
 
+  // Issue 2 — operator-supplied description, when present, gives the
+  // model first-party context far richer than category alone. Capped
+  // upstream at 2000 chars; pass through verbatim and let the model
+  // mine it for material, function, audience signals.
+  const descBlock = args.productDescription?.trim()
+    ? `Operator-supplied description (use as primary source of truth):
+${args.productDescription.trim()}
+
+`
+    : "";
+
   return `Product: ${args.productName}
 Category: ${args.productCategory}
 ${args.brandHint ? `Brand voice: ${args.brandHint}` : ""}
-Specs:
+${descBlock}Specs:
 ${specLines}
 
 Target keywords (rank these terms organically — work them in naturally, do NOT stuff): ${kwLine}
