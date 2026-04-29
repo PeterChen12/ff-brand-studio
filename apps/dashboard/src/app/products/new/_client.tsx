@@ -273,10 +273,25 @@ export default function NewProductPageInner() {
                     </option>
                   ))}
                 </select>
-                <span className="md-typescale-body-small text-on-surface-variant block mt-1">
-                  Drives the shape-aware crops. Auto-suggested from category;
-                  override if your product is unusual.
-                </span>
+                <div className="flex items-baseline justify-between gap-3 mt-1">
+                  <span className="md-typescale-body-small text-on-surface-variant">
+                    Drives the shape-aware crops. Auto-suggested from category;
+                    override if your product is unusual.
+                  </span>
+                  {kindManuallySet && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const suggested = KIND_DEFAULT_FROM_UI_CATEGORY[category];
+                        if (suggested) setKind(suggested);
+                        setKindManuallySet(false);
+                      }}
+                      className="md-typescale-body-small text-primary hover:underline shrink-0"
+                    >
+                      Reset to category default
+                    </button>
+                  )}
+                </div>
               </Field>
             </CardContent>
             <CardFooter>
