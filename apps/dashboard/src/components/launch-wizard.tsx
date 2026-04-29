@@ -107,6 +107,39 @@ const PLATFORMS: {
 type SeoLang = "en" | "zh";
 const LANG_LABELS: Record<SeoLang, string> = { en: "English", zh: "中文" };
 
+// Issue 8 — quality preset selector. Each maps to an ADR-0002 model
+// routing tier. Per-image price comes from the worker; we display it
+// here as a hint so the operator knows what they're picking.
+const QUALITY_PRESETS: {
+  id: "budget" | "balanced" | "premium";
+  label: string;
+  models: string;
+  hint: string;
+  perImageCents: number;
+}[] = [
+  {
+    id: "balanced",
+    label: "Recommended · 推荐",
+    models: "nano-banana-pro · gpt-image-2 · flux-kontext-pro",
+    hint: "Best image quality for the price",
+    perImageCents: 50,
+  },
+  {
+    id: "premium",
+    label: "Best performing · 最佳画质",
+    models: "nano-banana-pro 4K · gpt-image-2 high · flux-kontext-pro",
+    hint: "4K lifestyle, full-quality infographics",
+    perImageCents: 70,
+  },
+  {
+    id: "budget",
+    label: "Most cost saving · 经济",
+    models: "nano-banana-batch · gpt-image-2 medium · flux-2-pro",
+    hint: "Async batch endpoints, -30% per image",
+    perImageCents: 35,
+  },
+];
+
 export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const apiFetch = useApiFetch();
   const searchParams = useSearchParams();
@@ -154,6 +187,12 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
       language: lang,
     }))
   );
+  // Issue 8 — model-routing preset. budget/balanced/premium changes
+  // the per-image price (35¢/50¢/70¢) and downstream model selection
+  // per ADR-0002. balanced is the current default.
+  const [qualityPreset, setQualityPreset] = useState<
+    "budget" | "balanced" | "premium"
+  >("balanced");
   const [dryRun, setDryRun] = useState(true);
 
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
@@ -235,7 +274,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const surfacesKey = surfaces
     .map((s) => `${s.surface}:${s.language}`)
     .join(",");
-  const previewKey = `${platforms.join(",")}|${dryRun}|${surfacesKey}`;
+  const previewKey = `${platforms.join(",")}|${dryRun}|${surfacesKey}|${qualityPreset}`;
   const previewKeyRef = useRef(previewKey);
   const fetchPreview = useCallback(async () => {
     if (platforms.length === 0) {
@@ -254,6 +293,8 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           // include_seo if surfaces is omitted.
           surfaces,
           include_video: false,
+          // Issue 8 — preset gates the per-image price (35/50/70¢).
+          quality_preset: qualityPreset,
         }),
       });
       setPreview(data);
@@ -266,7 +307,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
     // the dep avoids re-creating fetchPreview on every render of an
     // identical surface list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiFetch, platforms.join(","), surfacesKey]);
+  }, [apiFetch, platforms.join(","), surfacesKey, qualityPreset]);
 
   useEffect(() => {
     previewKeyRef.current = previewKey;
@@ -324,6 +365,8 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           // surfaces.length when surfaces is provided.
           surfaces,
           include_seo: seoEnabled,
+          // Issue 8 — preset for model routing + per-image pricing.
+          quality_preset: qualityPreset,
         }),
       });
       setResult(data);
@@ -555,6 +598,51 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                         </div>
                       )}
                     </div>
+                  );
+                })}
+              </div>
+            </ConfigRow>
+
+            <ConfigRow label="Quality" sub="Routing preset · 模型选择">
+              <div className="flex flex-col gap-2">
+                {QUALITY_PRESETS.map((q) => {
+                  const active = qualityPreset === q.id;
+                  return (
+                    <button
+                      type="button"
+                      key={q.id}
+                      onClick={() => setQualityPreset(q.id)}
+                      className={cn(
+                        "flex items-start gap-3 px-4 py-3 rounded-m3-md border transition-colors duration-m3-short4 ease-m3-emphasized text-left",
+                        active
+                          ? "bg-primary-container text-primary-on-container border-primary"
+                          : "md-surface-container-low text-on-surface-variant border-outline-variant hover:border-outline hover:text-on-surface"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border mt-0.5",
+                          active
+                            ? "bg-primary border-primary text-primary-on"
+                            : "border-outline-variant"
+                        )}
+                      >
+                        {active && (
+                          <span className="block h-2 w-2 rounded-full bg-primary-on" />
+                        )}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <div className="md-typescale-title-small leading-tight">
+                          {q.label}
+                        </div>
+                        <div className="md-typescale-body-small font-mono opacity-60 mt-0.5">
+                          {q.models}
+                        </div>
+                        <div className="md-typescale-body-small opacity-80 mt-0.5">
+                          {q.hint} · {formatCents(q.perImageCents)}/image
+                        </div>
+                      </span>
+                    </button>
                   );
                 })}
               </div>

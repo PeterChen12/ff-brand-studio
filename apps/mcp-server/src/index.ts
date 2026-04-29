@@ -552,6 +552,8 @@ const SeoSurfaceInput = z.object({
   language: z.enum(["en", "zh"]),
 });
 
+const QualityPresetInput = z.enum(["budget", "balanced", "premium"]);
+
 const LaunchPreviewInput = z.object({
   platforms: z
     .array(z.enum(["amazon", "shopify"]))
@@ -560,6 +562,8 @@ const LaunchPreviewInput = z.object({
   include_seo: z.boolean().default(true),
   include_video: z.boolean().default(false),
   surfaces: z.array(SeoSurfaceInput).optional(),
+  // Issue 8 — model-routing preset. Affects image per-unit cost.
+  quality_preset: QualityPresetInput.default("balanced"),
 });
 
 app.post("/v1/launches/preview", async (c) => {
@@ -576,6 +580,7 @@ app.post("/v1/launches/preview", async (c) => {
       : parsed.data.include_seo,
     include_video: parsed.data.include_video,
     surface_count: surfaceCount,
+    quality_preset: parsed.data.quality_preset,
   });
 
   return c.json({
@@ -602,6 +607,9 @@ const LaunchInput = z.object({
   // can have one or more languages. When provided, this overrides
   // include_seo (treated as "true if surfaces is non-empty").
   surfaces: z.array(SeoSurfaceInput).optional(),
+  // Issue 8 — model-routing preset. Recorded on launch audit metadata
+  // so we can later analyze adoption + tune the dispatcher per preset.
+  quality_preset: QualityPresetInput.default("balanced"),
 });
 
 app.post("/v1/launches", async (c) => {
@@ -633,6 +641,7 @@ app.post("/v1/launches", async (c) => {
     include_seo:
       surfaceCount !== undefined ? surfaceCount > 0 : p.include_seo,
     surface_count: surfaceCount,
+    quality_preset: p.quality_preset,
   });
 
   if (!p.dry_run) {
@@ -668,6 +677,8 @@ app.post("/v1/launches", async (c) => {
       platforms: p.platforms,
       predicted_cents: prediction.total_cents,
       dry_run: p.dry_run,
+      quality_preset: p.quality_preset,
+      surface_count: surfaceCount ?? null,
     },
   });
 
