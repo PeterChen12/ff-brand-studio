@@ -21,7 +21,7 @@ import {
   CreateOrganization,
   useAuth,
   useClerk,
-  useOrganizationList,
+  useUser,
 } from "@clerk/react";
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
@@ -41,19 +41,23 @@ type GateState = "checking" | "needs-create" | "ready";
 export function OrgGate({ children }: { children: React.ReactNode }) {
   const { setActive } = useClerk();
   const { isSignedIn, getToken, orgId: sessionOrgId } = useAuth();
-  const { userMemberships, isLoaded: listLoaded } = useOrganizationList({
-    userMemberships: true,
-  });
+  const { user, isLoaded: userLoaded } = useUser();
 
-  const memberships = userMemberships?.data ?? [];
-  const firstMembershipOrgId = memberships[0]?.organization.id;
+  // user.organizationMemberships is sync-available once user is loaded,
+  // unlike useOrganizationList's paginated .data which can be empty on
+  // first render. Use both as fallbacks.
+  const userMemberships = user?.organizationMemberships ?? [];
+  const firstMembershipOrgId = userMemberships[0]?.organization.id;
+  // Candidate org to activate: prefer the SDK-cached active org (it's
+  // what the user was last using), fall back to first membership.
+  const candidateOrgId = sessionOrgId ?? firstMembershipOrgId;
 
   const [state, state_set] = useState<GateState>("checking");
   const ranRef = useRef(false);
 
   useEffect(() => {
     if (!isSignedIn) return;
-    if (!listLoaded) return;
+    if (!userLoaded) return;
     if (ranRef.current) return;
     ranRef.current = true;
 
@@ -71,8 +75,9 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
           console.warn("[org-gate] initial check", {
             jwt_org_id: initialOrg,
             useAuth_orgId: sessionOrgId,
+            userMembershipCount: userMemberships.length,
             firstMembership: firstMembershipOrgId,
-            membershipCount: memberships.length,
+            candidate: candidateOrgId,
           });
         }
 
@@ -81,24 +86,45 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        // No org_id in JWT. If user has no memberships, show create-org
-        // gate. If they have one, force setActive and re-mint to verify.
-        if (!firstMembershipOrgId) {
+        // No org_id in JWT. We need a candidate org to activate.
+        if (!candidateOrgId) {
           if (!cancelled) state_set("needs-create");
           return;
         }
 
         if (typeof console !== "undefined") {
           // eslint-disable-next-line no-console
-          console.warn("[org-gate] activating", firstMembershipOrgId);
+          console.warn("[org-gate] activating", candidateOrgId);
         }
-        await setActive({ organization: firstMembershipOrgId });
+        try {
+          await setActive({ organization: candidateOrgId });
+        } catch (err: unknown) {
+          // setActive fails if the user isn't actually a member of the
+          // org (stale SDK cache). Fall back to first real membership
+          // if we have one and the candidate was the cached sessionOrgId.
+          // eslint-disable-next-line no-console
+          console.warn("[org-gate] setActive failed", err, {
+            candidateOrgId,
+            firstMembershipOrgId,
+          });
+          if (
+            firstMembershipOrgId &&
+            firstMembershipOrgId !== candidateOrgId
+          ) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[org-gate] retrying with firstMembership",
+              firstMembershipOrgId
+            );
+            await setActive({ organization: firstMembershipOrgId });
+          } else {
+            if (!cancelled) state_set("needs-create");
+            return;
+          }
+        }
 
         // Verify: re-mint with skipCache. If org_id appears, we're good.
-        const after = await getToken({
-          skipCache: true,
-          organizationId: firstMembershipOrgId,
-        });
+        const after = await getToken({ skipCache: true });
         const afterPayload = after ? decodeJwtPayload(after) : null;
         const afterOrg = afterPayload?.org_id as string | undefined;
         if (typeof console !== "undefined") {
@@ -112,14 +138,14 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
         if (afterOrg) {
           state_set("ready");
         } else {
-          // setActive succeeded but JWT still lacks org_id — likely a
-          // Clerk JWT-template config issue. Render children anyway so
-          // the user sees the underlying API errors instead of an
-          // infinite loading state; we've already logged the diagnostic.
+          // setActive resolved but JWT still lacks org_id — likely a
+          // Clerk session-token-claim config issue. Render children
+          // anyway so the user sees underlying API errors instead of an
+          // infinite loading state.
           // eslint-disable-next-line no-console
           console.error(
             "[org-gate] JWT still missing org_id after setActive — " +
-              "check Clerk session-token claims include org_id"
+              "Clerk session token isn't carrying the org_id claim"
           );
           state_set("ready");
         }
@@ -138,15 +164,16 @@ export function OrgGate({ children }: { children: React.ReactNode }) {
     };
   }, [
     isSignedIn,
-    listLoaded,
+    userLoaded,
+    candidateOrgId,
     firstMembershipOrgId,
     sessionOrgId,
-    memberships.length,
+    userMemberships.length,
     getToken,
     setActive,
   ]);
 
-  if (!listLoaded || state === "checking") {
+  if (!userLoaded || state === "checking") {
     return (
       <div className="min-h-screen md-surface flex items-center justify-center">
         <div className="md-typescale-label-small text-on-surface-variant tracking-stamp uppercase">
