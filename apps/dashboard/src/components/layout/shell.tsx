@@ -10,6 +10,7 @@ import {
 } from "@clerk/react";
 import { cn } from "@/lib/cn";
 import { MCP_URL } from "@/lib/config";
+import { OrgGate } from "@/components/layout/org-gate";
 
 /**
  * M3 navigation drawer pattern — modified.
@@ -60,7 +61,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
     return <RedirectToSignIn />;
   }
 
-  return <ShellInner pathname={pathname}>{children}</ShellInner>;
+  return (
+    <OrgGate>
+      <ShellInner pathname={pathname}>{children}</ShellInner>
+    </OrgGate>
+  );
 }
 
 function ShellInner({
