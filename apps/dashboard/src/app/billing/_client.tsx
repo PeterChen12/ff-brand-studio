@@ -11,6 +11,7 @@
 
 import { useEffect, useState } from "react";
 import { useApiFetch } from "@/lib/api";
+import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -96,7 +97,7 @@ export default function BillingPageInner() {
     }
   }
 
-  const balanceUsd = balance === null ? null : (balance / 100).toFixed(2);
+  const balanceDisplay = balance === null ? null : formatCents(balance);
 
   return (
     <>
@@ -123,7 +124,7 @@ export default function BillingPageInner() {
                       : "text-ff-vermilion-deep"
                 )}
               >
-                {balanceUsd === null ? <Skeleton className="h-16 w-32" /> : `$${balanceUsd}`}
+                {balanceDisplay === null ? <Skeleton className="h-16 w-32" /> : balanceDisplay}
               </div>
               <div className="md-typescale-body-small text-on-surface-variant/70 mt-2 font-mono">
                 {balance === null
@@ -254,10 +255,10 @@ function LedgerRowItem({
       </div>
       <div className={cn("font-brand text-xl tabular-nums", tone)}>
         {sign}
-        {(row.deltaCents / 100).toFixed(2)}
+        {formatCents(Math.abs(row.deltaCents))}
       </div>
       <div className="md-typescale-body-small text-on-surface-variant/60 font-mono w-20 text-right">
-        ${(row.balanceAfterCents / 100).toFixed(2)}
+        {formatCents(row.balanceAfterCents)}
       </div>
     </div>
   );

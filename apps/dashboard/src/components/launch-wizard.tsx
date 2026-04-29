@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/lib/api";
+import { formatCents } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -693,10 +694,6 @@ function WalletGauge({
   );
 }
 
-function formatCents(cents: number): string {
-  if (cents === 0) return "$0.00";
-  return `$${(cents / 100).toFixed(2)}`;
-}
 
 // ── Result panel — kept from the prior wizard for the dry-run case ─────
 

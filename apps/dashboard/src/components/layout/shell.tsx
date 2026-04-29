@@ -10,6 +10,7 @@ import {
 } from "@clerk/react";
 import { cn } from "@/lib/cn";
 import { MCP_URL } from "@/lib/config";
+import { formatCents } from "@/lib/format";
 import { OrgGate } from "@/components/layout/org-gate";
 
 /**
@@ -265,9 +266,7 @@ function ShellInner({
                     : "text-ff-vermilion-deep"
             )}
           >
-            {walletCents === null
-              ? "—"
-              : `$${(walletCents / 100).toFixed(2)}`}
+            {formatCents(walletCents)}
           </span>
         </Link>
 

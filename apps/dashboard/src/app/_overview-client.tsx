@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useApiFetch } from "@/lib/api";
+import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -330,7 +331,7 @@ function LaunchRowItem({
           {launch.totalCostCents !== null && (
             <>
               <span className="text-outline-variant">·</span>
-              <span>{launch.totalCostCents}¢</span>
+              <span>{formatCents(launch.totalCostCents)}</span>
             </>
           )}
           {launch.hitlInterventions !== null && launch.hitlInterventions > 0 && (

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useApiFetch } from "@/lib/api";
+import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -313,7 +314,7 @@ export default function CostsPage() {
                             : "—"}
                         </td>
                         <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-ff-vermilion-deep font-semibold">
-                          {l.totalCostCents !== null ? `${l.totalCostCents}¢` : "—"}
+                          {formatCents(l.totalCostCents)}
                         </td>
                       </tr>
                     );

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useApiFetch } from "@/lib/api";
+import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -381,7 +382,7 @@ function PlatformAssetTile({
             {item.modelUsed ?? "—"}
           </span>
           <span className="md-typescale-body-small text-on-surface-variant/70 font-mono text-[0.6875rem] tabular-nums shrink-0">
-            {item.costCents !== null ? `${item.costCents}¢` : "—"}
+            {formatCents(item.costCents)}
           </span>
         </div>
         {isImage && (
