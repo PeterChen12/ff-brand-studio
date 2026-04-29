@@ -43,12 +43,15 @@ export function useApiFetch() {
         // Use console.warn so the diagnostic survives filters that hide
         // info-level logs. The JWT is a transient bearer with a 60s TTL
         // and is already going to the network anyway — logging the
-        // claims subset has no marginal exposure.
+        // claims has no marginal exposure. Dump full payload so we can
+        // see if Clerk is putting org context under a different key
+        // (e.g. compact `o.id` instead of `org_id`).
         // eslint-disable-next-line no-console
         console.warn("[jwt]", path, {
           org_id: payload?.org_id,
           sub: payload?.sub,
           orgIdFromUseAuth: orgId,
+          allClaims: payload,
         });
       }
       const headers = new Headers(init.headers);
