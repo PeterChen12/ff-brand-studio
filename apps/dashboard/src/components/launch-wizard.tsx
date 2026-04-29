@@ -102,6 +102,10 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // ── State ─────────────────────────────────────────────────────────────
   const [products, setProducts] = useState<ProductRow[] | null>(null);
   const [productErr, setProductErr] = useState<string | null>(null);
+  // productNotice is non-fatal feedback (e.g. "your bookmarked product
+  // was deleted, we picked a default"). Distinct from productErr which
+  // replaces the dropdown with a retry block — see Bug 4 fix.
+  const [productNotice, setProductNotice] = useState<string | null>(null);
   const [productId, setProductId] = useState<string | null>(seedProductId);
   const [platforms, setPlatforms] = useState<("amazon" | "shopify")[]>([
     "amazon",
@@ -132,6 +136,31 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
         setProductErr(err instanceof Error ? err.message : String(err))
       );
   }, [apiFetch, productId]);
+
+  // ── Validate seed product_id against loaded list ─────────────────────
+  // Catches orphan IDs from bookmarked / shared URLs (deleted products,
+  // wrong tenant, typos). Without this the orphan ID stays in state and
+  // a submit fires POST /v1/launches with a missing product_id, surfacing
+  // a generic 4xx instead of an obvious "this product doesn't exist."
+  useEffect(() => {
+    if (!products || !seedProductId) return;
+    const exists = products.some((p) => p.id === seedProductId);
+    if (exists) return;
+    // Default to first available, surface a non-blocking notice, strip
+    // the bad query param so a refresh doesn't re-trigger this branch.
+    const fallbackId = products[0]?.id ?? null;
+    setProductId(fallbackId);
+    setProductNotice(
+      `Product '${seedProductId}' wasn't found — defaulted to ${
+        fallbackId ? "the first available SKU." : "(no products yet)."
+      }`
+    );
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("product_id");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, [products, seedProductId]);
 
   const selected = useMemo(
     () => products?.find((p) => p.id === productId) ?? null,
@@ -260,6 +289,19 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           )}
         </CardHeader>
         <CardContent>
+          {productNotice && (
+            <div className="rounded-m3-md border border-ff-amber/40 bg-ff-amber/10 px-4 py-3 mb-3 md-typescale-body-small flex items-start gap-3">
+              <span className="flex-1">{productNotice}</span>
+              <button
+                type="button"
+                onClick={() => setProductNotice(null)}
+                className="text-on-surface-variant hover:text-on-surface md-typescale-label-small shrink-0"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
           {productErr ? (
             <div className="rounded-m3-md border border-error/40 bg-error-container/40 px-4 py-3 md-typescale-body-small flex items-center gap-3">
               <span className="flex-1">
