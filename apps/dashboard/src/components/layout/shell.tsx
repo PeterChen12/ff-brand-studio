@@ -119,7 +119,17 @@ function ShellInner({
         const res = await fetch(`${MCP_URL}/v1/me/state`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (typeof console !== "undefined") {
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[wallet-pill]",
+              res.status,
+              await res.text().catch(() => "")
+            );
+          }
+          return;
+        }
         const data = (await res.json()) as {
           tenant?: { wallet_balance_cents?: number };
         };

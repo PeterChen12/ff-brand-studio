@@ -44,7 +44,19 @@ export function useApiFetch() {
         body = text;
       }
       if (!res.ok) {
-        throw new ApiError(res.status, body, `${res.status} ${res.statusText}`);
+        // Surface the Worker's structured error (code + detail) into the
+        // thrown message so the dashboard error UI is diagnostic rather
+        // than just "401 Unauthorized". Worker shape:
+        // { error: "unauthenticated", code: "missing_org_context", detail?: "..." }
+        const b = body as { code?: string; detail?: string } | null;
+        const codePart = b?.code ? ` · ${b.code}` : "";
+        const detailPart = b?.detail ? ` (${b.detail})` : "";
+        const msg = `${res.status} ${res.statusText}${codePart}${detailPart} — ${path}`;
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.warn("[api]", msg, body);
+        }
+        throw new ApiError(res.status, body, msg);
       }
       return body as T;
     },
