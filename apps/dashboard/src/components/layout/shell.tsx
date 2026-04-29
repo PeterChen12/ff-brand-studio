@@ -80,7 +80,15 @@ function ShellInner({
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [walletCents, setWalletCents] = useState<number | null>(null);
+  // Wallet pill states. "auth-error" is distinct from "unknown-error"
+  // so we surface 401/403 explicitly — during the org-context bug
+  // operators saw `—` for hours with no signal that auth was the cause.
+  const [walletState, setWalletState] = useState<
+    | { kind: "loading" }
+    | { kind: "ok"; cents: number }
+    | { kind: "auth-error" }
+    | { kind: "unknown-error" }
+  >({ kind: "loading" });
 
   useEffect(() => {
     let alive = true;
@@ -116,10 +124,26 @@ function ShellInner({
           skipCache: true,
           organizationId: orgId ?? undefined,
         });
-        if (!token) return;
+        if (!token) {
+          if (alive) setWalletState({ kind: "auth-error" });
+          return;
+        }
         const res = await fetch(`${MCP_URL}/v1/me/state`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (!alive) return;
+        if (res.status === 401 || res.status === 403) {
+          if (typeof console !== "undefined") {
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[wallet-pill]",
+              res.status,
+              await res.text().catch(() => "")
+            );
+          }
+          setWalletState({ kind: "auth-error" });
+          return;
+        }
         if (!res.ok) {
           if (typeof console !== "undefined") {
             // eslint-disable-next-line no-console
@@ -129,16 +153,19 @@ function ShellInner({
               await res.text().catch(() => "")
             );
           }
+          setWalletState({ kind: "unknown-error" });
           return;
         }
         const data = (await res.json()) as {
           tenant?: { wallet_balance_cents?: number };
         };
-        if (alive && typeof data.tenant?.wallet_balance_cents === "number") {
-          setWalletCents(data.tenant.wallet_balance_cents);
+        if (typeof data.tenant?.wallet_balance_cents === "number") {
+          setWalletState({ kind: "ok", cents: data.tenant.wallet_balance_cents });
+        } else {
+          setWalletState({ kind: "unknown-error" });
         }
       } catch {
-        // ignore — wallet pill is best-effort UI
+        if (alive) setWalletState({ kind: "unknown-error" });
       }
     }
     poll();
@@ -243,7 +270,9 @@ function ShellInner({
         </nav>
 
         {/* Wallet pill — clickable, routes to /billing. Color shifts
-            amber under $1 and red under $0.50 per ADR-0005. */}
+            amber under $1 and red under $0.50 per ADR-0005. Auth
+            errors render as `auth ⚠` instead of an opaque `—` so
+            broken sessions are visible at a glance (Bug 5). */}
         <Link
           href="/billing"
           className={cn(
@@ -251,23 +280,37 @@ function ShellInner({
             "transition-colors hover:bg-surface-container-high",
             "border ff-hairline flex items-center justify-between"
           )}
-          title="Wallet · click to top up"
+          title={
+            walletState.kind === "auth-error"
+              ? "Wallet auth check failed — try refreshing or signing back in"
+              : walletState.kind === "unknown-error"
+                ? "Wallet poll failed — temporary network issue"
+                : "Wallet · click to top up"
+          }
         >
           <span className="ff-stamp-label">Wallet · 余额</span>
-          <span
-            className={cn(
-              "font-brand tabular-nums text-lg",
-              walletCents === null
-                ? "text-on-surface-variant/60"
-                : walletCents < 50
+          {walletState.kind === "auth-error" ? (
+            <span className="font-brand tabular-nums text-sm text-error">
+              auth ⚠
+            </span>
+          ) : walletState.kind === "ok" ? (
+            <span
+              className={cn(
+                "font-brand tabular-nums text-lg",
+                walletState.cents < 50
                   ? "text-error"
-                  : walletCents < 100
+                  : walletState.cents < 100
                     ? "text-ff-amber"
                     : "text-ff-vermilion-deep"
-            )}
-          >
-            {formatCents(walletCents)}
-          </span>
+              )}
+            >
+              {formatCents(walletState.cents)}
+            </span>
+          ) : (
+            <span className="font-brand tabular-nums text-lg text-on-surface-variant/60">
+              —
+            </span>
+          )}
         </Link>
 
         {/* Tenant + identity — Clerk OrganizationSwitcher acts as the
