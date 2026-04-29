@@ -36,38 +36,10 @@ interface PendingFile {
   uploadedKey?: string;
 }
 
-const CATEGORIES = [
-  "fishing-rod",
-  "drinkware",
-  "handbag",
-  "watch",
-  "shoe",
-  "apparel",
-  "accessory",
-  "other",
-] as const;
-
-const KINDS = [
-  { value: "long_thin_vertical", label: "Long & vertical (rod, umbrella, pole)" },
-  { value: "long_thin_horizontal", label: "Long & horizontal (skis, paddle)" },
-  { value: "compact_square", label: "Compact square (handbag, drinkware, watch)" },
-  { value: "compact_round", label: "Compact round (hat, beanie)" },
-  { value: "horizontal_thin", label: "Horizontal thin (1.5–2.0 aspect)" },
-  { value: "multi_component", label: "Multi-component set" },
-  { value: "apparel_flat", label: "Apparel flat-lay (t-shirt, hoodie)" },
-  { value: "accessory_small", label: "Accessory small (jewelry, keychain)" },
-] as const;
-
-const KIND_DEFAULT_FROM_UI_CATEGORY: Record<string, (typeof KINDS)[number]["value"]> = {
-  "fishing-rod": "long_thin_vertical",
-  drinkware: "compact_square",
-  handbag: "compact_square",
-  watch: "compact_square",
-  shoe: "compact_square",
-  apparel: "apparel_flat",
-  accessory: "accessory_small",
-  other: "compact_square",
-};
+// Issue 3 — category and image-kind constants used to live here so
+// the form could expose them as <select>s. Now derived server-side
+// via Sonnet (apps/mcp-server/src/lib/derive-product-metadata.ts);
+// the canonical enums live alongside the deriver.
 
 export default function NewProductPageInner() {
   const router = useRouter();
@@ -84,11 +56,10 @@ export default function NewProductPageInner() {
   // Cap matches Amazon listing-description max (2000 chars) and is
   // enforced by Zod server-side too.
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState<string>("fishing-rod");
-  const [kind, setKind] = useState<(typeof KINDS)[number]["value"]>(
-    KIND_DEFAULT_FROM_UI_CATEGORY["fishing-rod"]
-  );
-  const [kindManuallySet, setKindManuallySet] = useState(false);
+  // Issue 3 — category and kind are derived server-side from name +
+  // description (Sonnet) instead of asked of the user. Removed from the
+  // form. Worker still accepts manual values (integration tests / a
+  // future "edit category" page); the dashboard simply omits them.
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -129,7 +100,7 @@ export default function NewProductPageInner() {
   }
 
   const canSubmit =
-    !submitting && name.trim().length >= 2 && category && files.length >= 1;
+    !submitting && name.trim().length >= 2 && files.length >= 1;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -196,6 +167,8 @@ export default function NewProductPageInner() {
         product_id: string;
         sku: string;
         variant_id: string;
+        category?: string;
+        kind?: string;
       }>("/v1/products", {
         method: "POST",
         body: JSON.stringify({
@@ -203,8 +176,7 @@ export default function NewProductPageInner() {
           name_en: trimmedName,
           name_zh: isCjk ? trimmedName : undefined,
           description: description.trim() || undefined,
-          category,
-          kind,
+          // category & kind intentionally omitted — server derives via Sonnet
           uploaded_keys: uploadedKeys,
         }),
       });
@@ -266,63 +238,19 @@ export default function NewProductPageInner() {
                   </span>
                 </div>
               </Field>
-              <Field label="Category" required>
-                <select
-                  className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
-                  value={category}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setCategory(next);
-                    if (!kindManuallySet) {
-                      const suggested = KIND_DEFAULT_FROM_UI_CATEGORY[next];
-                      if (suggested) setKind(suggested);
-                    }
-                  }}
-                  required
-                >
-                  {CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Image kind" required>
-                <select
-                  className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
-                  value={kind}
-                  onChange={(e) => {
-                    setKind(e.target.value as (typeof KINDS)[number]["value"]);
-                    setKindManuallySet(true);
-                  }}
-                  required
-                >
-                  {KINDS.map((k) => (
-                    <option key={k.value} value={k.value}>
-                      {k.label}
-                    </option>
-                  ))}
-                </select>
-                <div className="flex items-baseline justify-between gap-3 mt-1">
-                  <span className="md-typescale-body-small text-on-surface-variant">
-                    Drives the shape-aware crops. Auto-suggested from category;
-                    override if your product is unusual.
+              <div className="rounded-m3-md md-surface-container-low border ff-hairline px-4 py-3 md-typescale-body-small text-on-surface-variant flex items-start gap-3">
+                <span aria-hidden className="text-primary text-base leading-none mt-0.5">
+                  ✦
+                </span>
+                <span>
+                  <span className="text-on-surface md-typescale-label-medium block mb-0.5">
+                    Category &amp; image-shape are auto-classified
                   </span>
-                  {kindManuallySet && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const suggested = KIND_DEFAULT_FROM_UI_CATEGORY[category];
-                        if (suggested) setKind(suggested);
-                        setKindManuallySet(false);
-                      }}
-                      className="md-typescale-body-small text-primary hover:underline shrink-0"
-                    >
-                      Reset to category default
-                    </button>
-                  )}
-                </div>
-              </Field>
+                  We read your name and description and pick the right
+                  category + crop shape for you. You can edit them later
+                  on the product page if the AI guesses wrong.
+                </span>
+              </div>
             </CardContent>
             <CardFooter>
               <span className="md-typescale-label-small">$0.50 onboard fee</span>

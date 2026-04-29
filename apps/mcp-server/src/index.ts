@@ -36,6 +36,7 @@ import { rateLimitMiddleware } from "./lib/rate-limit.js";
 import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
 import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
+import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
 import { auditEvent } from "./lib/audit.js";
 import { getStripe, priceIdForAmount, checkWebhookIdempotency } from "./lib/stripe.js";
 import { nanoid } from "nanoid";
@@ -255,7 +256,11 @@ const ProductCreateInput = z.object({
   // Issue 2 — optional long-form description. Cap matches Amazon
   // listing-description max so SEO can use it verbatim where needed.
   description: z.string().max(2000).optional(),
-  category: z.string().min(2).max(80),
+  // Issue 3 — category and kind are now optional. When the dashboard
+  // form omits them we derive both server-side via Sonnet (see
+  // deriveProductMetadata). Operators can still pass values manually
+  // (e.g. integration tests, or a future "edit category" UI).
+  category: z.string().min(2).max(80).optional(),
   kind: z.string().min(2).max(40).optional(),
   dimensions: z.record(z.unknown()).optional(),
   materials: z.array(z.string()).optional(),
@@ -340,7 +345,22 @@ app.post("/v1/products", async (c) => {
     sellerId = newSeller.id;
   }
 
-  // 5. Create product + default variant + reference rows in one go
+  // 5. Derive category + kind via Sonnet when the dashboard didn't
+  //    pass them (Issue 3). Falls back to "other" / "compact_square"
+  //    on missing key or model failure so onboarding never blocks.
+  let resolvedCategory = p.category;
+  let resolvedKind = p.kind;
+  if (!resolvedCategory || !resolvedKind) {
+    const derived = await deriveProductMetadata({
+      name: p.name_zh ?? p.name_en,
+      description: p.description ?? null,
+      anthropicKey: c.env.ANTHROPIC_API_KEY,
+    });
+    resolvedCategory = resolvedCategory ?? derived.category;
+    resolvedKind = resolvedKind ?? derived.kind;
+  }
+
+  // 6. Create product + default variant + reference rows in one go
   const sku = p.sku ?? `${tenant.id.slice(0, 6).toUpperCase()}-${nanoid(8).toUpperCase()}`;
 
   const [product] = await db
@@ -352,8 +372,8 @@ app.post("/v1/products", async (c) => {
       nameEn: p.name_en,
       nameZh: p.name_zh ?? null,
       description: p.description?.trim() || null,
-      category: p.category,
-      kind: p.kind ?? "compact_square",
+      category: resolvedCategory,
+      kind: resolvedKind ?? "compact_square",
       dimensions: p.dimensions ?? null,
       materials: p.materials ?? null,
       colorsHex: p.colors_hex ?? null,
@@ -402,6 +422,11 @@ app.post("/v1/products", async (c) => {
     sku: product.sku,
     variant_id: variant.id,
     references_created: p.uploaded_keys.length,
+    // Issue 3 — surface derived category/kind so the dashboard can
+    // show them in the next-step UI (e.g. "AI classified this as a
+    // fishing rod"). Operators can override later via product edit.
+    category: product.category,
+    kind: product.kind,
   });
 });
 
