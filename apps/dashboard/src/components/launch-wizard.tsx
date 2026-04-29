@@ -179,13 +179,25 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // Track whether the user manually toggled platforms/languages — once
   // they do, late-arriving tenant defaults must not stomp their choice.
   const platformsUserTouched = useRef(false);
-  // Derived for legacy callsites + cost preview key
-  const platforms: ("amazon" | "shopify")[] = platformConfigs.map((p) => p.id);
-  const surfaces = platformConfigs.flatMap((p) =>
-    p.langs.map((lang) => ({
-      surface: p.id === "amazon" ? ("amazon-us" as const) : ("shopify" as const),
-      language: lang,
-    }))
+  // Derived. useMemo keeps array identity stable so the cost-preview
+  // useCallback below can list these directly in its dep array without
+  // refiring on every render.
+  const platforms = useMemo<("amazon" | "shopify")[]>(
+    () => platformConfigs.map((p) => p.id),
+    [platformConfigs]
+  );
+  const surfaces = useMemo(
+    () =>
+      platformConfigs.flatMap((p) =>
+        p.langs.map((lang) => ({
+          surface:
+            p.id === "amazon"
+              ? ("amazon-us" as const)
+              : ("shopify" as const),
+          language: lang,
+        }))
+      ),
+    [platformConfigs]
   );
   // Issue 8 — model-routing preset. budget/balanced/premium changes
   // the per-image price (35¢/50¢/70¢) and downstream model selection
@@ -303,11 +315,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
     } finally {
       setPreviewLoading(false);
     }
-    // surfacesKey is the stable serialization of `surfaces`; using it as
-    // the dep avoids re-creating fetchPreview on every render of an
-    // identical surface list.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiFetch, platforms.join(","), surfacesKey, qualityPreset]);
+  }, [apiFetch, platforms, surfaces, qualityPreset]);
 
   useEffect(() => {
     previewKeyRef.current = previewKey;
@@ -519,13 +527,12 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
               <div className="flex flex-col gap-2">
                 {PLATFORMS.map((p) => {
                   const config = platformConfigs.find((c) => c.id === p.id);
-                  const active = !!config;
                   return (
                     <div
                       key={p.id}
                       className={cn(
                         "flex flex-col gap-3 px-4 py-3 rounded-m3-md border transition-colors duration-m3-short4 ease-m3-emphasized",
-                        active
+                        config
                           ? "bg-primary-container text-primary-on-container border-primary"
                           : "md-surface-container-low text-on-surface-variant border-outline-variant"
                       )}
@@ -538,13 +545,20 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                         <span
                           className={cn(
                             "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-m3-sm border",
-                            active
+                            config
                               ? "bg-primary border-primary text-primary-on"
                               : "border-outline-variant"
                           )}
                         >
-                          {active && (
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                          {config && (
+                            <svg
+                              width="12"
+                              height="12"
+                              viewBox="0 0 12 12"
+                              fill="none"
+                              role="img"
+                              aria-label={`${p.label} selected`}
+                            >
                               <path
                                 d="M2 6.5L4.5 9L10 3"
                                 stroke="currentColor"
@@ -564,13 +578,13 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                           </div>
                         </span>
                       </button>
-                      {active && (
+                      {config && (
                         <div className="flex items-center gap-2 pl-8">
                           <span className="ff-stamp-label opacity-70 mr-1">
                             SEO copy ·
                           </span>
                           {(["en", "zh"] as SeoLang[]).map((lang) => {
-                            const on = config!.langs.includes(lang);
+                            const on = config.langs.includes(lang);
                             return (
                               <button
                                 type="button"
@@ -590,7 +604,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                               </button>
                             );
                           })}
-                          {config!.langs.length === 0 && (
+                          {config.langs.length === 0 && (
                             <span className="md-typescale-body-small text-error">
                               · assets only, no copy
                             </span>
@@ -1028,22 +1042,23 @@ function ResultPanel({
           <div>
             <div className="flex items-baseline justify-between mb-3">
               <div className="ff-stamp-label">
-                Generated assets · {hasAssets ? assets!.length : "loading"}
+                Generated assets ·{" "}
+                {assets && assets.length > 0 ? assets.length : "loading"}
               </div>
-              {hasAssets && (
+              {assets && assets.length > 0 && (
                 <BundleSkuButton
                   group={{
                     sku: result.product_sku,
                     nameEn: productNameEn,
-                    items: assets!,
+                    items: assets,
                   }}
                 />
               )}
             </div>
             {assets === null ? (
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <Skeleton key={i} className="aspect-square w-full" />
+                {["s1", "s2", "s3", "s4", "s5", "s6"].map((id) => (
+                  <Skeleton key={id} className="aspect-square w-full" />
                 ))}
               </div>
             ) : assets.length === 0 ? (
@@ -1106,8 +1121,8 @@ function ResultPanel({
               pipeline notes ({result.notes.length})
             </summary>
             <ul className="px-4 pb-3 pt-1 font-mono text-[0.6875rem] text-on-surface-variant space-y-1">
-              {result.notes.map((n, i) => (
-                <li key={i}>· {n}</li>
+              {result.notes.map((n) => (
+                <li key={n}>· {n}</li>
               ))}
             </ul>
           </details>

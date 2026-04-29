@@ -129,8 +129,9 @@ async function parseFolders(fileList: FileList): Promise<ParseResult> {
   }
   if (totalBytes > MAX_TOTAL_BYTES) {
     errors.push(
-      `Total ${(totalBytes / 1_048_576).toFixed(1)} MB exceeds the 100 MB batch cap. ` +
-        "Split into smaller batches or remove larger files."
+      `Total ${(totalBytes / 1_048_576).toFixed(
+        1
+      )} MB exceeds the 100 MB batch cap. Split into smaller batches or remove larger files.`
     );
   }
   if (buckets.size === 0) {
@@ -420,8 +421,8 @@ Resolution order for description: meta.json > description.txt > none`}
             </CardHeader>
             <CardContent>
               <ul className="space-y-2 md-typescale-body-medium font-mono">
-                {parsed.errors.map((e, i) => (
-                  <li key={i} className="text-error">
+                {parsed.errors.map((e) => (
+                  <li key={e} className="text-error">
                     · {e}
                   </li>
                 ))}
@@ -584,8 +585,8 @@ function ProductRow({ product }: { product: BulkProduct }) {
         </div>
         {product.warnings.length > 0 && (
           <ul className="mt-1 md-typescale-body-small text-ff-amber font-mono">
-            {product.warnings.map((w, i) => (
-              <li key={i}>· {w}</li>
+            {product.warnings.map((w) => (
+              <li key={w}>· {w}</li>
             ))}
           </ul>
         )}
