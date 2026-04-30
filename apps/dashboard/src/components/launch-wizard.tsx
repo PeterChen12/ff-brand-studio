@@ -381,7 +381,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
 
       // Full-run success → fetch generated assets so ResultPanel can
       // show a download bundle inline (Issue 9). Operators stay on
-      // the launch page; "See in library" stays as a secondary link
+      // the launch page; "View in library" stays as a secondary link
       // for those who want the full asset browser. Dry runs skip
       // this — no images were generated.
       if (!dryRun && data.status === "succeeded") {
@@ -394,7 +394,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           );
           setLaunchAssets(productAssets);
         } catch (assetErr) {
-          // Non-fatal — the "See in library" link still works.
+          // Non-fatal — the "View in library" link still works.
           if (typeof console !== "undefined") {
             // eslint-disable-next-line no-console
             console.warn("[launch] asset fetch failed", assetErr);
@@ -1052,20 +1052,9 @@ function ResultPanel({
             so users see "the download is coming." */}
         {isFullRunSucceeded && (
           <div>
-            <div className="flex items-baseline justify-between mb-3">
-              <div className="ff-stamp-label">
-                Generated assets ·{" "}
-                {assets && assets.length > 0 ? assets.length : "loading"}
-              </div>
-              {assets && assets.length > 0 && (
-                <BundleSkuButton
-                  group={{
-                    sku: result.product_sku,
-                    nameEn: productNameEn,
-                    items: assets,
-                  }}
-                />
-              )}
+            <div className="ff-stamp-label mb-3">
+              Generated assets ·{" "}
+              {assets && assets.length > 0 ? assets.length : "loading"}
             </div>
             {assets === null ? (
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
@@ -1140,13 +1129,42 @@ function ResultPanel({
           </details>
         )}
 
-        <div className="flex items-center gap-3 pt-2 border-t ff-hairline">
-          <a
-            href={`/library?q=${encodeURIComponent(result.product_sku)}`}
-            className="md-typescale-label-medium text-primary hover:underline"
-          >
-            See in library →
-          </a>
+        <div className="flex flex-col gap-2 pt-2 border-t ff-hairline">
+          <div className="flex flex-wrap items-center gap-3">
+            {isFullRunSucceeded && hasAssets ? (
+              <>
+                <BundleSkuButton
+                  group={{
+                    sku: result.product_sku,
+                    nameEn: productNameEn,
+                    items: assets ?? [],
+                  }}
+                />
+                <a
+                  href={`/library?q=${encodeURIComponent(result.product_sku)}`}
+                  className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full md-typescale-label-medium border border-outline text-primary bg-transparent hover:bg-primary/[0.04] transition-colors duration-m3-short3"
+                >
+                  View in library →
+                </a>
+              </>
+            ) : (
+              <a
+                href={
+                  dryRun
+                    ? `/library?q=${encodeURIComponent(result.product_sku)}&tab=listings`
+                    : `/library?q=${encodeURIComponent(result.product_sku)}`
+                }
+                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full md-typescale-label-medium bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2 transition-shadow"
+              >
+                {dryRun ? "View SEO copy" : "View in library"} →
+              </a>
+            )}
+          </div>
+          {isFullRunSucceeded && !hasAssets && (
+            <p className="md-typescale-body-small text-on-surface-variant font-mono">
+              Library updates as assets land.
+            </p>
+          )}
         </div>
       </CardContent>
     </Card>
