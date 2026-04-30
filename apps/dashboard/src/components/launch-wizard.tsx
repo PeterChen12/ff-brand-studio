@@ -22,7 +22,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/lib/api";
 import { formatCents } from "@/lib/format";
-import { useTenant } from "@/lib/tenant-context";
 import type { PlatformAssetRow } from "@/db/schema";
 import {
   BundleSkuButton,
@@ -96,18 +95,7 @@ interface LaunchResult {
   };
 }
 
-const PLATFORMS: {
-  id: "amazon" | "shopify";
-  label: string;
-  sub: string;
-  surface: "amazon-us" | "shopify";
-}[] = [
-  { id: "amazon", label: "Amazon US", sub: "amazon-us · select language(s)", surface: "amazon-us" },
-  { id: "shopify", label: "Shopify DTC", sub: "shopify · select language(s)", surface: "shopify" },
-];
-
 type SeoLang = "en" | "zh";
-const LANG_LABELS: Record<SeoLang, string> = { en: "English", zh: "中文" };
 
 // Issue 8 — quality preset selector. Each maps to an ADR-0002 model
 // routing tier. Per-image price comes from the worker; we display it
@@ -146,18 +134,6 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const apiFetch = useApiFetch();
   const searchParams = useSearchParams();
   const seedProductId = searchParams.get("product_id");
-  const tenant = useTenant();
-
-  // Read tenant.features.default_platforms once for the initial state.
-  // Tenant data may be null on first render (Shell's poll hasn't
-  // resolved yet); fall back to ["amazon","shopify"]. The
-  // initial-sync effect below patches platforms once tenant arrives,
-  // unless the user has already touched the toggles.
-  const initialPlatformsFromTenant = (
-    Array.isArray(tenant?.features.default_platforms)
-      ? tenant.features.default_platforms
-      : null
-  ) as ("amazon" | "shopify")[] | null;
 
   // ── State ─────────────────────────────────────────────────────────────
   const [products, setProducts] = useState<ProductRow[] | null>(null);
@@ -167,39 +143,25 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // replaces the dropdown with a retry block — see Bug 4 fix.
   const [productNotice, setProductNotice] = useState<string | null>(null);
   const [productId, setProductId] = useState<string | null>(seedProductId);
-  // Issue 7+10 — per-platform language config replaces the legacy
-  // platforms+includeSeo split. Each entry is one marketplace and the
-  // SEO languages requested for it. Empty `langs` array means "skip
-  // SEO copy on that marketplace" (assets only). Default: both
-  // marketplaces, English only.
-  const initialPlatformConfigs: { id: "amazon" | "shopify"; langs: SeoLang[] }[] =
-    (initialPlatformsFromTenant ?? ["amazon", "shopify"]).map((id) => ({
-      id,
-      langs: ["en"],
-    }));
-  const [platformConfigs, setPlatformConfigs] = useState(initialPlatformConfigs);
-  // Track whether the user manually toggled platforms/languages — once
-  // they do, late-arriving tenant defaults must not stomp their choice.
-  const platformsUserTouched = useRef(false);
-  // Derived. useMemo keeps array identity stable so the cost-preview
-  // useCallback below can list these directly in its dep array without
-  // refiring on every render.
+  // Issue E — both marketplaces are always generated (the value prop is
+  // a compliance-shaped bundle covering Amazon US + Shopify DTC). The
+  // only knob the operator turns is which language(s) to render copy
+  // in. Auto-publish to Seller Central / Shopify Admin lives behind
+  // the Enterprise tier and is rendered as a locked panel below.
+  const [outputLangs, setOutputLangs] = useState<SeoLang[]>(["en"]);
+  // Stable identity so the cost-preview useCallback can list them in
+  // its dep array without refiring on every render.
   const platforms = useMemo<("amazon" | "shopify")[]>(
-    () => platformConfigs.map((p) => p.id),
-    [platformConfigs]
+    () => ["amazon", "shopify"],
+    []
   );
   const surfaces = useMemo(
     () =>
-      platformConfigs.flatMap((p) =>
-        p.langs.map((lang) => ({
-          surface:
-            p.id === "amazon"
-              ? ("amazon-us" as const)
-              : ("shopify" as const),
-          language: lang,
-        }))
-      ),
-    [platformConfigs]
+      outputLangs.flatMap((lang) => [
+        { surface: "amazon-us" as const, language: lang },
+        { surface: "shopify" as const, language: lang },
+      ]),
+    [outputLangs]
   );
   // Issue 8 — model-routing preset. budget/balanced/premium changes
   // the per-image price (35¢/50¢/70¢) and downstream model selection
@@ -263,21 +225,6 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
     }
   }, [products, seedProductId]);
 
-  // ── Sync platforms from tenant defaults once they load ──────────────
-  // Initial useState ran before tenant context resolved; if it arrives
-  // later AND the user hasn't toggled, apply the saved default. Don't
-  // stomp user choices.
-  useEffect(() => {
-    if (platformsUserTouched.current) return;
-    const saved = tenant?.features.default_platforms;
-    if (!Array.isArray(saved) || saved.length === 0) return;
-    const valid = saved.filter(
-      (p): p is "amazon" | "shopify" => p === "amazon" || p === "shopify"
-    );
-    if (valid.length === 0) return;
-    setPlatformConfigs(valid.map((id) => ({ id, langs: ["en"] })));
-  }, [tenant]);
-
   const selected = useMemo(
     () => products?.find((p) => p.id === productId) ?? null,
     [products, productId]
@@ -328,31 +275,6 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   }, [previewKey, fetchPreview]);
 
   // ── Submit ───────────────────────────────────────────────────────────
-  function togglePlatform(id: "amazon" | "shopify") {
-    platformsUserTouched.current = true;
-    setPlatformConfigs((prev) =>
-      prev.some((p) => p.id === id)
-        ? prev.filter((p) => p.id !== id)
-        : [...prev, { id, langs: ["en"] }]
-    );
-  }
-
-  function togglePlatformLanguage(id: "amazon" | "shopify", lang: SeoLang) {
-    platformsUserTouched.current = true;
-    setPlatformConfigs((prev) =>
-      prev.map((p) =>
-        p.id === id
-          ? {
-              ...p,
-              langs: p.langs.includes(lang)
-                ? p.langs.filter((x) => x !== lang)
-                : [...p.langs, lang],
-            }
-          : p
-      )
-    );
-  }
-
   async function handleLaunch(e: React.FormEvent) {
     e.preventDefault();
     if (!productId) return;
@@ -525,110 +447,98 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           <form onSubmit={handleLaunch} className="flex flex-col gap-6">
             <ConfigRow
               label="Marketplaces"
-              sub="Output formats — auto-publish via Enterprise"
+              sub="Both formats always generated"
             >
-              <div className="flex flex-col gap-2">
-                <div className="md-typescale-body-small text-on-surface-variant/70 -mt-1 mb-1">
-                  Selection here picks which compliance-shaped image
-                  slots and SEO copy languages get generated. Auto-push
-                  to Seller Central / Shopify Admin lives in the
-                  Enterprise tier —{" "}
-                  <a
-                    href="/settings?tab=channels"
-                    className="text-primary hover:underline"
-                  >
-                    Connect a channel →
-                  </a>
+              <div className="flex flex-col gap-5">
+                {/* Output formats — info-only chips. Both Amazon US +
+                    Shopify DTC are always produced; this is a value-prop
+                    statement, not a toggle. */}
+                <div>
+                  <div className="ff-stamp-label mb-2">Output formats</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full bg-primary-container text-primary-on-container md-typescale-label-medium">
+                      ✓ Amazon US (7 image slots)
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full bg-primary-container text-primary-on-container md-typescale-label-medium">
+                      ✓ Shopify DTC (5 image slots)
+                    </span>
+                  </div>
+                  <p className="md-typescale-body-small text-on-surface-variant/70 mt-1.5">
+                    Bundle download includes both formats · auto-publish requires Enterprise.
+                  </p>
                 </div>
-                {PLATFORMS.map((p) => {
-                  const config = platformConfigs.find((c) => c.id === p.id);
-                  return (
-                    <div
-                      key={p.id}
-                      className={cn(
-                        "flex flex-col gap-3 px-4 py-3 rounded-m3-md border transition-colors duration-m3-short4 ease-m3-emphasized",
-                        config
-                          ? "bg-primary-container text-primary-on-container border-primary"
-                          : "md-surface-container-low text-on-surface-variant border-outline-variant"
-                      )}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => togglePlatform(p.id)}
-                        className="flex items-center gap-3 text-left -m-1 p-1 rounded-m3-sm hover:bg-black/5"
-                      >
-                        <span
+
+                {/* Output language — single shared radio. Both
+                    marketplaces render copy in the chosen language(s). */}
+                <div>
+                  <div className="ff-stamp-label mb-2">Output language</div>
+                  <div role="radiogroup" className="flex flex-wrap items-center gap-2">
+                    {(
+                      [
+                        { id: "en", label: "English only", langs: ["en"] as SeoLang[] },
+                        { id: "zh", label: "中文 only", langs: ["zh"] as SeoLang[] },
+                        { id: "both", label: "Both languages", langs: ["en", "zh"] as SeoLang[] },
+                      ] as const
+                    ).map((choice) => {
+                      const active =
+                        outputLangs.length === choice.langs.length &&
+                        choice.langs.every((l) => outputLangs.includes(l));
+                      return (
+                        <button
+                          key={choice.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setOutputLangs([...choice.langs])}
                           className={cn(
-                            "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-m3-sm border",
-                            config
-                              ? "bg-primary border-primary text-primary-on"
-                              : "border-outline-variant"
+                            "px-3 h-8 rounded-m3-full md-typescale-label-medium border transition-colors duration-m3-short3",
+                            active
+                              ? "bg-primary text-primary-on border-primary"
+                              : "border-outline-variant text-on-surface bg-surface-container hover:bg-surface-container-high"
                           )}
                         >
-                          {config && (
-                            <svg
-                              width="12"
-                              height="12"
-                              viewBox="0 0 12 12"
-                              fill="none"
-                              role="img"
-                              aria-label={`${p.label} selected`}
-                            >
-                              <path
-                                d="M2 6.5L4.5 9L10 3"
-                                stroke="currentColor"
-                                strokeWidth="1.6"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                            </svg>
-                          )}
-                        </span>
-                        <span className="flex-1 min-w-0">
-                          <div className="md-typescale-title-small leading-tight">
-                            {p.label}
-                          </div>
-                          <div className="md-typescale-body-small opacity-70 font-mono">
-                            {p.sub}
-                          </div>
-                        </span>
-                      </button>
-                      {config && (
-                        <div className="flex items-center gap-2 pl-8">
-                          <span className="ff-stamp-label opacity-70 mr-1">
-                            SEO copy ·
-                          </span>
-                          {(["en", "zh"] as SeoLang[]).map((lang) => {
-                            const on = config.langs.includes(lang);
-                            return (
-                              <button
-                                type="button"
-                                key={lang}
-                                onClick={() =>
-                                  togglePlatformLanguage(p.id, lang)
-                                }
-                                className={cn(
-                                  "px-3 h-7 rounded-m3-full border md-typescale-label-small transition-colors",
-                                  on
-                                    ? "bg-primary text-primary-on border-primary"
-                                    : "bg-surface-container border-outline-variant hover:bg-surface-container-high"
-                                )}
-                              >
-                                {on ? "✓ " : ""}
-                                {LANG_LABELS[lang]}
-                              </button>
-                            );
-                          })}
-                          {config.langs.length === 0 && (
-                            <span className="md-typescale-body-small text-error">
-                              · assets only, no copy
-                            </span>
-                          )}
+                          {active ? "✓ " : ""}
+                          {choice.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Auto-publish — locked Enterprise panel. Cards are
+                    visibly greyed; CTA opens the channels settings page
+                    where the Calendly link lives. */}
+                <div>
+                  <div className="ff-stamp-label mb-2 flex items-center gap-1.5">
+                    🔒 Auto-publish · Enterprise
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {[
+                      { label: "Push to Seller Central", sub: "amazon · seller-central.amazon.com" },
+                      { label: "Push to Shopify Admin", sub: "shopify · admin.shopify.com" },
+                    ].map((item) => (
+                      <div
+                        key={item.label}
+                        aria-disabled="true"
+                        className="flex flex-col gap-1 px-4 py-3 rounded-m3-md border border-dashed border-outline-variant bg-surface-container/40 opacity-60"
+                      >
+                        <div className="md-typescale-title-small leading-tight flex items-center gap-1.5">
+                          <span aria-hidden="true">🔒</span>
+                          {item.label}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
+                        <div className="md-typescale-body-small text-on-surface-variant font-mono">
+                          {item.sub}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <a
+                    href="/settings?tab=channels"
+                    className="inline-flex items-center gap-1.5 mt-2.5 px-3 h-8 rounded-m3-full md-typescale-label-medium border border-outline text-primary bg-transparent hover:bg-primary/[0.04] transition-colors duration-m3-short3"
+                  >
+                    Schedule onboarding call →
+                  </a>
+                </div>
               </div>
             </ConfigRow>
 
