@@ -24,3 +24,6 @@ inbox/processed/*.md
 
 # Phase G — local Clerk creds
 apps/dashboard/.env.local
+
+# Per-user Claude Code permission overrides (do not commit)
+.claude/settings.local.json

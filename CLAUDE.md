@@ -147,3 +147,48 @@ create table run_costs (
 - Drizzle: construct Postgres URL from PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD
 - Amplify: blocks env vars starting with `AWS_` — use different prefix
 - Brand Guardian (Step 5.1): NOT safe for overnight autonomous execution
+
+---
+
+# Automated Production Workflow (v2 ecommerce pivot)
+
+The "one step at a time / wait for /commit" protocol above is the v1 interview
+pattern. v2 iteration sessions ship multi-issue PRs with this routine
+**without prompting**:
+
+## Production deploy chain
+
+| Surface | Trigger | Command |
+|---|---|---|
+| Dashboard (Cloudflare Pages) | `git push origin master` | (auto-deploys) |
+| MCP Worker (Cloudflare Workers) | manual `wrangler deploy` | `cd apps/mcp-server && pnpm run deploy` |
+
+Both are pre-authorized in `.claude/settings.local.json`. **Do not ask before
+running them** when the user says "ship it" / "move forward to production" /
+"deploy". They are routine operations, not destructive ones.
+
+## Quality gates (always run before push)
+
+In order, all from the affected app's directory:
+1. `pnpm type-check` — zero errors
+2. `pnpm build` — must produce static export (dashboard) or pass tsc (worker)
+3. `pnpm test` — worker only; expect 53/53 passing as baseline
+
+If any gate fails, fix before pushing. Do not push broken code to bypass.
+
+## Migration runners
+
+Drizzle migrations are NOT auto-applied on worker deploy. When a `.sql` file
+lands in `apps/mcp-server/drizzle/`, write a one-shot runner under `scripts/`
+(model: `scripts/apply-product-description-migration.mjs`) and run it
+manually with the local `.env`. Required env: PGHOST PGPORT PGUSER
+PGPASSWORD PGDATABASE — sourced from `creatorain/Claude_Code_Context/.env`.
+
+## When to STILL ask the user
+
+- Anything destructive: `git reset --hard`, `git push --force`, `rm -rf`,
+  `DROP TABLE`, `wrangler delete`, secret rotation.
+- Schema changes that aren't backwards-compatible.
+- Touching billing / Clerk org config.
+- Deploying outside this repo (e.g. CreatoRain).
+- Any time live customer data could be affected.
