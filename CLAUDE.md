@@ -161,11 +161,30 @@ pattern. v2 iteration sessions ship multi-issue PRs with this routine
 | Surface | Trigger | Command |
 |---|---|---|
 | Dashboard (Cloudflare Pages) | `git push origin master` | (auto-deploys) |
-| MCP Worker (Cloudflare Workers) | manual `wrangler deploy` | `cd apps/mcp-server && pnpm run deploy` |
+| MCP Worker (Cloudflare Workers) | `wrangler deploy` from `apps/mcp-server` | (see incantation below) |
 
 Both are pre-authorized in `.claude/settings.local.json`. **Do not ask before
 running them** when the user says "ship it" / "move forward to production" /
 "deploy". They are routine operations, not destructive ones.
+
+### Worker deploy — exact incantation
+
+`CLOUDFLARE_API_TOKEN` is empty in `.env`, but `CLOUDFLARE_EMAIL` +
+`CLOUDFLARE_API_KEY` are set (legacy CF Global API Key auth, still
+accepted by wrangler 3.x). Source the env first or wrangler errors with
+"non-interactive environment, set CLOUDFLARE_API_TOKEN":
+
+```bash
+cd apps/mcp-server && \
+  set -a && source ../../.env && set +a && \
+  pnpm run deploy
+```
+
+After deploy, smoke-test:
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://ff-brand-studio-mcp.creatorain.workers.dev/v1/openapi.yaml
+# Expect 200. Protected endpoints (e.g. /v1/listings) should return 401.
+```
 
 ## Quality gates (always run before push)
 
