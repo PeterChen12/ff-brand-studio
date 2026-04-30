@@ -34,19 +34,45 @@ import {
 } from "@/components/library/filter-bar";
 import { AuditTab } from "@/components/library/audit-tab";
 import { VirtualSkuList } from "@/components/library/virtual-sku-list";
+import { ListingCopy } from "@/components/listings/ListingCopy";
 
 interface LibraryResponse {
   platformAssets: PlatformAssetRow[];
 }
 
-type Tab = "assets" | "audit";
+interface ListingRow {
+  id: string;
+  variantId: string;
+  surface: string;
+  language: string;
+  copy: Record<string, unknown> | null;
+  rating: string | null;
+  iterations: number;
+  costCents: number;
+  status: string;
+  updatedAt: string | null;
+  productId: string | null;
+  sku: string | null;
+  productNameEn: string | null;
+  productNameZh: string | null;
+  category: string | null;
+  isSample?: boolean;
+}
+
+type Tab = "assets" | "listings" | "audit";
 
 function readFiltersFromUrl(): { tab: Tab; filters: LibraryFilters } {
   if (typeof window === "undefined") {
     return { tab: "assets", filters: DEFAULT_FILTERS };
   }
   const sp = new URLSearchParams(window.location.search);
-  const tab: Tab = sp.get("tab") === "audit" ? "audit" : "assets";
+  const tabParam = sp.get("tab");
+  const tab: Tab =
+    tabParam === "audit"
+      ? "audit"
+      : tabParam === "listings"
+        ? "listings"
+        : "assets";
   const platform = sp.get("platform");
   const range = sp.get("range");
   return {
@@ -82,6 +108,7 @@ function writeFiltersToUrl(tab: Tab, f: LibraryFilters) {
 export default function LibraryPage() {
   const apiFetch = useApiFetch();
   const [items, setItems] = useState<PlatformAssetRow[] | null>(null);
+  const [listings, setListings] = useState<ListingRow[] | null>(null);
   const [tab, setTab] = useState<Tab>("assets");
   const [filters, setFilters] = useState<LibraryFilters>(DEFAULT_FILTERS);
   const [lightbox, setLightbox] = useState<{
@@ -107,6 +134,18 @@ export default function LibraryPage() {
       )
       .catch(() => setItems([]));
   }, [apiFetch]);
+
+  // Issue C — lazy-load listings the first time the tab is opened so the
+  // Assets-tab path isn't slowed down by a second round-trip when the user
+  // never visits Listings.
+  useEffect(() => {
+    if (tab !== "listings" || listings !== null) return;
+    apiFetch<{ listings: ListingRow[] }>("/v1/listings")
+      .then((d) =>
+        setListings(Array.isArray(d.listings) ? d.listings : [])
+      )
+      .catch(() => setListings([]));
+  }, [apiFetch, tab, listings]);
 
   const filteredItems = useMemo(
     () => (items ? applyFilters(items, filters) : null),
@@ -204,6 +243,10 @@ export default function LibraryPage() {
                     group={g}
                     delay={Math.min(i * 70, 280)}
                     onOpenAt={(idx) => openLightbox(g, idx)}
+                    onShowListings={(sku) => {
+                      setFilters((prev) => ({ ...prev, q: sku }));
+                      setTab("listings");
+                    }}
                   />
                 )}
               />
@@ -213,6 +256,14 @@ export default function LibraryPage() {
               <NoMatchState onClear={() => setFilters(DEFAULT_FILTERS)} />
             )}
           </>
+        ) : tab === "listings" ? (
+          <ListingsTab
+            listings={listings}
+            queryFilter={filters.q}
+            onQueryChange={(q) =>
+              setFilters((prev) => ({ ...prev, q }))
+            }
+          />
         ) : (
           <AuditTab />
         )}
@@ -233,6 +284,9 @@ function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
     <div role="tablist" className="flex items-center gap-1 mb-6 border-b ff-hairline">
       <TabButton active={tab === "assets"} onClick={() => setTab("assets")}>
         Assets
+      </TabButton>
+      <TabButton active={tab === "listings"} onClick={() => setTab("listings")}>
+        Listings
       </TabButton>
       <TabButton active={tab === "audit"} onClick={() => setTab("audit")}>
         Audit log
@@ -268,6 +322,194 @@ function TabButton({
   );
 }
 
+// Issue C — Listings tab. Lazy-loads /v1/listings, groups by SKU,
+// renders each surface via the shared ListingCopy component (also used
+// by ResultPanel). Free-text q filter applies to sku + product names.
+function ListingsTab({
+  listings,
+  queryFilter,
+  onQueryChange,
+}: {
+  listings: ListingRow[] | null;
+  queryFilter: string;
+  onQueryChange: (q: string) => void;
+}) {
+  const filtered = useMemo(() => {
+    if (!listings) return null;
+    const q = queryFilter.trim().toLowerCase();
+    if (!q) return listings;
+    return listings.filter((r) => {
+      const hay = [r.sku ?? "", r.productNameEn ?? "", r.productNameZh ?? ""]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [listings, queryFilter]);
+
+  const groups = useMemo(() => {
+    if (!filtered) return null;
+    const map = new Map<
+      string,
+      {
+        sku: string;
+        nameEn: string;
+        nameZh: string | null;
+        category: string;
+        isSample: boolean;
+        rows: ListingRow[];
+      }
+    >();
+    for (const row of filtered) {
+      const key = row.sku ?? row.productId ?? "unattributed";
+      const existing = map.get(key);
+      if (existing) {
+        existing.rows.push(row);
+      } else {
+        map.set(key, {
+          sku: row.sku ?? "(no sku)",
+          nameEn: row.productNameEn ?? "(unattributed listing)",
+          nameZh: row.productNameZh,
+          category: row.category ?? "—",
+          isSample: row.isSample === true,
+          rows: [row],
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      const aLatest = a.rows[0]?.updatedAt ?? "";
+      const bLatest = b.rows[0]?.updatedAt ?? "";
+      return bLatest.localeCompare(aLatest);
+    });
+  }, [filtered]);
+
+  if (listings === null) {
+    return <SkuGroupSkeleton />;
+  }
+  if (listings.length === 0) {
+    return <ListingsEmptyState />;
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-3 mb-6">
+        <input
+          type="search"
+          value={queryFilter}
+          onChange={(e) => onQueryChange(e.target.value)}
+          placeholder="Filter by SKU or product name…"
+          className="flex-1 max-w-md h-10 px-4 rounded-m3-md border ff-hairline bg-surface-container md-typescale-body-medium focus:outline-none focus:border-primary"
+        />
+        <span className="md-typescale-body-small text-on-surface-variant font-mono">
+          {filtered?.length ?? 0} listing{(filtered?.length ?? 0) === 1 ? "" : "s"}
+        </span>
+      </div>
+      {groups && groups.length > 0 ? (
+        <div className="space-y-4">
+          {groups.map((g) => (
+            <Card key={g.sku} className="md-fade-in">
+              <CardHeader>
+                <div className="min-w-0">
+                  <CardEyebrow>
+                    {g.sku} · {g.category}
+                  </CardEyebrow>
+                  <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                    <CardTitle>{g.nameEn || g.nameZh || "(unnamed)"}</CardTitle>
+                    {g.isSample && (
+                      <Badge variant="outline" size="sm">
+                        展示样品 · demo
+                      </Badge>
+                    )}
+                  </div>
+                  {g.nameZh && g.nameZh !== g.nameEn && (
+                    <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
+                      {g.nameZh}
+                    </div>
+                  )}
+                </div>
+                <Badge variant="neutral" size="sm">
+                  {g.rows.length} listing{g.rows.length === 1 ? "" : "s"}
+                </Badge>
+              </CardHeader>
+              <div className="px-6 pb-6 space-y-3">
+                {g.rows.map((row) => (
+                  <div
+                    key={row.id}
+                    className="md-surface-container-low border ff-hairline rounded-m3-md px-4 py-3"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <CardEyebrow>
+                        {row.surface} · {row.language}
+                      </CardEyebrow>
+                      {row.rating && (
+                        <Badge
+                          variant={
+                            row.rating === "EXCELLENT" || row.rating === "GOOD"
+                              ? "passed"
+                              : row.rating === "FAIR"
+                                ? "pending"
+                                : "flagged"
+                          }
+                          size="sm"
+                        >
+                          {row.rating}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="md-typescale-body-small text-on-surface-variant font-mono">
+                      iter {row.iterations} · {formatCents(row.costCents)} ·{" "}
+                      {row.status}
+                    </div>
+                    <ListingCopy
+                      surface={row.surface}
+                      language={row.language}
+                      copy={row.copy}
+                    />
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <ListingsNoMatchState onClear={() => onQueryChange("")} />
+      )}
+    </>
+  );
+}
+
+function ListingsEmptyState() {
+  return (
+    <div className="rounded-m3-lg border border-dashed border-outline-variant py-16 px-8 text-center md-fade-in">
+      <div className="ff-stamp-label mb-3">No listings yet</div>
+      <h3 className="md-typescale-headline-medium text-on-surface mb-2">
+        Run a launch to generate SEO copy
+      </h3>
+      <p className="md-typescale-body-medium text-on-surface-variant max-w-md mx-auto">
+        Each launch (dry-run or full) produces compliance-shaped listings
+        for Amazon US and Shopify DTC. They land here once the run finishes.
+      </p>
+    </div>
+  );
+}
+
+function ListingsNoMatchState({ onClear }: { onClear: () => void }) {
+  return (
+    <div className="rounded-m3-lg border border-dashed border-outline-variant py-12 px-8 text-center md-fade-in">
+      <div className="ff-stamp-label mb-3">No matches</div>
+      <p className="md-typescale-body-medium text-on-surface-variant max-w-md mx-auto mb-4">
+        No listings match that filter — try clearing the search.
+      </p>
+      <button
+        type="button"
+        onClick={onClear}
+        className="px-4 h-9 rounded-m3-full bg-surface-container border ff-hairline md-typescale-label-medium hover:bg-surface-container-high"
+      >
+        Clear filter
+      </button>
+    </div>
+  );
+}
+
 function NoMatchState({ onClear }: { onClear: () => void }) {
   return (
     <div className="rounded-m3-lg border border-dashed border-outline-variant py-16 px-8 text-center md-fade-in">
@@ -293,10 +535,12 @@ function SkuGroup({
   group,
   delay,
   onOpenAt,
+  onShowListings,
 }: {
   group: SkuGroupShape;
   delay: number;
   onOpenAt: (idx: number) => void;
+  onShowListings?: (sku: string) => void;
 }) {
   return (
     <Card className="md-fade-in" style={{ animationDelay: `${delay}ms` }}>
@@ -326,6 +570,15 @@ function SkuGroup({
           <Badge variant="neutral" size="sm">
             {group.items.length} slot{group.items.length === 1 ? "" : "s"}
           </Badge>
+          {onShowListings && (
+            <button
+              type="button"
+              onClick={() => onShowListings(group.sku)}
+              className="md-typescale-label-medium text-primary hover:underline whitespace-nowrap"
+            >
+              📝 View listings →
+            </button>
+          )}
           <BundleSkuButton group={group} />
         </div>
       </CardHeader>

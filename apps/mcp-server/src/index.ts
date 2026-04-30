@@ -850,7 +850,41 @@ app.get("/v1/listings", async (c) => {
       return c.json({ listings: rows });
     }
 
-    return c.json({ error: "variant_id or sku required" }, 400);
+    // Issue C — tenant-wide listings feed for the dashboard Listings tab.
+    // Joins through product_variants → products so each row carries the
+    // SKU and product name the UI needs to group/filter without a second
+    // round-trip. Capped at 100; if a tenant ever exceeds this, swap in
+    // cursor pagination on updated_at.
+    const rows = await db
+      .select({
+        id: platformListings.id,
+        variantId: platformListings.variantId,
+        surface: platformListings.surface,
+        language: platformListings.language,
+        copy: platformListings.copy,
+        rating: platformListings.rating,
+        iterations: platformListings.iterations,
+        costCents: platformListings.costCents,
+        status: platformListings.status,
+        updatedAt: platformListings.updatedAt,
+        productId: products.id,
+        sku: products.sku,
+        productNameEn: products.nameEn,
+        productNameZh: products.nameZh,
+        category: products.category,
+        tenantId: platformListings.tenantId,
+      })
+      .from(platformListings)
+      .leftJoin(productVariants, eq(platformListings.variantId, productVariants.id))
+      .leftJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(platformListings.tenantId, tids))
+      .orderBy(desc(platformListings.updatedAt))
+      .limit(100);
+    const withSample = rows.map((r) => ({
+      ...r,
+      isSample: r.tenantId === SAMPLE_TENANT_ID,
+    }));
+    return c.json({ listings: withSample });
   } catch (err) {
     console.error("[/v1/listings]", err);
     return c.json({ listings: [], error: err instanceof Error ? err.message : String(err) }, 500);
