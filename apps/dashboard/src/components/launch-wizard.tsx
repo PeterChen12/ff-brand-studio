@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ListingCopy } from "@/components/listings/ListingCopy";
 import { cn } from "@/lib/cn";
 
 interface ProductRow {
@@ -1086,7 +1087,7 @@ function ResultPanel({
         {seoSurfaces.length > 0 && (
           <div>
             <div className="ff-stamp-label mb-3">SEO surfaces · {seoSurfaces.length}</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               {seoSurfaces.map((s) => (
                 <div
                   key={`${s.surface}-${s.language}`}
@@ -1112,6 +1113,11 @@ function ResultPanel({
                   <div className="md-typescale-body-small text-on-surface-variant font-mono">
                     iter {s.iterations} · {formatCents(s.cost_cents)}
                   </div>
+                  <ListingCopy
+                    surface={s.surface}
+                    language={s.language}
+                    copy={s.copy}
+                  />
                 </div>
               ))}
             </div>
