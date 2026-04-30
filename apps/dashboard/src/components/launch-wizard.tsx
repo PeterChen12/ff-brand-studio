@@ -48,6 +48,7 @@ interface ProductRow {
   category: string;
   kind: string;
   createdAt?: string | null;
+  isSample?: boolean;
 }
 
 type Rating = "EXCELLENT" | "GOOD" | "FAIR" | "POOR";
@@ -499,6 +500,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
             >
               {products.map((p) => (
                 <option key={p.id} value={p.id}>
+                  {p.isSample ? "[demo] " : ""}
                   {p.sku} — {p.nameEn || p.nameZh || "(unnamed)"} ({p.category})
                 </option>
               ))}

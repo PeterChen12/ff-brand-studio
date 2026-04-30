@@ -51,6 +51,10 @@ export const PlatformAssetRowSchema = z.object({
   productNameZh: z.string().nullable(),
   category: z.string().nullable(),
   sellerNameEn: z.string().nullable(),
+  // Issue D — true when the row is owned by SAMPLE_TENANT_ID, so the
+  // dashboard can badge demo SKUs without leaking the constant. Optional
+  // for backwards compat with payloads served before the worker rolled out.
+  isSample: z.boolean().optional(),
 });
 export type PlatformAssetRow = z.infer<typeof PlatformAssetRowSchema>;
 

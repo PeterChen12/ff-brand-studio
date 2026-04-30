@@ -6,6 +6,7 @@ export interface SkuGroupShape {
   nameZh: string | null;
   category: string;
   sellerName: string | null;
+  isSample: boolean;
   items: PlatformAssetRow[];
 }
 

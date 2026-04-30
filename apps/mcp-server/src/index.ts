@@ -914,7 +914,13 @@ app.get("/v1/products", async (c) => {
     const nextCursor = hasMore && items.length > 0
       ? items[items.length - 1].createdAt?.toISOString() ?? null
       : null;
-    return c.json({ products: items, hasMore, nextCursor });
+    // Issue D — derive is_sample so the dashboard can badge demo SKUs
+    // without leaking the SAMPLE_TENANT_ID constant into the client.
+    const itemsWithSample = items.map((p) => ({
+      ...p,
+      isSample: p.tenantId === SAMPLE_TENANT_ID,
+    }));
+    return c.json({ products: itemsWithSample, hasMore, nextCursor });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
@@ -1752,7 +1758,11 @@ app.get("/api/assets", async (c) => {
           thumbUrl = row.r2Url;
         }
       }
-      return { ...row, thumbUrl };
+      // Issue D — flag rows owned by the demo tenant so the library can
+      // badge them. Joined assets carry platformAssets.tenantId, which is
+      // the same identity the products table is filtered by.
+      const isSample = row.tenantId === SAMPLE_TENANT_ID;
+      return { ...row, thumbUrl, isSample };
     });
     return c.json({ legacy: [], platformAssets: withThumbs });
   } catch (err) {

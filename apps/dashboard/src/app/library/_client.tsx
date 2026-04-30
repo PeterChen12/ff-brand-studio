@@ -128,6 +128,7 @@ export default function LibraryPage() {
           nameZh: row.productNameZh,
           category: row.category ?? "—",
           sellerName: row.sellerNameEn,
+          isSample: row.isSample === true,
           items: [row],
         });
       }
@@ -305,9 +306,16 @@ function SkuGroup({
             {group.sku} · {group.category}
             {group.sellerName ? ` · ${group.sellerName}` : ""}
           </CardEyebrow>
-          <CardTitle className="mt-1.5">
-            {group.nameEn || group.nameZh || "(unnamed)"}
-          </CardTitle>
+          <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+            <CardTitle>
+              {group.nameEn || group.nameZh || "(unnamed)"}
+            </CardTitle>
+            {group.isSample && (
+              <Badge variant="outline" size="sm">
+                展示样品 · demo
+              </Badge>
+            )}
+          </div>
           {group.nameZh && group.nameZh !== group.nameEn && (
             <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
               {group.nameZh}
