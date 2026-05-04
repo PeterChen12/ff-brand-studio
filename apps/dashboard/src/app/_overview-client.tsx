@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
-import { useApiFetch } from "@/lib/api";
-import { formatCents } from "@/lib/format";
+import { useApiQuery } from "@/lib/api-query";
+import { formatCents, formatDurationMs, formatTimestamp } from "@/lib/format";
+import { useNow } from "@/lib/use-now";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -16,16 +17,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/cn";
-
-interface Stats {
-  totalSpend: number;
-  launchCount: number;
-  succeeded: number;
-  hitl: number;
-  assetCount: number;
-  skuCount: number;
-}
 
 interface LaunchRow {
   id: string;
@@ -42,42 +36,42 @@ interface LaunchRow {
 }
 
 export default function OverviewPage() {
-  const apiFetch = useApiFetch();
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [launches, setLaunches] = useState<LaunchRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const now = useNow();
 
-  useEffect(() => {
-    Promise.all([
-      apiFetch<{ launches: LaunchRow[] }>("/api/launches"),
-      apiFetch<{ platformAssets?: Array<{ sku?: string | null }> }>("/api/assets"),
-    ])
-      .then(([lData, aData]) => {
-        const launches_ = lData.launches ?? [];
-        const v2Assets = aData.platformAssets ?? [];
-        setLaunches(launches_);
-        const totalCents = launches_.reduce(
-          (s, x) => s + (x.totalCostCents ?? 0),
-          0
-        );
-        const skus = new Set(v2Assets.map((x) => x.sku).filter(Boolean));
-        setStats({
-          totalSpend: totalCents / 100,
-          launchCount: launches_.length,
-          succeeded: launches_.filter((x) => x.status === "succeeded").length,
-          hitl: launches_.filter(
-            (x) =>
-              (x.hitlInterventions ?? 0) > 0 || x.status === "hitl_blocked"
-          ).length,
-          assetCount: v2Assets.length,
-          skuCount: skus.size,
-        });
-      })
-      .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : "fetch failed");
-        setLaunches([]);
-      });
-  }, [apiFetch]);
+  const launchesQ = useApiQuery<{ launches: LaunchRow[] }>("/api/launches");
+  const assetsQ = useApiQuery<{
+    platformAssets?: Array<{ sku?: string | null }>;
+  }>("/api/assets");
+
+  const launches = launchesQ.data?.launches ?? null;
+  const v2Assets = assetsQ.data?.platformAssets ?? null;
+  const isLoading = launchesQ.isLoading || assetsQ.isLoading;
+  const fetchError = launchesQ.error ?? assetsQ.error ?? null;
+
+  const stats = useMemo(() => {
+    if (launches === null || v2Assets === null) return null;
+    const totalCents = launches.reduce(
+      (s, x) => s + (x.totalCostCents ?? 0),
+      0
+    );
+    const skus = new Set(v2Assets.map((x) => x.sku).filter(Boolean));
+    return {
+      totalSpend: totalCents / 100,
+      launchCount: launches.length,
+      succeeded: launches.filter((x) => x.status === "succeeded").length,
+      hitl: launches.filter(
+        (x) =>
+          (x.hitlInterventions ?? 0) > 0 || x.status === "hitl_blocked"
+      ).length,
+      assetCount: v2Assets.length,
+      skuCount: skus.size,
+    };
+  }, [launches, v2Assets]);
+
+  function refetch() {
+    launchesQ.mutate();
+    assetsQ.mutate();
+  }
 
   return (
     <>
@@ -95,12 +89,13 @@ export default function OverviewPage() {
       />
 
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto">
-        {error && (
-          <div className="mb-8 rounded-m3-md border border-error/40 bg-error-container/40 px-5 py-4">
-            <span className="ff-stamp-label">api error</span>
-            <span className="ml-3 md-typescale-body-medium font-mono text-error-on-container">
-              {error}
-            </span>
+        {fetchError && (
+          <div className="mb-8">
+            <ErrorState
+              title="Couldn't load your dashboard"
+              error={fetchError}
+              onRetry={refetch}
+            />
           </div>
         )}
 
@@ -110,9 +105,9 @@ export default function OverviewPage() {
             <div>
               <div className="ff-stamp-label mb-2">Recent launches · 最近上线</div>
               <h2 className="md-typescale-headline-large text-on-surface">
-                {launches === null
+                {isLoading
                   ? "Loading launches…"
-                  : launches.length === 0
+                  : launches === null || launches.length === 0
                     ? "No launches yet"
                     : `Last ${launches.length} launch${launches.length === 1 ? "" : "es"}`}
               </h2>
@@ -127,18 +122,50 @@ export default function OverviewPage() {
             )}
           </div>
 
-          {launches === null ? (
+          {isLoading ? (
             <div className="space-y-2">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-16 w-full" />
+              {["s1", "s2", "s3"].map((id) => (
+                <Skeleton key={id} className="h-16 w-full" />
               ))}
             </div>
-          ) : launches.length === 0 ? (
-            <FirstLaunchCTA />
+          ) : launches === null || launches.length === 0 ? (
+            <EmptyState
+              eyebrow="Get started · 三步上手"
+              title="Three steps to your first SKU"
+              body="Each step is reversible. Dry runs are free of FAL spend. Sample catalog SKUs (fishing rods) are visible until you onboard your own."
+              steps={[
+                {
+                  index: "01",
+                  title: "Add a product",
+                  sub: "Drop reference images + name + kind",
+                  href: "/products/new",
+                  cta: "Add product →",
+                },
+                {
+                  index: "02",
+                  title: "Launch",
+                  sub: "Pick platforms + dry/full + see live cost",
+                  href: "/launch",
+                  cta: "Open wizard →",
+                },
+                {
+                  index: "03",
+                  title: "Inspect + ship",
+                  sub: "Edit listings, regen images, export ZIP",
+                  href: "/library",
+                  cta: "Open library →",
+                },
+              ]}
+            />
           ) : (
             <div className="md-surface-container-low border ff-hairline rounded-m3-lg overflow-hidden">
               {launches.slice(0, 5).map((l, i) => (
-                <LaunchRowItem key={l.id} launch={l} isLast={i === Math.min(launches.length, 5) - 1} />
+                <LaunchRowItem
+                  key={l.id}
+                  launch={l}
+                  isLast={i === Math.min(launches.length, 5) - 1}
+                  now={now}
+                />
               ))}
             </div>
           )}
@@ -282,15 +309,14 @@ function ActionRow({
   );
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// Recent-launches list row + supporting helpers
-// ────────────────────────────────────────────────────────────────────────
 function LaunchRowItem({
   launch,
   isLast,
+  now,
 }: {
   launch: LaunchRow;
   isLast: boolean;
+  now: number;
 }) {
   const status = launch.status ?? "pending";
   const statusVariant: "passed" | "pending" | "flagged" =
@@ -299,7 +325,9 @@ function LaunchRowItem({
       : status === "hitl_blocked" || status === "cost_capped"
         ? "pending"
         : "flagged";
-  const ago = launch.createdAt ? relativeTime(launch.createdAt) : "—";
+  const ago = formatTimestamp(launch.createdAt, "relative", now);
+  const fullName =
+    launch.productNameEn ?? launch.sku ?? "(unknown product)";
   return (
     <Link
       href={`/library`}
@@ -311,11 +339,17 @@ function LaunchRowItem({
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-3 flex-wrap">
-          <span className="md-typescale-title-medium text-on-surface group-hover:text-primary transition-colors truncate">
-            {launch.productNameEn ?? launch.sku ?? "(unknown product)"}
+          <span
+            className="md-typescale-title-medium text-on-surface group-hover:text-primary transition-colors truncate max-w-[40ch]"
+            title={fullName}
+          >
+            {fullName}
           </span>
           {launch.sku && (
-            <span className="md-typescale-label-small text-on-surface-variant/70 font-mono">
+            <span
+              className="md-typescale-label-small text-on-surface-variant/70 font-mono"
+              title={launch.sku}
+            >
               {launch.sku}
             </span>
           )}
@@ -325,7 +359,7 @@ function LaunchRowItem({
           {launch.durationMs !== null && (
             <>
               <span className="text-outline-variant">·</span>
-              <span>{(launch.durationMs / 1000).toFixed(1)}s</span>
+              <span>{formatDurationMs(launch.durationMs)}</span>
             </>
           )}
           {launch.totalCostCents !== null && (
@@ -346,83 +380,6 @@ function LaunchRowItem({
         {status}
       </Badge>
     </Link>
-  );
-}
-
-function FirstLaunchCTA() {
-  return (
-    <div className="md-surface-container-low border border-dashed border-outline-variant rounded-m3-lg p-8 md-fade-in">
-      <div className="ff-stamp-label mb-3">Get started · 三步上手</div>
-      <h3 className="md-typescale-headline-small text-on-surface mb-2">
-        Three steps to your first SKU
-      </h3>
-      <p className="md-typescale-body-medium text-on-surface-variant max-w-xl mb-6">
-        Each step is reversible. Dry runs are free of FAL spend. Sample
-        catalog SKUs (fishing rods) are visible until you onboard your own.
-      </p>
-      <ol className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
-        <OnboardStep
-          n="01"
-          title="Add a product"
-          sub="Drop reference images + name + kind"
-          href="/products/new"
-          cta="Add product →"
-        />
-        <OnboardStep
-          n="02"
-          title="Launch"
-          sub="Pick platforms + dry/full + see live cost"
-          href="/launch"
-          cta="Open wizard →"
-        />
-        <OnboardStep
-          n="03"
-          title="Inspect + ship"
-          sub="Edit listings, regen images, export ZIP"
-          href="/library"
-          cta="Open library →"
-        />
-      </ol>
-      <p className="md-typescale-body-small text-on-surface-variant mt-4">
-        Need agency-side automation? Issue an API key in{" "}
-        <Link href="/settings" className="text-primary underline">
-          /settings
-        </Link>
-        .
-      </p>
-    </div>
-  );
-}
-
-function OnboardStep({
-  n,
-  title,
-  sub,
-  href,
-  cta,
-}: {
-  n: string;
-  title: string;
-  sub: string;
-  href: string;
-  cta: string;
-}) {
-  return (
-    <div className="rounded-m3-md md-surface-container border ff-hairline px-4 py-4 flex flex-col gap-2">
-      <span className="ff-stamp-label text-ff-vermilion-deep">{n}</span>
-      <div>
-        <div className="md-typescale-title-small text-on-surface">{title}</div>
-        <div className="md-typescale-body-small text-on-surface-variant mt-0.5">
-          {sub}
-        </div>
-      </div>
-      <Link
-        href={href}
-        className="md-typescale-label-medium text-primary hover:underline mt-auto"
-      >
-        {cta}
-      </Link>
-    </div>
   );
 }
 
@@ -463,15 +420,4 @@ function KpiCell({
       )}
     </div>
   );
-}
-
-function relativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
-  const diff = Date.now() - t;
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }

@@ -7,7 +7,9 @@
  */
 
 import { ClerkProvider } from "@clerk/react";
+import { Toaster } from "sonner";
 import { Shell } from "@/components/layout/shell";
+import { NowProvider } from "@/lib/use-now";
 
 const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
 
@@ -37,7 +39,23 @@ export function ClerkRuntime({ children }: { children: React.ReactNode }) {
         },
       }}
     >
-      <Shell>{children}</Shell>
+      <NowProvider>
+        <Shell>{children}</Shell>
+        <Toaster
+          position="bottom-right"
+          theme="light"
+          richColors
+          closeButton
+          toastOptions={{
+            classNames: {
+              toast:
+                "rounded-m3-md border ff-hairline shadow-m3-2 md-surface-container-low text-on-surface",
+              title: "md-typescale-label-large",
+              description: "md-typescale-body-small text-on-surface-variant",
+            },
+          }}
+        />
+      </NowProvider>
     </ClerkProvider>
   );
 }

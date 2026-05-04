@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useApiFetch } from "@/lib/api";
+import { useApiQuery } from "@/lib/api-query";
 import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
+import { ErrorState } from "@/components/ui/error-state";
 import {
   Card,
   CardEyebrow,
@@ -106,9 +107,6 @@ function writeFiltersToUrl(tab: Tab, f: LibraryFilters) {
 }
 
 export default function LibraryPage() {
-  const apiFetch = useApiFetch();
-  const [items, setItems] = useState<PlatformAssetRow[] | null>(null);
-  const [listings, setListings] = useState<ListingRow[] | null>(null);
   const [tab, setTab] = useState<Tab>("assets");
   const [filters, setFilters] = useState<LibraryFilters>(DEFAULT_FILTERS);
   const [lightbox, setLightbox] = useState<{
@@ -116,6 +114,19 @@ export default function LibraryPage() {
     slides: AssetSlide[];
     index: number;
   }>({ open: false, slides: [], index: 0 });
+
+  // Assets fetch — always-on (cheap; user lands here by default).
+  const assetsQ = useApiQuery<LibraryResponse>("/api/assets");
+  const items = assetsQ.data?.platformAssets ?? null;
+  const itemsError = assetsQ.error;
+
+  // Issue C — lazy-load listings the first time the tab is opened by
+  // passing `null` to useApiQuery as the SWR conditional-fetch pattern.
+  const listingsQ = useApiQuery<{ listings: ListingRow[] }>(
+    tab === "listings" ? "/v1/listings" : null
+  );
+  const listings = listingsQ.data?.listings ?? null;
+  const listingsError = listingsQ.error;
 
   useEffect(() => {
     const init = readFiltersFromUrl();
@@ -126,26 +137,6 @@ export default function LibraryPage() {
   useEffect(() => {
     writeFiltersToUrl(tab, filters);
   }, [tab, filters]);
-
-  useEffect(() => {
-    apiFetch<LibraryResponse>("/api/assets")
-      .then((d) =>
-        setItems(Array.isArray(d.platformAssets) ? d.platformAssets : [])
-      )
-      .catch(() => setItems([]));
-  }, [apiFetch]);
-
-  // Issue C — lazy-load listings the first time the tab is opened so the
-  // Assets-tab path isn't slowed down by a second round-trip when the user
-  // never visits Listings.
-  useEffect(() => {
-    if (tab !== "listings" || listings !== null) return;
-    apiFetch<{ listings: ListingRow[] }>("/v1/listings")
-      .then((d) =>
-        setListings(Array.isArray(d.listings) ? d.listings : [])
-      )
-      .catch(() => setListings([]));
-  }, [apiFetch, tab, listings]);
 
   const filteredItems = useMemo(
     () => (items ? applyFilters(items, filters) : null),
@@ -232,7 +223,13 @@ export default function LibraryPage() {
               statuses={distinctStatuses}
             />
 
-            {items === null ? (
+            {itemsError ? (
+              <ErrorState
+                title="Couldn't load your library"
+                error={itemsError}
+                onRetry={() => assetsQ.mutate()}
+              />
+            ) : items === null ? (
               <SkuGroupSkeleton />
             ) : skuGroups && skuGroups.length > 0 ? (
               <VirtualSkuList
@@ -257,13 +254,21 @@ export default function LibraryPage() {
             )}
           </>
         ) : tab === "listings" ? (
-          <ListingsTab
-            listings={listings}
-            queryFilter={filters.q}
-            onQueryChange={(q) =>
-              setFilters((prev) => ({ ...prev, q }))
-            }
-          />
+          listingsError ? (
+            <ErrorState
+              title="Couldn't load listings"
+              error={listingsError}
+              onRetry={() => listingsQ.mutate()}
+            />
+          ) : (
+            <ListingsTab
+              listings={listings}
+              queryFilter={filters.q}
+              onQueryChange={(q) =>
+                setFilters((prev) => ({ ...prev, q }))
+              }
+            />
+          )
         ) : (
           <AuditTab />
         )}

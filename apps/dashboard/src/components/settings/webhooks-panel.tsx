@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
 import {
   Card,
@@ -11,6 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 interface Subscription {
   id: string;
@@ -36,6 +38,8 @@ export function WebhooksPanel() {
   const [creating, setCreating] = useState(false);
   const [url, setUrl] = useState("");
   const [events, setEvents] = useState<string[]>([...ALL_EVENTS]);
+  const [confirmTarget, setConfirmTarget] = useState<Subscription | null>(null);
+  const [disabling, setDisabling] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -86,12 +90,17 @@ export function WebhooksPanel() {
   }
 
   async function disable(id: string) {
-    if (!window.confirm("Stop sending events to this URL? Existing failed deliveries stop retrying.")) return;
+    setDisabling(id);
     try {
       await apiFetch(`/v1/webhooks/${id}`, { method: "DELETE" });
+      toast.success("Webhook disabled.");
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toast.error(
+        e instanceof Error ? `Couldn't disable — ${e.message}` : "Couldn't disable"
+      );
+    } finally {
+      setDisabling(null);
     }
   }
 
@@ -233,10 +242,11 @@ export function WebhooksPanel() {
                   {!s.disabledAt && (
                     <button
                       type="button"
-                      onClick={() => disable(s.id)}
-                      className="px-3 h-7 rounded-m3-full bg-surface-container border ff-hairline md-typescale-label-medium text-error hover:bg-error/5"
+                      onClick={() => setConfirmTarget(s)}
+                      disabled={disabling === s.id}
+                      className="px-3 h-7 rounded-m3-full bg-surface-container border ff-hairline md-typescale-label-medium text-error hover:bg-error/5 focus-visible:ring-2 focus-visible:ring-error disabled:opacity-50"
                     >
-                      Disable
+                      {disabling === s.id ? "Disabling…" : "Disable"}
                     </button>
                   )}
                 </div>
@@ -245,6 +255,21 @@ export function WebhooksPanel() {
           </div>
         )}
       </Card>
+      <ConfirmDialog
+        open={confirmTarget !== null}
+        onOpenChange={(open) => !open && setConfirmTarget(null)}
+        title="Disable this webhook?"
+        description={`Stop sending events to ${confirmTarget?.url ?? ""}. Existing failed deliveries stop retrying. This cannot be undone.`}
+        confirmLabel="Disable"
+        destructive
+        busy={disabling !== null}
+        onConfirm={async () => {
+          if (confirmTarget) {
+            await disable(confirmTarget.id);
+            setConfirmTarget(null);
+          }
+        }}
+      />
     </div>
   );
 }

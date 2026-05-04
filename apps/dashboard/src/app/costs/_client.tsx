@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useApiFetch } from "@/lib/api";
-import { formatCents } from "@/lib/format";
+import { useMemo } from "react";
+import { useApiQuery } from "@/lib/api-query";
+import { formatCents, formatDurationMs, formatTimestamp } from "@/lib/format";
+import { useNow } from "@/lib/use-now";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -13,6 +14,8 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Area,
   AreaChart,
@@ -36,7 +39,6 @@ interface LaunchRow {
   createdAt: string | null;
 }
 
-// M3-token RGB triplets — same palette as the rest of the dashboard.
 const CHART = {
   primary: "rgb(196 57 43)",
   outline: "rgb(205 199 189)",
@@ -46,34 +48,24 @@ const CHART = {
 };
 
 export default function CostsPage() {
-  const apiFetch = useApiFetch();
-  const [launches, setLaunches] = useState<LaunchRow[] | null>(null);
+  const now = useNow();
+  const { data, error, isLoading, mutate } = useApiQuery<{
+    launches: LaunchRow[];
+  }>("/api/launches");
+  const launches = data?.launches ?? null;
 
-  useEffect(() => {
-    apiFetch<{ launches: LaunchRow[] }>("/api/launches")
-      .then((d) => setLaunches(d.launches ?? []))
-      .catch(() => setLaunches([]));
-  }, [apiFetch]);
-
-  // Chart data — newest-last so the line reads left-to-right chronologically.
   const chartData = useMemo(() => {
     if (!launches) return [];
     return [...launches]
       .filter((l) => l.createdAt && l.totalCostCents !== null)
       .reverse()
       .map((l) => ({
-        run: l.createdAt
-          ? new Date(l.createdAt).toLocaleDateString("en-US", {
-              month: "short",
-              day: "numeric",
-            })
-          : "—",
+        run: formatTimestamp(l.createdAt, "short", now),
         sku: l.sku ?? "—",
         cost: (l.totalCostCents ?? 0) / 100,
       }));
-  }, [launches]);
+  }, [launches, now]);
 
-  // Aggregate v2 metrics — single source of truth, no v1 data.
   const stats = useMemo(() => {
     if (!launches) return null;
     const totalCents = launches.reduce(
@@ -109,6 +101,14 @@ export default function CostsPage() {
       />
 
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto space-y-12">
+        {error && (
+          <ErrorState
+            title="Couldn't load launch costs"
+            error={error}
+            onRetry={() => mutate()}
+          />
+        )}
+
         {/* ── v2 summary ribbon ─────────────────────────────────────────── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-px md-surface-container border ff-hairline rounded-m3-lg overflow-hidden">
           <MetricCell
@@ -133,7 +133,7 @@ export default function CostsPage() {
               stats === null
                 ? null
                 : stats.avgMs > 0
-                  ? `${(stats.avgMs / 1000).toFixed(1)}s`
+                  ? formatDurationMs(stats.avgMs)
                   : "—"
             }
             sub="end-to-end"
@@ -141,7 +141,19 @@ export default function CostsPage() {
         </div>
 
         {/* ── Spend trend (only meaningful with > 1 launch) ─────────────── */}
-        {chartData.length > 1 && (
+        {isLoading ? (
+          <Card className="md-fade-in">
+            <CardHeader>
+              <div>
+                <CardEyebrow>Spend trend · 支出趋势</CardEyebrow>
+                <CardTitle className="mt-1.5">Cost per launch over time</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-64 w-full" />
+            </CardContent>
+          </Card>
+        ) : chartData.length > 1 ? (
           <Card className="md-fade-in">
             <CardHeader>
               <div>
@@ -209,7 +221,7 @@ export default function CostsPage() {
               </div>
             </CardContent>
           </Card>
-        )}
+        ) : null}
 
         {/* ── Launch ledger ─────────────────────────────────────────────── */}
         <Card>
@@ -225,33 +237,23 @@ export default function CostsPage() {
             )}
           </CardHeader>
           <div className="border-t ff-hairline overflow-x-auto">
-            {launches === null ? (
+            {isLoading ? (
               <div className="p-12 space-y-3">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-10 w-full" />
+                {["s1", "s2", "s3", "s4"].map((id) => (
+                  <Skeleton key={id} className="h-10 w-full" />
                 ))}
               </div>
-            ) : launches.length === 0 ? (
-              <div className="py-16 text-center">
-                <div className="ff-stamp-label text-on-surface-variant mb-2">
-                  No launches yet
-                </div>
-                <p className="md-typescale-body-medium text-on-surface-variant">
-                  v2 launches land here once the dashboard wizard fires one.
-                </p>
-                <a
-                  href="/launch"
-                  className={[
-                    "inline-flex items-center gap-2 mt-5 px-5 h-9 rounded-m3-full",
-                    "bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2",
-                    "md-typescale-label-medium uppercase tracking-stamp transition-shadow",
-                  ].join(" ")}
-                >
-                  Run your first launch →
-                </a>
+            ) : launches && launches.length === 0 ? (
+              <div className="p-12">
+                <EmptyState
+                  eyebrow="No launches yet · 暂无运行"
+                  title="v2 launches land here once you fire one"
+                  body="Each launch records cost, duration, status, and HITL interventions. Dry runs are free of FAL spend and still produce SEO copy."
+                  cta={{ label: "Run your first launch →", href: "/launch" }}
+                />
               </div>
-            ) : (
-              <table className="w-full">
+            ) : launches ? (
+              <table className="w-full min-w-[640px]">
                 <thead>
                   <tr className="md-surface-container-low">
                     {["Product", "SKU", "Status", "Run at", "HITL", "Duration", "Cost"].map(
@@ -279,15 +281,26 @@ export default function CostsPage() {
                           : l.status === "failed"
                             ? "flagged"
                             : "neutral";
+                    const fullName =
+                      l.productNameEn ??
+                      l.productNameZh ??
+                      l.sku ??
+                      "(unknown)";
                     return (
                       <tr
                         key={l.id}
                         className="border-t ff-hairline hover:bg-surface-container-low/60 transition-colors duration-m3-short3"
                       >
-                        <td className="px-5 py-3 text-on-surface md-typescale-body-small truncate max-w-[28ch]">
-                          {l.productNameEn ?? "—"}
+                        <td
+                          className="px-5 py-3 text-on-surface md-typescale-body-small truncate max-w-[28ch]"
+                          title={fullName}
+                        >
+                          {fullName}
                         </td>
-                        <td className="px-5 py-3 text-on-surface-variant font-mono text-xs">
+                        <td
+                          className="px-5 py-3 text-on-surface-variant font-mono text-xs whitespace-nowrap"
+                          title={l.sku ?? undefined}
+                        >
                           {l.sku ?? "—"}
                         </td>
                         <td className="px-5 py-3">
@@ -295,25 +308,16 @@ export default function CostsPage() {
                             {l.status ?? "?"}
                           </Badge>
                         </td>
-                        <td className="px-5 py-3 text-on-surface-variant font-mono text-xs">
-                          {l.createdAt
-                            ? new Date(l.createdAt).toLocaleDateString("en-US", {
-                                month: "short",
-                                day: "numeric",
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })
-                            : "—"}
+                        <td className="px-5 py-3 text-on-surface-variant font-mono text-xs whitespace-nowrap">
+                          {formatTimestamp(l.createdAt, "long", now)}
                         </td>
                         <td className="px-5 py-3 text-right font-mono text-xs tabular-nums">
                           {l.hitlInterventions ?? 0}
                         </td>
-                        <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-on-surface-variant">
-                          {l.durationMs !== null
-                            ? `${(l.durationMs / 1000).toFixed(1)}s`
-                            : "—"}
+                        <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-on-surface-variant whitespace-nowrap">
+                          {formatDurationMs(l.durationMs)}
                         </td>
-                        <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-ff-vermilion-deep font-semibold">
+                        <td className="px-5 py-3 text-right font-mono text-xs tabular-nums text-ff-vermilion-deep font-semibold whitespace-nowrap">
                           {formatCents(l.totalCostCents)}
                         </td>
                       </tr>
@@ -321,7 +325,7 @@ export default function CostsPage() {
                   })}
                 </tbody>
               </table>
-            )}
+            ) : null}
           </div>
         </Card>
       </section>

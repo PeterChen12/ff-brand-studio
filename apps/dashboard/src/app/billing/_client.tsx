@@ -9,9 +9,12 @@
  * STRIPE_SECRET_KEY), shows a setup banner instead of failing.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
-import { formatCents } from "@/lib/format";
+import { useApiQuery } from "@/lib/api-query";
+import { formatCents, formatTimestamp } from "@/lib/format";
+import { useNow } from "@/lib/use-now";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -21,9 +24,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/cn";
 
 interface LedgerRow {
@@ -45,25 +48,18 @@ const TOPUP_AMOUNTS = [
 
 export default function BillingPageInner() {
   const apiFetch = useApiFetch();
-  const [balance, setBalance] = useState<number | null>(null);
-  const [ledger, setLedger] = useState<LedgerRow[] | null>(null);
-  const [topUpInflight, setTopUpInflight] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const now = useNow();
+  const { data, error, isLoading, mutate } = useApiQuery<{
+    ledger: LedgerRow[];
+    balance_cents: number;
+  }>("/v1/billing/ledger");
+  const ledger = data?.ledger ?? null;
+  const balance = data?.balance_cents ?? null;
 
-  useEffect(() => {
-    apiFetch<{ ledger: LedgerRow[]; balance_cents: number }>(
-      "/v1/billing/ledger"
-    )
-      .then((d) => {
-        setLedger(d.ledger);
-        setBalance(d.balance_cents);
-      })
-      .catch((e) => setError(String(e)));
-  }, [apiFetch]);
+  const [topUpInflight, setTopUpInflight] = useState<number | null>(null);
 
   async function handleTopUp(amountCents: number) {
     setTopUpInflight(amountCents);
-    setError(null);
     try {
       const res = await apiFetch<{ client_secret: string } | { error: string }>(
         "/v1/billing/checkout-session",
@@ -73,24 +69,20 @@ export default function BillingPageInner() {
         }
       );
       if ("error" in res) {
-        setError(`Stripe not configured yet: ${res.error}`);
+        toast.error(`Stripe not configured yet: ${res.error}`);
       } else {
-        // Phase H3 — Stripe checkout returned a client_secret but the
-        // embed UI (@stripe/stripe-js) isn't wired yet. Show an inline
-        // banner instead of a native alert so non-operator users
-        // understand this is a config gap, not a JS error.
-        setError(
+        toast.info(
           "Stripe checkout is being prepared — embed UI activates once Price IDs are configured. Contact support to enable top-ups."
         );
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("503") || msg.includes("not_configured")) {
-        setError(
-          "Stripe is not yet configured for this tenant. Ask the operator to set STRIPE_SECRET_KEY + STRIPE_PRICE_TOPUP_* in Worker secrets."
+        toast.error(
+          "Stripe is not yet configured for this tenant. Ask the operator to set STRIPE_SECRET_KEY + STRIPE_PRICE_TOPUP_*."
         );
       } else {
-        setError(msg);
+        toast.error(msg);
       }
     } finally {
       setTopUpInflight(null);
@@ -107,6 +99,16 @@ export default function BillingPageInner() {
         description="Pay-as-you-go. $0.50 per image, $0.10 per listing, $0.50 per onboarded product. No subscriptions, no expiry on credits."
       />
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto">
+        {error && (
+          <div className="mb-8">
+            <ErrorState
+              title="Couldn't load your wallet"
+              error={error}
+              onRetry={() => mutate()}
+            />
+          </div>
+        )}
+
         <div className="grid grid-cols-12 gap-6">
           {/* Balance hero */}
           <Card className="col-span-12 md:col-span-5 md-fade-in">
@@ -124,7 +126,11 @@ export default function BillingPageInner() {
                       : "text-ff-vermilion-deep"
                 )}
               >
-                {balanceDisplay === null ? <Skeleton className="h-16 w-32" /> : balanceDisplay}
+                {balanceDisplay === null ? (
+                  <Skeleton className="h-16 w-32" />
+                ) : (
+                  balanceDisplay
+                )}
               </div>
               <div className="md-typescale-body-small text-on-surface-variant/70 mt-2 font-mono">
                 {balance === null
@@ -137,7 +143,10 @@ export default function BillingPageInner() {
           </Card>
 
           {/* Top-up grid */}
-          <Card className="col-span-12 md:col-span-7 md-fade-in" style={{ animationDelay: "100ms" }}>
+          <Card
+            className="col-span-12 md:col-span-7 md-fade-in"
+            style={{ animationDelay: "100ms" }}
+          >
             <CardHeader>
               <div>
                 <CardEyebrow>Quick top-up · 充值</CardEyebrow>
@@ -155,8 +164,10 @@ export default function BillingPageInner() {
                     className={cn(
                       "rounded-m3-md border ff-hairline px-5 py-4 text-left",
                       "transition-colors hover:bg-surface-container-high",
+                      "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
                       "disabled:cursor-not-allowed disabled:opacity-60",
-                      topUpInflight === t.cents && "bg-primary-container/40 opacity-100"
+                      topUpInflight === t.cents &&
+                        "bg-primary-container/40 opacity-100"
                     )}
                   >
                     <div className="md-typescale-headline-small font-brand text-on-surface">
@@ -182,17 +193,11 @@ export default function BillingPageInner() {
             </CardFooter>
           </Card>
 
-          {error && (
-            <div className="col-span-12 rounded-m3-md border border-error/40 bg-error-container/40 px-5 py-4">
-              <span className="ff-stamp-label">billing</span>
-              <span className="ml-3 md-typescale-body-medium font-mono text-error-on-container">
-                {error}
-              </span>
-            </div>
-          )}
-
           {/* Ledger */}
-          <Card className="col-span-12 md-fade-in" style={{ animationDelay: "200ms" }}>
+          <Card
+            className="col-span-12 md-fade-in"
+            style={{ animationDelay: "200ms" }}
+          >
             <CardHeader>
               <div>
                 <CardEyebrow>Recent activity · 流水</CardEyebrow>
@@ -200,27 +205,31 @@ export default function BillingPageInner() {
               </div>
             </CardHeader>
             <CardContent>
-              {ledger === null ? (
+              {isLoading ? (
                 <div className="space-y-2">
-                  {Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} className="h-12 w-full" />
+                  {["s1", "s2", "s3", "s4"].map((id) => (
+                    <Skeleton key={id} className="h-12 w-full" />
                   ))}
                 </div>
-              ) : ledger.length === 0 ? (
-                <p className="md-typescale-body-medium text-on-surface-variant/70">
-                  No activity yet. Top up to start launching.
-                </p>
-              ) : (
+              ) : ledger && ledger.length === 0 ? (
+                <EmptyState
+                  variant="filtered"
+                  eyebrow="No activity yet · 暂无流水"
+                  title="No activity yet"
+                  body="Top up to start launching. Every spend lands here with the SKU it relates to."
+                />
+              ) : ledger ? (
                 <div className="md-surface-container-low border ff-hairline rounded-m3-md overflow-hidden">
                   {ledger.map((row, i) => (
                     <LedgerRowItem
                       key={row.id}
                       row={row}
                       isLast={i === ledger.length - 1}
+                      now={now}
                     />
                   ))}
                 </div>
-              )}
+              ) : null}
             </CardContent>
           </Card>
         </div>
@@ -232,9 +241,11 @@ export default function BillingPageInner() {
 function LedgerRowItem({
   row,
   isLast,
+  now,
 }: {
   row: LedgerRow;
   isLast: boolean;
+  now: number;
 }) {
   const sign = row.deltaCents >= 0 ? "+" : "";
   const tone = row.deltaCents >= 0 ? "text-ff-jade-deep" : "text-on-surface";
@@ -250,7 +261,7 @@ function LedgerRowItem({
           {prettyReason(row.reason)}
         </div>
         <div className="md-typescale-body-small text-on-surface-variant/70 mt-0.5 font-mono">
-          {new Date(row.at).toLocaleString()}
+          {formatTimestamp(row.at, "long", now)}
         </div>
       </div>
       <div className={cn("font-brand text-xl tabular-nums", tone)}>
@@ -266,12 +277,19 @@ function LedgerRowItem({
 
 function prettyReason(r: string): string {
   switch (r) {
-    case "signup_bonus": return "Signup bonus";
-    case "stripe_topup": return "Top-up via Stripe";
-    case "launch_run": return "Launch · per-run charge";
-    case "image_gen": return "Product onboard / image generation";
-    case "refund": return "Refund";
-    case "tenant_created": return "Tenant created";
-    default: return r;
+    case "signup_bonus":
+      return "Signup bonus";
+    case "stripe_topup":
+      return "Top-up via Stripe";
+    case "launch_run":
+      return "Launch · per-run charge";
+    case "image_gen":
+      return "Product onboard / image generation";
+    case "refund":
+      return "Refund";
+    case "tenant_created":
+      return "Tenant created";
+    default:
+      return r;
   }
 }
