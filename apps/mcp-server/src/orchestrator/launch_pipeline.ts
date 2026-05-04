@@ -34,6 +34,8 @@ import {
   type Product,
 } from "../db/schema.js";
 import { checkBatchConsistency } from "../compliance/batch_consistency.js";
+import { getLangfuse } from "../lib/langfuse.js";
+import type Langfuse from "langfuse";
 import { planSkuLaunch, type LaunchPlatform, type PlannedWork } from "./planner.js";
 import { runProductionPipeline } from "../pipeline/index.js";
 import type { TenantFeatures, PipelineCtx } from "../pipeline/types.js";
@@ -80,6 +82,14 @@ export interface LaunchPipelineInput {
    *  flag is on) can reach R2, AI binding, FAL, OpenAI, Anthropic, sidecar.
    *  When undefined, the legacy stub pipeline runs regardless of flag. */
   env?: CloudflareBindings;
+  /**
+   * P0-4 — when set, the pipeline UPDATES this existing launch_runs row
+   * instead of inserting a new one. The handler creates the row up
+   * front so the wallet charge always references a real run, and a
+   * crash before the orchestrator's first update leaves the row in
+   * 'pending' rather than missing entirely.
+   */
+  existing_run_id?: string;
 }
 
 export interface LaunchPipelineResult {
@@ -105,6 +115,13 @@ export interface LaunchPipelineResult {
   notes: string[];
   /** SEO Layer · D6 — present when include_seo=true. */
   seo?: SeoPipelineResult;
+  /**
+   * P1-5 — surfaces of (`amazon-us:en`, `shopify:zh`, …) whose
+   * platform_listings persist failed. Empty array on a clean run.
+   * The dashboard's Listings tab uses this to show a "2 of 4 listings
+   * saved" warning instead of silently rendering only the survivors.
+   */
+  partial_listings?: string[];
 }
 
 export async function runLaunchPipeline(
@@ -113,6 +130,10 @@ export async function runLaunchPipeline(
 ): Promise<LaunchPipelineResult> {
   const startedAt = Date.now();
   const notes: string[] = [];
+  // P1-5 — surfaces whose platform_listings INSERT failed; non-empty
+  // means the run gets demoted to hitl_blocked so the operator sees
+  // partial state.
+  const partialListings: string[] = [];
 
   // ── 1. Load product + references + seller flag ─────────────────────────
   const productRow = await db
@@ -139,19 +160,74 @@ export async function runLaunchPipeline(
     .limit(1);
   const hasAmazonSellerId = !!seller[0]?.amazonSellerId;
 
-  // ── 2. Insert launch_runs row up front ─────────────────────────────────
-  const inserted = await db
-    .insert(launchRuns)
-    .values({
-      tenantId,
-      productId: product.id,
-      orchestratorModel: "claude-sonnet-4-6",
-      status: "pending",
-      totalCostCents: 0,
-      hitlInterventions: 0,
-    })
-    .returning();
-  const runId = inserted[0].id;
+  // ── 2. Insert (or reuse) launch_runs row ────────────────────────────────
+  // P0-4 — when the handler created the row up front (so the wallet
+  // charge could reference it atomically), reuse that runId and flip
+  // status from 'pending' to 'running'. Otherwise insert a new row
+  // with status='pending'.
+  let runId: string;
+  if (input.existing_run_id) {
+    runId = input.existing_run_id;
+    await db
+      .update(launchRuns)
+      .set({ status: "running" })
+      .where(eq(launchRuns.id, runId));
+  } else {
+    const inserted = await db
+      .insert(launchRuns)
+      .values({
+        tenantId,
+        productId: product.id,
+        orchestratorModel: "claude-sonnet-4-6",
+        status: "pending",
+        totalCostCents: 0,
+        hitlInterventions: 0,
+      })
+      .returning();
+    runId = inserted[0].id;
+  }
+
+  // P1-9 — Langfuse trace wires the whole orchestrator into the
+  // observability dashboard. The trace id is the runId so any future
+  // /v1/launches/:id lookup can deep-link to the trace. Sub-steps emit
+  // spans below. All Langfuse calls are best-effort: the SDK's network
+  // I/O is buffered and flushed at the end, so a misconfigured Langfuse
+  // never blocks the launch.
+  let langfuse: Langfuse | null = null;
+  let trace: ReturnType<Langfuse["trace"]> | null = null;
+  if (input.env) {
+    try {
+      langfuse = getLangfuse(input.env);
+      trace = langfuse.trace({
+        id: runId,
+        name: "launch",
+        userId: tenantId,
+        metadata: {
+          product_id: product.id,
+          product_sku: product.sku,
+          platforms: input.platforms,
+          dry_run: input.dry_run,
+          include_seo: input.include_seo !== false,
+          existing_run_id: input.existing_run_id ?? null,
+        },
+      });
+      // Persist the trace id so support can grep `langfuse_trace_id =
+      // <run_id>` and find the same row from either side.
+      await db
+        .update(launchRuns)
+        .set({ langfuseTraceId: runId })
+        .where(eq(launchRuns.id, runId))
+        .catch(() => {});
+    } catch (err) {
+      // Langfuse misconfigured — proceed without tracing. The
+      // production env-check in lib/langfuse.ts only throws on missing
+      // baseUrl in production, which is intentional.
+      console.warn(
+        "[launch_pipeline] langfuse init failed",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  }
 
   // ── 3. Plan ────────────────────────────────────────────────────────────
   const plan = planSkuLaunch({
@@ -220,6 +296,15 @@ export async function runLaunchPipeline(
   // P0 #2 fix: a single worker error must not abort the whole launch.
   // Phase 4's evaluator-optimizer wraps regeneration; Phase 3 just records
   // which canonicals succeeded and continues with what we have.
+  // P1-9 — single span across the fan-out so latency p95 is queryable.
+  const workersSpan = trace?.span({
+    name: "workers",
+    metadata: {
+      lifestyles: plan.lifestyles.length,
+      variants: plan.variants.length,
+      produce_video: plan.produce_video,
+    },
+  });
   const workerSettled = await Promise.allSettled([
     generateWhiteBgWorker({ product_id: product.id, product_sku: product.sku }),
     ...plan.lifestyles.map((l) =>
@@ -269,6 +354,33 @@ export async function runLaunchPipeline(
       // variants — currently no slot uses them in the adapter pool
     } else video = value;
   }
+
+  // P1-8 — low-confidence demotion. If more than half the workers
+  // failed, even if at least one succeeded, the result set is too thin
+  // to ship without review. Mark the run hitl_blocked rather than
+  // letting the existing finalize logic call it "succeeded" — the
+  // operator deserves to see "3 of 4 workers failed; review before
+  // publishing" instead of a quietly-degraded launch.
+  // Note: hitlCount is declared later for clarity in the eo loop;
+  // we capture the demotion count here and apply it at finalize.
+  const expectedWorkers = workerSettled.length;
+  const lowConfidence =
+    canonicals.length > 0 &&
+    expectedWorkers > 0 &&
+    canonicals.length < expectedWorkers * 0.5;
+  const lowConfidenceHitl = lowConfidence ? workerFailures : 0;
+  if (lowConfidence) {
+    notes.push(
+      `low_confidence: ${canonicals.length}/${expectedWorkers} workers succeeded — demoting to hitl_blocked`
+    );
+  }
+  workersSpan?.end({
+    output: {
+      canonicals: canonicals.length,
+      failures: workerFailures,
+      low_confidence: lowConfidence,
+    },
+  });
 
   if (canonicals.length === 0) {
     await db
@@ -410,7 +522,34 @@ export async function runLaunchPipeline(
   let evaluatorCostCents = 0;
   let costCapped = false;
 
+  // P1-7 — average cost per adapter target. Used as a pre-flight
+  // estimate to short-circuit BEFORE invoking the next adapter when
+  // we'd exceed the cap. This is heuristic (the real cost varies by
+  // model + iterations); the post-call check below remains as a
+  // belt-and-braces guard.
+  // Default to a conservative ~50c per target if no prior data exists.
+  const PRE_FLIGHT_PER_TARGET_ESTIMATE = 50;
   for (const target of plan.adapter_targets) {
+    // P1-7 — pre-flight cap. Estimate the next adapter's cost from the
+    // running average of completed targets (or fall back to the
+    // conservative constant on the first iteration). If projected total
+    // would exceed the cap, halt before paying for the call.
+    if (input.cost_cap_cents) {
+      const completed = adapterResults.length;
+      const estimatedNext =
+        completed > 0
+          ? Math.round(evaluatorCostCents / completed)
+          : PRE_FLIGHT_PER_TARGET_ESTIMATE;
+      const projected = workerCostCents + evaluatorCostCents + estimatedNext;
+      if (projected > input.cost_cap_cents) {
+        costCapped = true;
+        notes.push(
+          `cost cap ${input.cost_cap_cents}c projected hit (${projected}c with ${estimatedNext}c estimate for ${target.platform}:${target.slot}) — halting before call`
+        );
+        break;
+      }
+    }
+
     const canonical = pickCanonicalForSlot(target.slot, adapterPool);
     if (!canonical) {
       notes.push(
@@ -419,6 +558,14 @@ export async function runLaunchPipeline(
       continue;
     }
 
+    const eoSpan = trace?.span({
+      name: `eo:${target.platform}:${target.slot}`,
+      metadata: {
+        platform: target.platform,
+        slot: target.slot,
+        canonical_kind: canonical.kind,
+      },
+    });
     const eo = await runEvaluatorOptimizer({
       db,
       tenant_id: tenantId,
@@ -430,6 +577,14 @@ export async function runLaunchPipeline(
       slot: target.slot,
       vision_pass: input.vision_pass,
       anthropic_api_key: input.anthropic_api_key,
+    });
+    eoSpan?.end({
+      output: {
+        rating: eo.final_score.rating,
+        iterations: eo.iterations,
+        cost_cents: eo.total_cost_cents,
+        hitl_required: eo.hitl_required,
+      },
     });
 
     evaluatorCostCents += eo.total_cost_cents;
@@ -446,6 +601,8 @@ export async function runLaunchPipeline(
       hitl_required: eo.hitl_required,
     });
 
+    // Post-call check — catches any case where the heuristic estimate
+    // under-shot reality (e.g. unexpectedly high regen iterations).
     if (
       input.cost_cap_cents &&
       workerCostCents + evaluatorCostCents > input.cost_cap_cents
@@ -466,6 +623,13 @@ export async function runLaunchPipeline(
   let seoResult: SeoPipelineResult | undefined;
   let seoCostCents = 0;
   if (input.include_seo !== false && !costCapped && input.anthropic_api_key) {
+    const seoSpan = trace?.span({
+      name: "seo_pipeline",
+      metadata: {
+        platforms: input.platforms,
+        surface_count: input.seo_surfaces?.length ?? 0,
+      },
+    });
     try {
       seoResult = await runSeoPipeline({
         product,
@@ -485,6 +649,9 @@ export async function runLaunchPipeline(
       // ── G3 — persist platform_listings rows for each surface ─────────────
       // One row per (variant, surface, language). Re-runs upsert (DO UPDATE)
       // so the live row always reflects the latest copy + rating.
+      // P1-5 — track persist failures so we can demote the run status to
+      // hitl_blocked (the dashboard then shows "X of Y listings saved" so
+      // the operator triages instead of seeing silently-missing rows).
       for (const surface of seoResult.surfaces) {
         try {
           await db
@@ -520,8 +687,10 @@ export async function runLaunchPipeline(
               },
             });
         } catch (persistErr) {
+          const surfaceLabel = `${surface.surface}:${surface.language}`;
+          partialListings.push(surfaceLabel);
           notes.push(
-            `platform_listings persist failed for ${surface.surface}:${surface.language} — ${
+            `platform_listings persist failed for ${surfaceLabel} — ${
               persistErr instanceof Error ? persistErr.message : String(persistErr)
             }`
           );
@@ -542,6 +711,15 @@ export async function runLaunchPipeline(
     } catch (e) {
       notes.push(`seo_pipeline failed: ${String(e).slice(0, 200)}`);
     }
+    seoSpan?.end({
+      output: seoResult
+        ? {
+            surfaces_returned: seoResult.surfaces.length,
+            cost_cents: seoCostCents,
+            status: seoResult.status,
+          }
+        : { error: "seo_pipeline_failed" },
+    });
   } else if (!input.anthropic_api_key && input.include_seo !== false) {
     notes.push("seo_pipeline skipped (no ANTHROPIC_API_KEY)");
   }
@@ -560,6 +738,10 @@ export async function runLaunchPipeline(
     input.anthropic_api_key &&
     adapterResults.length > 1
   ) {
+    const consistencySpan = trace?.span({
+      name: "batch_consistency",
+      metadata: { image_count: adapterResults.length },
+    });
     try {
       const assetIds = adapterResults.map((r) => r.asset_id);
       const rows = await db
@@ -601,12 +783,22 @@ export async function runLaunchPipeline(
         // and ends up `hitl_blocked` if hitlCount > 0.
         hitlCount += Math.max(1, batchInconsistencyCount);
       }
+      consistencySpan?.end({
+        output: {
+          overall_approved: consistencyResult.overall_approved,
+          inconsistencies: batchInconsistencyCount,
+          cost_cents: batchConsistencyCostCents,
+        },
+      });
     } catch (err) {
       // Layer 2 failure must not tank an otherwise-clean launch — the
       // per-image floor (Layer 1) still stands. Log and move on.
       notes.push(
         `batch_consistency skipped: ${err instanceof Error ? err.message : String(err)}`
       );
+      consistencySpan?.end({
+        output: { error: err instanceof Error ? err.message : String(err) },
+      });
     }
   }
 
@@ -617,6 +809,17 @@ export async function runLaunchPipeline(
     evaluatorCostCents +
     seoCostCents +
     batchConsistencyCostCents;
+  // P1-5 — partial-listings persistence failure demotes to hitl_blocked
+  // (so the dashboard's Listings tab can surface "X of Y listings saved"
+  // instead of pretending the missing rows never existed).
+  if (partialListings.length > 0) {
+    hitlCount += partialListings.length;
+  }
+  // P1-8 — apply the low-confidence demotion captured during the
+  // worker fan-out earlier in the function.
+  if (lowConfidenceHitl > 0) {
+    hitlCount += lowConfidenceHitl;
+  }
   const finalStatus: LaunchPipelineResult["status"] = costCapped
     ? "cost_capped"
     : hitlCount > 0
@@ -633,6 +836,27 @@ export async function runLaunchPipeline(
     })
     .where(eq(launchRuns.id, runId));
 
+  trace?.update({
+    output: {
+      status: finalStatus,
+      duration_ms: durationMs,
+      total_cost_cents: Math.round(totalCostCents),
+      hitl_count: hitlCount,
+    },
+  });
+
+  // P1-9 — flush buffered Langfuse events. Workers can recycle before
+  // events post otherwise. Fire-and-forget so the response isn't blocked
+  // on the network round-trip.
+  if (langfuse) {
+    langfuse.flushAsync().catch((flushErr) =>
+      console.warn(
+        "[launch_pipeline] langfuse flush failed",
+        flushErr instanceof Error ? flushErr.message : String(flushErr)
+      )
+    );
+  }
+
   return {
     run_id: runId,
     product_id: product.id,
@@ -646,5 +870,6 @@ export async function runLaunchPipeline(
     hitl_count: hitlCount,
     notes,
     seo: seoResult,
+    partial_listings: partialListings.length > 0 ? partialListings : undefined,
   };
 }

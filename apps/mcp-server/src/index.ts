@@ -62,20 +62,12 @@ app.onError((err, c) => handleAppError(err, c));
 // any structured log line can correlate.
 app.use("*", requestIdMiddleware);
 
-/**
- * Helper — for any /api/* read endpoint we treat the legacy-demo Sample
- * tenant as readable to every signed-in tenant (per the locked decision
- * "Sample Catalog visible via tenant.features.has_sample_access"). So
- * the visibility filter is `tenant_id IN (currentTenant, SAMPLE_TENANT)`.
- */
-function visibleTenantIds(tenant: Tenant): string[] {
-  const features = (tenant.features ?? {}) as { has_sample_access?: boolean };
-  const ids = [tenant.id];
-  if (features.has_sample_access && tenant.id !== SAMPLE_TENANT_ID) {
-    ids.push(SAMPLE_TENANT_ID);
-  }
-  return ids;
-}
+// P2-5 — moved to lib/tenant-visibility.ts so unit tests can import it
+// without booting the full Worker. Re-export here for any historical
+// callers that still import from this module (none currently, but keeps
+// the change non-breaking).
+import { visibleTenantIds } from "./lib/tenant-visibility.js";
+export { visibleTenantIds };
 
 // P0-2 — CORS allowlist. Wildcard origin paired with a session-token
 // Authorization header is a CSRF vector: any third-party page could ride
@@ -698,7 +690,7 @@ app.post("/v1/launches", async (c) => {
     .limit(1);
   if (!product) return c.json({ error: "product_not_found_or_forbidden" }, 404);
 
-  // 2. Pre-flight cost prediction + wallet charge
+  // 2. Pre-flight cost prediction
   const surfaceCount = p.surfaces?.length;
   const prediction = predictLaunchCost({
     platforms: p.platforms as LaunchPlatform[],
@@ -708,6 +700,25 @@ app.post("/v1/launches", async (c) => {
     quality_preset: p.quality_preset,
   });
 
+  // P0-4 — insert the launch_runs row BEFORE chargeWallet so the
+  // charge always references a real run. If the orchestrator
+  // never gets to update this row (crash, timeout), the operator
+  // sees status='pending' rather than a missing record alongside a
+  // mysteriously-debited wallet. The orchestrator flips it to
+  // 'running' on entry and to the terminal status on exit.
+  const [runRow] = await db
+    .insert(launchRuns)
+    .values({
+      tenantId: tenant.id,
+      productId: product.id,
+      orchestratorModel: "claude-sonnet-4-6",
+      status: "pending",
+      totalCostCents: 0,
+      hitlInterventions: 0,
+    })
+    .returning();
+  const runId = runRow.id;
+
   if (!p.dry_run) {
     try {
       await chargeWallet(db, {
@@ -715,9 +726,18 @@ app.post("/v1/launches", async (c) => {
         cents: prediction.total_cents,
         reason: "launch_run",
         referenceType: "launch_run",
+        referenceId: runId,
       });
     } catch (err) {
       if (err instanceof InsufficientFundsError) {
+        // No charge happened, but we did insert a 'pending' run row.
+        // Mark it failed so the operator's launches list isn't
+        // littered with permanently-pending rows.
+        await db
+          .update(launchRuns)
+          .set({ status: "failed" })
+          .where(eq(launchRuns.id, runId))
+          .catch(() => {});
         return c.json(
           {
             error: "wallet_insufficient",
@@ -735,8 +755,8 @@ app.post("/v1/launches", async (c) => {
     tenantId: tenant.id,
     actor: actor ?? null,
     action: "launch.start",
-    targetType: "product",
-    targetId: product.id,
+    targetType: "launch_run",
+    targetId: runId,
     metadata: {
       platforms: p.platforms,
       predicted_cents: prediction.total_cents,
@@ -762,6 +782,8 @@ app.post("/v1/launches", async (c) => {
       dataforseo_login: c.env.DATAFORSEO_LOGIN,
       dataforseo_password: c.env.DATAFORSEO_PASSWORD,
       env: c.env,
+      // P0-4 — pipeline updates this row instead of inserting a new one.
+      existing_run_id: runId,
     });
 
     // Refund the difference between predicted and actual cost (we charged
@@ -809,6 +831,14 @@ app.post("/v1/launches", async (c) => {
     // support can reach.
     let refundFailed = false;
     let refundError: unknown = null;
+    // P0-4 — mark the pre-inserted run as 'failed' so it doesn't sit in
+    // 'pending'/'running' forever when the orchestrator throws before
+    // its own finalize.
+    await db
+      .update(launchRuns)
+      .set({ status: "failed", durationMs: 0 })
+      .where(eq(launchRuns.id, runId))
+      .catch(() => {});
     if (!p.dry_run) {
       try {
         await creditWallet(db, {
@@ -816,6 +846,7 @@ app.post("/v1/launches", async (c) => {
           cents: prediction.total_cents,
           reason: "refund",
           referenceType: "launch_failure",
+          referenceId: runId,
         });
       } catch (refundErr) {
         refundFailed = true;
@@ -839,9 +870,10 @@ app.post("/v1/launches", async (c) => {
       tenantId: tenant.id,
       actor: actor ?? null,
       action: refundFailed ? "launch.refund_failed" : "launch.failed",
-      targetType: "product",
-      targetId: product.id,
+      targetType: "launch_run",
+      targetId: runId,
       metadata: {
+        product_id: product.id,
         error: err instanceof Error ? err.message : String(err),
         predicted_cents: prediction.total_cents,
         refund_failed: refundFailed,
