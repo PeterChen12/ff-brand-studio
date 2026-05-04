@@ -86,7 +86,12 @@ export async function issueApiKey(
     action: "api_key.created",
     targetType: "api_key",
     targetId: row.id,
-    metadata: { prefix, name },
+    // P1-10 — redact prefix to last-4 in audit metadata. Audit rows
+    // are queryable from the dashboard, so anything that helps a leak
+    // stay correlatable to a real key (full prefix) is risky. Last-4
+    // is enough for human cross-reference; the api_keys table holds
+    // the canonical prefix.
+    metadata: { prefix_last4: prefix.slice(-4), name },
   });
 
   return {

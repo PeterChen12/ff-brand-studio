@@ -18,6 +18,10 @@ export type AuditAction =
   | "launch.start"
   | "launch.complete"
   | "launch.failed"
+  // P0-4 — surfaces a refund-after-failure path that lost money;
+  // separate from launch.failed so support can grep for these
+  // specifically and reconcile the wallet manually.
+  | "launch.refund_failed"
   // listing flow (Phase K)
   | "listing.edit"
   | "listing.publish"

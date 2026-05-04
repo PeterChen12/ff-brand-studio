@@ -233,7 +233,17 @@ export async function runSeoPipeline(
   }
 
   // ── 4. generate + score per surface, with feedback regeneration ───────
-  const anthropic = new Anthropic({ apiKey: input.anthropic_api_key });
+  // P1-1 + P1-2 — wire SDK timeout + retry so a slow / flaky Anthropic
+  // doesn't burn the whole 30s Worker budget on one surface and so
+  // transient 5xx auto-retries with backoff. Tradeoff: each call can
+  // take up to 15s × 3 = 45s wall-clock if everything keeps timing out,
+  // but that's a fail-fast worst case — the typical retry budget is
+  // <1s of extra latency on a transient error.
+  const anthropic = new Anthropic({
+    apiKey: input.anthropic_api_key,
+    maxRetries: 3,
+    timeout: 15_000,
+  });
   const surfaceResults: SeoSurfaceResult[] = [];
 
   for (const spec of surfacesToGen) {

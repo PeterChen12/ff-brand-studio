@@ -801,7 +801,14 @@ app.post("/v1/launches", async (c) => {
 
     return c.json(result);
   } catch (err) {
-    // Refund the entire pre-charge if the pipeline itself crashed.
+    // P0-4 — refund the entire pre-charge if the pipeline crashed before
+    // it could record actual costs. If the refund itself fails we MUST
+    // surface that loudly: a swallowed refund failure means the operator
+    // is debited the full predicted amount with no launch_runs row to
+    // show for it. Audit + console.error puts the trail in two places
+    // support can reach.
+    let refundFailed = false;
+    let refundError: unknown = null;
     if (!p.dry_run) {
       try {
         await creditWallet(db, {
@@ -810,24 +817,50 @@ app.post("/v1/launches", async (c) => {
           reason: "refund",
           referenceType: "launch_failure",
         });
-      } catch {
-        // best effort
+      } catch (refundErr) {
+        refundFailed = true;
+        refundError = refundErr;
+        console.error(
+          "[launch] refund FAILED — manual reconciliation required",
+          {
+            tenantId: tenant.id,
+            actor: actor ?? null,
+            productId: product.id,
+            cents: prediction.total_cents,
+            originalError:
+              err instanceof Error ? err.message : String(err),
+            refundError:
+              refundErr instanceof Error ? refundErr.message : String(refundErr),
+          }
+        );
       }
     }
     await auditEvent(db, {
       tenantId: tenant.id,
       actor: actor ?? null,
-      action: "launch.failed",
+      action: refundFailed ? "launch.refund_failed" : "launch.failed",
       targetType: "product",
       targetId: product.id,
-      metadata: { error: err instanceof Error ? err.message : String(err) },
-    });
-    return c.json(
-      {
-        error: "launch_failed",
-        detail: err instanceof Error ? err.message : String(err),
+      metadata: {
+        error: err instanceof Error ? err.message : String(err),
+        predicted_cents: prediction.total_cents,
+        refund_failed: refundFailed,
+        refund_error: refundFailed
+          ? refundError instanceof Error
+            ? refundError.message
+            : String(refundError)
+          : undefined,
       },
-      500
+    });
+    throw new ApiError(
+      500,
+      "launch_failed",
+      "The launch pipeline encountered an error.",
+      refundFailed
+        ? {
+            note: "Your wallet refund could not be applied automatically — support has been notified.",
+          }
+        : undefined
     );
   }
 });
