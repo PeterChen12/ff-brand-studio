@@ -28,6 +28,7 @@ import { verifyApiKey } from "./api-keys.js";
 export interface AuthVars {
   tenant: Tenant;
   actor: string; // Clerk user id
+  requestId: string; // P0-3 — set by requestIdMiddleware
 }
 
 export type AuthedContext = Context<{

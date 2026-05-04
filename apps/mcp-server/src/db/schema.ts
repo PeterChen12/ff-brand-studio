@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
+import { desc } from "drizzle-orm";
 
 // ── Phase G: tenancy ───────────────────────────────────────────────────────
 
@@ -31,18 +32,28 @@ export const tenants = pgTable(
   })
 );
 
-export const assets = pgTable("assets", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
-  r2Key: text("r2_key").notNull().unique(),
-  assetType: text("asset_type").notNull(),
-  campaign: text("campaign"),
-  platform: text("platform"),
-  locale: text("locale"),
-  brandScore: integer("brand_score"),
-  metadata: jsonb("metadata"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
+export const assets = pgTable(
+  "assets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    r2Key: text("r2_key").notNull().unique(),
+    assetType: text("asset_type").notNull(),
+    campaign: text("campaign"),
+    platform: text("platform"),
+    locale: text("locale"),
+    brandScore: integer("brand_score"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (t) => ({
+    // P2-4 — list reads filter by tenant + sort by created_at
+    tenantCreatedIdx: index("idx_assets_tenant_created").on(
+      t.tenantId,
+      desc(t.createdAt)
+    ),
+  })
+);
 
 export const runCosts = pgTable("run_costs", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -75,26 +86,36 @@ export const sellerProfiles = pgTable("seller_profiles", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const products = pgTable("products", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
-  sellerId: uuid("seller_id")
-    .notNull()
-    .references(() => sellerProfiles.id, { onDelete: "cascade" }),
-  sku: text("sku").notNull().unique(),
-  nameEn: text("name_en").notNull(),
-  nameZh: text("name_zh"),
-  description: text("description"),
-  category: text("category").notNull(),
-  kind: text("kind").notNull().default("compact_square"),
-  dimensions: jsonb("dimensions"),
-  materials: text("materials").array(),
-  colorsHex: text("colors_hex").array(),
-  loraUrl: text("lora_url"),
-  triggerPhrase: text("trigger_phrase"),
-  brandConfig: jsonb("brand_config"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
+export const products = pgTable(
+  "products",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    sellerId: uuid("seller_id")
+      .notNull()
+      .references(() => sellerProfiles.id, { onDelete: "cascade" }),
+    sku: text("sku").notNull().unique(),
+    nameEn: text("name_en").notNull(),
+    nameZh: text("name_zh"),
+    description: text("description"),
+    category: text("category").notNull(),
+    kind: text("kind").notNull().default("compact_square"),
+    dimensions: jsonb("dimensions"),
+    materials: text("materials").array(),
+    colorsHex: text("colors_hex").array(),
+    loraUrl: text("lora_url"),
+    triggerPhrase: text("trigger_phrase"),
+    brandConfig: jsonb("brand_config"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (t) => ({
+    // P1-3 — composite index drives /v1/products cursor pagination.
+    tenantCreatedIdx: index("idx_products_tenant_created").on(
+      t.tenantId,
+      desc(t.createdAt)
+    ),
+  })
+);
 
 export const productReferences = pgTable("product_references", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -181,20 +202,30 @@ export const platformSpecs = pgTable(
   })
 );
 
-export const launchRuns = pgTable("launch_runs", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
-  productId: uuid("product_id")
-    .notNull()
-    .references(() => products.id, { onDelete: "cascade" }),
-  orchestratorModel: text("orchestrator_model").notNull(),
-  totalCostCents: integer("total_cost_cents").default(0),
-  durationMs: integer("duration_ms"),
-  hitlInterventions: integer("hitl_interventions").default(0),
-  status: text("status").default("pending"),
-  langfuseTraceId: text("langfuse_trace_id"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
+export const launchRuns = pgTable(
+  "launch_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    orchestratorModel: text("orchestrator_model").notNull(),
+    totalCostCents: integer("total_cost_cents").default(0),
+    durationMs: integer("duration_ms"),
+    hitlInterventions: integer("hitl_interventions").default(0),
+    status: text("status").default("pending"),
+    langfuseTraceId: text("langfuse_trace_id"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (t) => ({
+    // P1-4 — drives /v1/launches cursor pagination + /api/launches list
+    tenantCreatedIdx: index("idx_launch_runs_tenant_created").on(
+      t.tenantId,
+      desc(t.createdAt)
+    ),
+  })
+);
 
 export type SellerProfile = typeof sellerProfiles.$inferSelect;
 export type NewSellerProfile = typeof sellerProfiles.$inferInsert;

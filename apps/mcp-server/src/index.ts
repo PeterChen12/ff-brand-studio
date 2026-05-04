@@ -39,12 +39,28 @@ import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet
 import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
 import { auditEvent } from "./lib/audit.js";
 import { getStripe, priceIdForAmount, checkWebhookIdempotency } from "./lib/stripe.js";
+import {
+  ApiError,
+  handleAppError,
+  jsonError,
+  requestIdMiddleware,
+} from "./lib/api-error.js";
 import { nanoid } from "nanoid";
 
 const app = new Hono<{
   Bindings: CloudflareBindings;
   Variables: Partial<AuthVars>;
 }>();
+
+// P0-3 + P2-1 — central error formatter: every uncaught throw becomes a
+// sanitized JSON response with a request_id; handlers can throw ApiError
+// to set custom status/code/message. Stack details land in console.error
+// only.
+app.onError((err, c) => handleAppError(err, c));
+
+// Tag every request with a short request_id so the error formatter and
+// any structured log line can correlate.
+app.use("*", requestIdMiddleware);
 
 /**
  * Helper — for any /api/* read endpoint we treat the legacy-demo Sample
@@ -61,13 +77,38 @@ function visibleTenantIds(tenant: Tenant): string[] {
   return ids;
 }
 
-app.use(
-  "*",
+// P0-2 — CORS allowlist. Wildcard origin paired with a session-token
+// Authorization header is a CSRF vector: any third-party page could ride
+// a signed-in user's session. We accept the production dashboard,
+// localhost during dev, and an env-driven extra list for any preview
+// branches the team spins up.
+const STATIC_ALLOWED_ORIGINS = new Set([
+  "https://image-generation.buyfishingrod.com",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+]);
+app.use("*", (c, next) =>
   cors({
-    origin: "*",
-    allowHeaders: ["Authorization", "Content-Type", "svix-id", "svix-timestamp", "svix-signature"],
+    origin: (origin) => {
+      if (!origin) return null;
+      if (STATIC_ALLOWED_ORIGINS.has(origin)) return origin;
+      const extra = (c.env.CORS_EXTRA_ORIGINS ?? "")
+        .split(",")
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+      if (extra.includes(origin)) return origin;
+      return null;
+    },
+    allowHeaders: [
+      "Authorization",
+      "Content-Type",
+      "svix-id",
+      "svix-timestamp",
+      "svix-signature",
+    ],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  })
+    credentials: true,
+  })(c, next)
 );
 
 // Phase G — Clerk webhook (must come BEFORE requireTenant since it uses
@@ -235,8 +276,11 @@ app.post("/v1/products/upload-intent", async (c) => {
   );
 
   // Stash intent metadata in KV for the finalize step to look up.
+  // P0-5 — key includes tenantId so a guessed/sniffed intent ID
+  // can't be replayed against another tenant. Read-side requires the
+  // same prefix.
   await c.env.SESSION_KV.put(
-    `upload_intent:${intentId}`,
+    intentKey(tenant.id, intentId),
     JSON.stringify({
       tenant_id: tenant.id,
       keys: urls.map((u) => u.key),
@@ -247,6 +291,10 @@ app.post("/v1/products/upload-intent", async (c) => {
 
   return c.json({ intent_id: intentId, urls });
 });
+
+function intentKey(tenantId: string, intentId: string): string {
+  return `upload_intent:${tenantId}:${intentId}`;
+}
 
 const ProductCreateInput = z.object({
   intent_id: z.string().min(1),
@@ -276,16 +324,32 @@ app.post("/v1/products", async (c) => {
   const tenant = c.get("tenant") as Tenant;
   const actor = c.get("actor") as string | undefined;
 
-  // 1. Verify intent matches tenant
-  const intentRaw = await c.env.SESSION_KV.get(`upload_intent:${p.intent_id}`);
-  if (!intentRaw) return c.json({ error: "intent_expired_or_unknown" }, 400);
-  const intent = JSON.parse(intentRaw) as { tenant_id: string; keys: string[] };
+  // 1. Verify intent matches tenant. P0-5 — KV key is now tenant-scoped
+  // so an intent ID guessed across tenants returns null instead of a
+  // valid record from someone else's session.
+  const intentRaw = await c.env.SESSION_KV.get(
+    intentKey(tenant.id, p.intent_id)
+  );
+  if (!intentRaw) {
+    throw new ApiError(400, "intent_expired_or_unknown", "Upload intent not found — re-issue from /v1/products/upload-intent.");
+  }
+  // P0-1 — try-parse so a corrupted KV payload returns 400 instead of
+  // crashing the whole request with a JSON.parse stack trace.
+  let intent: { tenant_id: string; keys: string[] };
+  try {
+    intent = JSON.parse(intentRaw) as { tenant_id: string; keys: string[] };
+  } catch (parseErr) {
+    console.error("[v1/products] corrupt intent payload", { intentId: p.intent_id, parseErr });
+    throw new ApiError(400, "intent_corrupt", "Upload intent payload is malformed — re-issue.");
+  }
   if (intent.tenant_id !== tenant.id) {
-    return c.json({ error: "intent_tenant_mismatch" }, 403);
+    // Defensive — should never trigger given the tenant-scoped key,
+    // but cheap to keep as a belt-and-braces guard.
+    throw new ApiError(403, "intent_tenant_mismatch", "Upload intent belongs to a different tenant.");
   }
   for (const key of p.uploaded_keys) {
     if (!intent.keys.includes(key)) {
-      return c.json({ error: "uploaded_key_not_in_intent", key }, 400);
+      throw new ApiError(400, "uploaded_key_not_in_intent", `Key ${key} wasn't issued in the intent.`);
     }
   }
 
@@ -415,7 +479,7 @@ app.post("/v1/products", async (c) => {
   });
 
   // Clean up the intent (best-effort)
-  c.env.SESSION_KV.delete(`upload_intent:${p.intent_id}`).catch(() => {});
+  c.env.SESSION_KV.delete(intentKey(tenant.id, p.intent_id)).catch(() => {});
 
   return c.json({
     product_id: product.id,

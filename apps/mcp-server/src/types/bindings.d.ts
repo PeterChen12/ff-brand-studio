@@ -60,4 +60,8 @@ interface CloudflareBindings {
 
   // Phase M3 — Sentry DSN (Worker error reporting)
   SENTRY_DSN?: string;
+
+  // P0-2 (backend audit) — comma-separated extra origins for CORS
+  // beyond the static prod + localhost set. Used for preview deploys.
+  CORS_EXTRA_ORIGINS?: string;
 }
