@@ -22,6 +22,7 @@ const buttonVariants = cva(
     "relative inline-flex items-center justify-center gap-2 isolate",
     "rounded-m3-full md-typescale-label-large",
     "transition-[background-color,color,box-shadow,transform] duration-m3-short4 ease-m3-emphasized",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
     "disabled:pointer-events-none disabled:opacity-40",
     // M3 state layer — sits on top via ::after, animates opacity
     "after:absolute after:inset-0 after:rounded-[inherit] after:pointer-events-none",

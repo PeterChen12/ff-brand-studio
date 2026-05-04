@@ -78,6 +78,7 @@ export default function SettingsClient() {
               onClick={() => setTab(t.id)}
               className={[
                 "h-10 px-4 md-typescale-label-large border-b-2 -mb-px transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-m3-sm",
                 tab === t.id
                   ? "border-primary text-on-surface"
                   : "border-transparent text-on-surface-variant hover:text-on-surface",

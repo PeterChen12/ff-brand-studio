@@ -29,6 +29,9 @@ const badgeVariants = cva(
         // M3 secondary container with amber tint — pending/HITL
         pending:
           "bg-[rgb(var(--ff-saffron)/0.15)] text-[rgb(var(--ff-saffron))] border border-[rgb(var(--ff-saffron)/0.4)] [transform:rotate(-1.5deg)]",
+        // Amber warning — for "unknown" / unrecognized states (P1-10)
+        warning:
+          "bg-[rgb(var(--ff-amber)/0.15)] text-[rgb(var(--ff-amber))] border border-[rgb(var(--ff-amber)/0.4)] gap-1.5 before:content-['⚠']",
         // M3 surface-container — neutral
         neutral:
           "bg-surface-container text-on-surface-variant border border-outline-variant",

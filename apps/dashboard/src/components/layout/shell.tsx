@@ -94,6 +94,33 @@ function ShellInner({
   // (e.g. LaunchWizard) can read default_platforms without a second
   // /v1/me/state call.
   const [tenant, setTenant] = useState<TenantSnapshot | null>(null);
+  // P1-4 — surface offline state so silent fetch failures aren't
+  // misread as bugs; banner pulls down at the top until reconnect.
+  const [online, setOnline] = useState<boolean>(
+    typeof navigator !== "undefined" ? navigator.onLine : true
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  // P1-6 — ESC closes the mobile drawer. Without this, keyboard users
+  // (and screen-reader users) had no non-mouse exit path.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDrawerOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
 
   useEffect(() => {
     let alive = true;
@@ -197,7 +224,9 @@ function ShellInner({
       alive = false;
       clearInterval(id);
     };
-  }, [pathname, isSignedIn, getToken, orgId]);
+    // pathname intentionally NOT a dep — refiring poll on every nav
+    // burned a request per route change with no benefit (P2-7).
+  }, [isSignedIn, getToken, orgId]);
 
   const dotClass = {
     ok: "bg-tertiary",
@@ -295,18 +324,19 @@ function ShellInner({
 
         {/* Wallet pill — clickable, routes to /billing. Color shifts
             amber under $1 and red under $0.50 per ADR-0005. Auth
-            errors render as `auth ⚠` instead of an opaque `—` so
-            broken sessions are visible at a glance (Bug 5). */}
+            errors route to /sign-in instead of /billing so the user
+            can recover without guessing what broke (P1-5). */}
         <Link
-          href="/billing"
+          href={walletState.kind === "auth-error" ? "/sign-in" : "/billing"}
           className={cn(
             "mx-3 mb-2 mt-auto px-4 py-3 rounded-m3-md",
             "transition-colors hover:bg-surface-container-high",
-            "border ff-hairline flex items-center justify-between"
+            "border ff-hairline flex items-center justify-between",
+            "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
           )}
           title={
             walletState.kind === "auth-error"
-              ? "Wallet auth check failed — try refreshing or signing back in"
+              ? "Wallet auth check failed — sign back in"
               : walletState.kind === "unknown-error"
                 ? "Wallet poll failed — temporary network issue"
                 : "Wallet · click to top up"
@@ -314,8 +344,8 @@ function ShellInner({
         >
           <span className="ff-stamp-label">Wallet · 余额</span>
           {walletState.kind === "auth-error" ? (
-            <span className="font-brand tabular-nums text-sm text-error">
-              auth ⚠
+            <span className="md-typescale-label-medium text-error">
+              Sign in →
             </span>
           ) : walletState.kind === "ok" ? (
             <span
@@ -390,6 +420,17 @@ function ShellInner({
 
       {/* ── Main content with editorial gutter ───────────────────────────── */}
       <main className="flex-1 min-w-0 overflow-x-hidden">
+        {/* P1-4 — offline banner. Sticks to the top above any sticky
+            sub-headers; auto-dismisses when the browser regains net. */}
+        {!online && (
+          <div
+            role="status"
+            className="sticky top-0 z-20 px-5 py-2 bg-error-container/90 backdrop-blur-sm border-b border-error/40 text-error-on-container md-typescale-label-medium flex items-center gap-2 justify-center"
+          >
+            <span aria-hidden="true">⚠</span>
+            <span>You're offline — we'll retry as soon as you reconnect.</span>
+          </div>
+        )}
         {/* M3 top app bar — small variant, only on mobile */}
         <div className="md:hidden sticky top-0 z-10 md-surface border-b ff-hairline px-5 h-14 flex items-center justify-between gap-3 backdrop-blur-sm bg-surface/95">
           <button

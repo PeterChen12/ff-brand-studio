@@ -10,6 +10,7 @@
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
+import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
 import { compressImage, putToR2, extractExt } from "@/lib/uploader";
 import { PageHeader } from "@/components/layout/page-header";
@@ -23,6 +24,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
 import { cn } from "@/lib/cn";
 
 interface PendingFile {
@@ -61,21 +63,34 @@ export default function NewProductPageInner() {
   // form. Worker still accepts manual values (integration tests / a
   // future "edit category" page); the dashboard simply omits them.
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<unknown>(null);
 
   const onDrop = useCallback((accepted: File[]) => {
     setFiles((prev) => {
       const next = [...prev];
+      const skipped: string[] = [];
       for (const file of accepted) {
-        if (next.length >= 10) break;
-        if (!extractExt(file)) continue;
-        if (file.size > 20_000_000) continue;
+        if (next.length >= 10) {
+          skipped.push(`${file.name} (cap is 10 files)`);
+          continue;
+        }
+        if (!extractExt(file)) {
+          skipped.push(`${file.name} (only JPG/PNG/WEBP allowed)`);
+          continue;
+        }
+        if (file.size > 20_000_000) {
+          skipped.push(`${file.name} (>20 MB)`);
+          continue;
+        }
         next.push({
           id: `${Date.now()}_${file.name}`,
           file,
           previewUrl: URL.createObjectURL(file),
           status: "pending",
         });
+      }
+      if (skipped.length > 0) {
+        toast.error(`Skipped ${skipped.length} file${skipped.length === 1 ? "" : "s"}: ${skipped.join("; ")}`);
       }
       return next;
     });
@@ -99,14 +114,18 @@ export default function NewProductPageInner() {
     });
   }
 
+  const errorFiles = files.filter((f) => f.status === "error");
   const canSubmit =
-    !submitting && name.trim().length >= 2 && files.length >= 1;
+    !submitting &&
+    name.trim().length >= 2 &&
+    files.length >= 1 &&
+    errorFiles.length === 0;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
     setSubmitting(true);
-    setError(null);
+    setSubmitError(null);
 
     try {
       // 1. Mint upload intent
@@ -121,9 +140,14 @@ export default function NewProductPageInner() {
         body: JSON.stringify({ extensions: exts }),
       });
 
-      // 2. Compress + upload each file in parallel (max 4 at once)
+      // P1-3 — per-file try/catch so a single failed upload doesn't
+      // tank the whole batch. The worker keeps draining the queue;
+      // the failed tile shows its error inline. Submit is blocked
+      // (canSubmit re-checks errorFiles) until the user retries or
+      // removes the bad ones.
       const queue = files.map((f, i) => ({ f, i, url: intent.urls[i] }));
       const uploadedKeys: string[] = [];
+      let failedCount = 0;
       const concurrency = 4;
       let cursor = 0;
       async function worker() {
@@ -131,29 +155,51 @@ export default function NewProductPageInner() {
           const item = queue[cursor++];
           if (!item) break;
           const { f, i, url } = item;
-          setFiles((prev) =>
-            prev.map((x, idx) => (idx === i ? { ...x, status: "compressing" } : x))
-          );
-          const compressed = await compressImage(f.file);
-          setFiles((prev) =>
-            prev.map((x, idx) => (idx === i ? { ...x, status: "uploading" } : x))
-          );
-          await putToR2(url.putUrl, compressed, (uploaded, total) => {
+          try {
             setFiles((prev) =>
               prev.map((x, idx) =>
-                idx === i ? { ...x, bytesUploaded: uploaded, bytesTotal: total } : x
+                idx === i ? { ...x, status: "compressing", error: undefined } : x
               )
             );
-          });
-          setFiles((prev) =>
-            prev.map((x, idx) =>
-              idx === i ? { ...x, status: "uploaded", uploadedKey: url.key } : x
-            )
-          );
-          uploadedKeys[i] = url.key;
+            const compressed = await compressImage(f.file);
+            setFiles((prev) =>
+              prev.map((x, idx) =>
+                idx === i ? { ...x, status: "uploading" } : x
+              )
+            );
+            await putToR2(url.putUrl, compressed, (uploaded, total) => {
+              setFiles((prev) =>
+                prev.map((x, idx) =>
+                  idx === i ? { ...x, bytesUploaded: uploaded, bytesTotal: total } : x
+                )
+              );
+            });
+            setFiles((prev) =>
+              prev.map((x, idx) =>
+                idx === i ? { ...x, status: "uploaded", uploadedKey: url.key } : x
+              )
+            );
+            uploadedKeys[i] = url.key;
+          } catch (uploadErr) {
+            failedCount++;
+            const msg =
+              uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
+            setFiles((prev) =>
+              prev.map((x, idx) =>
+                idx === i ? { ...x, status: "error", error: msg } : x
+              )
+            );
+          }
         }
       }
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      if (failedCount > 0) {
+        toast.error(
+          `${failedCount} of ${files.length} image${files.length === 1 ? "" : "s"} failed to upload — remove or retry.`
+        );
+        setSubmitting(false);
+        return;
+      }
 
       // 3. Finalize the product create
       // Detect CJK ideographs to route the single-field name into the
@@ -181,11 +227,20 @@ export default function NewProductPageInner() {
         }),
       });
 
+      toast.success(`Onboarded "${trimmedName}" — opening launch wizard.`);
       router.push(`/launch?product_id=${created.product_id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setSubmitError(err);
       setSubmitting(false);
     }
+  }
+
+  function retryFile(id: string) {
+    setFiles((prev) =>
+      prev.map((x) =>
+        x.id === id ? { ...x, status: "pending", error: undefined } : x
+      )
+    );
   }
 
   return (
@@ -215,17 +270,29 @@ export default function NewProductPageInner() {
             <CardContent className="space-y-5">
               <Field label="Product name · 产品名 (Chinese or English)" required>
                 <input
-                  className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-4 h-11 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   maxLength={200}
                   placeholder="渔王 Apex 12英尺海钓鱼竿  ·  CastMaster Apex 12ft Surf Rod"
                   required
                 />
-                <span className="md-typescale-body-small text-on-surface-variant block mt-1">
-                  Type whichever language you have on hand. The other will
-                  be generated automatically when you launch SEO copy.
-                </span>
+                <div className="flex items-baseline justify-between mt-1 gap-3">
+                  <span className="md-typescale-body-small text-on-surface-variant">
+                    Type whichever language you have on hand. The other will
+                    be generated automatically when you launch SEO copy.
+                  </span>
+                  <span
+                    className={cn(
+                      "md-typescale-body-small font-mono tabular-nums shrink-0",
+                      name.length > 180
+                        ? "text-ff-amber"
+                        : "text-on-surface-variant/60"
+                    )}
+                  >
+                    {name.length} / 200
+                  </span>
+                </div>
               </Field>
               <Field label="Description · 产品描述">
                 <textarea
@@ -308,19 +375,27 @@ export default function NewProductPageInner() {
                       key={f.id}
                       file={f}
                       onRemove={() => removeFile(f.id)}
+                      onRetry={() => retryFile(f.id)}
                     />
                   ))}
                 </div>
               )}
+              {errorFiles.length > 0 && (
+                <p className="md-typescale-body-small text-error mt-2">
+                  {errorFiles.length} image{errorFiles.length === 1 ? "" : "s"}{" "}
+                  failed to upload. Remove or click "retry" before submitting.
+                </p>
+              )}
             </CardContent>
           </Card>
 
-          {error && (
-            <div className="col-span-12 rounded-m3-md border border-error/40 bg-error-container/40 px-5 py-4">
-              <span className="ff-stamp-label">upload error</span>
-              <span className="ml-3 md-typescale-body-medium font-mono text-error-on-container">
-                {error}
-              </span>
+          {submitError !== null && (
+            <div className="col-span-12">
+              <ErrorState
+                title="Couldn't onboard this product"
+                error={submitError}
+                onRetry={() => setSubmitError(null)}
+              />
             </div>
           )}
         </form>
@@ -352,16 +427,21 @@ function Field({
 function FileTile({
   file,
   onRemove,
+  onRetry,
 }: {
   file: PendingFile;
   onRemove: () => void;
+  onRetry: () => void;
 }) {
   const pct =
     file.bytesUploaded && file.bytesTotal
       ? Math.round((file.bytesUploaded / file.bytesTotal) * 100)
       : null;
   return (
-    <div className="relative group rounded-m3-sm overflow-hidden border ff-hairline aspect-square">
+    <div
+      className="relative group rounded-m3-sm overflow-hidden border ff-hairline aspect-square"
+      title={file.error ?? file.file.name}
+    >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={file.previewUrl}
@@ -386,15 +466,29 @@ function FileTile({
           </Badge>
         </div>
       </div>
-      {file.status === "pending" && (
-        <button
-          type="button"
-          onClick={onRemove}
-          className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/60 text-white text-xs hover:bg-black"
-          aria-label="Remove"
-        >
-          ×
-        </button>
+      {(file.status === "pending" || file.status === "error") && (
+        <div className="absolute top-1 right-1 flex gap-1">
+          {file.status === "error" && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="h-6 px-2 rounded-full bg-primary/90 text-primary-on text-[0.625rem] font-mono hover:bg-primary"
+              aria-label="Retry"
+              title="Retry upload"
+            >
+              ↻
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRemove}
+            className="h-6 w-6 rounded-full bg-black/60 text-white text-xs hover:bg-black"
+            aria-label="Remove"
+            title="Remove"
+          >
+            ×
+          </button>
+        </div>
       )}
     </div>
   );
