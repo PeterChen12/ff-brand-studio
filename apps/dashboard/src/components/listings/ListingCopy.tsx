@@ -18,7 +18,7 @@
  * concats the visible blocks into plain text for VA hand-upload.
  */
 
-import { useState } from "react";
+import { memo, useState } from "react";
 
 interface ListingCopyProps {
   surface: string;
@@ -26,7 +26,11 @@ interface ListingCopyProps {
   copy: Record<string, unknown> | null;
 }
 
-export function ListingCopy({ surface, copy }: ListingCopyProps) {
+// P2-4 — memoized so cost-preview ticks in launch-wizard don't force
+// re-renders of every surface card on every keystroke. Surface + copy
+// shallow-compare correctly: copy is the same Record reference until
+// the next /v1/launches result arrives.
+function ListingCopyImpl({ surface, copy }: ListingCopyProps) {
   if (!copy) {
     return (
       <div className="md-typescale-body-small text-on-surface-variant font-mono">
@@ -43,6 +47,8 @@ export function ListingCopy({ surface, copy }: ListingCopyProps) {
   }
   return <GenericJsonCopy copy={copy} />;
 }
+
+export const ListingCopy = memo(ListingCopyImpl);
 
 function AmazonCopy({ copy }: { copy: Record<string, unknown> }) {
   const title = stringField(copy.title);

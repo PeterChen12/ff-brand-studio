@@ -1,7 +1,9 @@
 "use client";
 
-import JSZip from "jszip";
-import { saveAs } from "file-saver";
+// P2-8 — JSZip is ~95KB and only used inside bundleSku. We dynamic-
+// import it on demand so /, /launch, /settings etc. don't pay for it
+// in their First Load. Same play for file-saver (small, but keeps
+// the import path consistent).
 import type { PlatformAssetRow } from "@/db/schema";
 import { isImageFormat } from "@/components/library/types";
 
@@ -44,6 +46,12 @@ function manifestRow(group: BundleSku, item: PlatformAssetRow, filename: string)
 }
 
 export async function bundleSku(group: BundleSku): Promise<void> {
+  // Lazy chunks for the heavy bundling deps — only paid when the
+  // operator actually clicks "Download bundle".
+  const [{ default: JSZip }, { saveAs }] = await Promise.all([
+    import("jszip"),
+    import("file-saver"),
+  ]);
   const zip = new JSZip();
   const folder = zip.folder(group.sku);
   if (!folder) throw new Error("Failed to create zip folder");

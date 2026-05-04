@@ -334,3 +334,18 @@ h1, h2, h3, h4, h5, h6 {
 .md-fade-in {
   animation: md-fade-in var(--md-sys-motion-duration-long1) var(--md-sys-motion-easing-emphasized-decelerate) both;
 }
+
+/* P2-3 — honor prefers-reduced-motion. Users with motion sensitivity
+   (vestibular disorders, post-concussion, low-end hardware) opt out via
+   OS settings; the dashboard should respect that. We disable animations
+   and transitions wholesale rather than guessing which are "essential". */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

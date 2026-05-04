@@ -18,7 +18,7 @@
  *    Dry runs render the SEO ResultPanel in place (existing behavior).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/lib/api";
 import { formatCents } from "@/lib/format";
@@ -913,7 +913,12 @@ function WalletGauge({
 
 // ── Result panel — surfaces SEO + asset download inline (Issue 9) ──────
 
-function ResultPanel({
+// P2-4 — memoized; the parent re-renders on every cost-preview tick
+// while the user is configuring. Without memo, every keystroke
+// re-rendered the result panel + every ListingCopy underneath.
+const ResultPanel = memo(ResultPanelImpl);
+
+function ResultPanelImpl({
   result,
   dryRun,
   assets,
