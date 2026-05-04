@@ -304,6 +304,40 @@ export const platformListingsVersions = pgTable(
   })
 );
 
+// Image QA Layer 1 + Layer 3 — observable trail of every per-image
+// judgment. Layer 1 writes 'similarity' + 'framing' rows from Haiku
+// 4.5; Layer 3 writes 'client' rows when the operator iterates via the
+// chat panel; Layer 2 (later) writes 'consistency' rows.
+export const imageQaJudgments = pgTable(
+  "image_qa_judgments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    assetId: uuid("asset_id")
+      .notNull()
+      .references(() => platformAssets.id, { onDelete: "cascade" }),
+    judgeId: text("judge_id").notNull(),
+    verdict: text("verdict").notNull(),
+    reason: text("reason"),
+    model: text("model"),
+    costCents: integer("cost_cents").notNull().default(0),
+    iteration: integer("iteration").notNull().default(1),
+    meta: jsonb("meta"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (t) => ({
+    assetCreatedIdx: index("idx_image_qa_asset_created").on(
+      t.assetId,
+      desc(t.createdAt)
+    ),
+    assetJudgeIdx: index("idx_image_qa_asset_judge").on(t.assetId, t.judgeId),
+    tenantCreatedIdx: index("idx_image_qa_tenant_created").on(
+      t.tenantId,
+      desc(t.createdAt)
+    ),
+  })
+);
+
 export const walletLedger = pgTable(
   "wallet_ledger",
   {

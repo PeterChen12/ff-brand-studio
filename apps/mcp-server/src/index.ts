@@ -1542,21 +1542,63 @@ app.post("/v1/assets/:id/regenerate", async (c) => {
       chips: Array.isArray(body.chips) ? body.chips.slice(0, 6).map(String) : [],
     });
     if (!result.ok) {
-      const status = result.reason === "not_found" ? 404
+      const status =
+        result.reason === "not_found" ? 404
         : result.reason === "wallet" ? 402
         : result.reason === "fal_missing" ? 503
+        : result.reason === "asset_cap_reached" ? 429
         : 500;
-      return c.json({ error: result.reason, message: result.message }, status);
+      return c.json(
+        {
+          error: result.reason,
+          message: result.message,
+          ...(result.clientIterations && {
+            asset_iterations: result.clientIterations,
+          }),
+        },
+        status
+      );
     }
     return c.json({
       asset: result.asset,
       r2Url: result.newR2Url,
       costCents: result.costCents,
       cap: { used: cap.used + 1, cap: cap.cap },
+      // Image QA Layer 3 — per-asset iteration counter so the dashboard
+      // can disable the chat panel after the cap is reached.
+      asset_iterations: result.clientIterations,
     });
   } catch (err) {
     console.error("[/v1/assets/:id/regenerate]", err);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Image QA Layer 3 — read per-asset client-iteration count so the
+// dashboard's chat panel can hydrate its remaining-iterations badge
+// on mount instead of waiting for the first regen response.
+app.get("/v1/assets/:id/iterations", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const id = c.req.param("id");
+    const [asset] = await db
+      .select({ tenantId: platformAssets.tenantId })
+      .from(platformAssets)
+      .where(eq(platformAssets.id, id))
+      .limit(1);
+    if (!asset || !visibleTenantIds(tenant).includes(asset.tenantId)) {
+      throw new ApiError(404, "asset_not_found", "Asset not found.");
+    }
+    const { countClientRegens, CLIENT_REGEN_PER_ASSET_CAP } = await import(
+      "./lib/regenerate-asset.js"
+    );
+    const used = await countClientRegens(db, id);
+    return c.json({ used, cap: CLIENT_REGEN_PER_ASSET_CAP });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    console.error("[/v1/assets/:id/iterations]", err);
+    throw err;
   }
 });
 

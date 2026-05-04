@@ -122,6 +122,10 @@ export async function runEvaluatorOptimizer(
         ? await scoreAmazonCompliance(input.db, asset.asset_id, {
             vision: input.vision_pass,
             anthropic_api_key: input.anthropic_api_key,
+            // Image QA Layer 1 — surface the iteration to dual_judge so
+            // the persisted judgments correlate with which retry round
+            // each verdict belongs to.
+            persist_iteration: iter,
           })
         : await scoreShopifyCompliance(input.db, asset.asset_id);
 

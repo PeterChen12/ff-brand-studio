@@ -703,6 +703,17 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           dryRun={dryRun}
           assets={launchAssets}
           productNameEn={selected?.nameEn ?? result.product_sku}
+          onAssetUpdated={(assetId, newR2Url) => {
+            setLaunchAssets((prev) =>
+              prev
+                ? prev.map((a) =>
+                    a.id === assetId
+                      ? { ...a, r2Url: newR2Url, thumbUrl: newR2Url }
+                      : a
+                  )
+                : prev
+            );
+          }}
         />
       )}
     </div>
@@ -911,6 +922,173 @@ function WalletGauge({
 }
 
 
+// ── Image QA Layer 3 — Tweak Image panel ──────────────────────────────
+//
+// Per-asset chat-style iteration: pick an image, type "rod is cropped —
+// show the full length end-to-end", submit. Calls /v1/assets/:id/regenerate
+// which merges the instruction into the FAL prompt. Caps at 5 client
+// iterations per asset (enforced by the worker) — at the cap the panel
+// disables and points the user at the Calendly schedule link.
+function TweakImagePanel({
+  assets,
+  sku,
+  onAssetUpdated,
+}: {
+  assets: PlatformAssetRow[];
+  sku: string;
+  onAssetUpdated: (assetId: string, newR2Url: string) => void;
+}) {
+  const apiFetch = useApiFetch();
+  const [selectedId, setSelectedId] = useState<string>(assets[0]?.id ?? "");
+  const [instruction, setInstruction] = useState("");
+  const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
+  // Per-asset client-iteration counts. Initialized to 0; updated from
+  // each regen response. We don't pre-fetch from /v1/assets/:id/iterations
+  // because the asset is fresh — the count starts at 0 in this flow.
+  const [iterations, setIterations] = useState<
+    Record<string, { used: number; cap: number }>
+  >({});
+
+  const selected = assets.find((a) => a.id === selectedId);
+  const selectedIters = iterations[selectedId];
+  const cap = selectedIters?.cap ?? 5;
+  const used = selectedIters?.used ?? 0;
+  const remaining = cap - used;
+  const atCap = remaining <= 0;
+  const canSubmit =
+    !busyAssetId && instruction.trim().length >= 4 && selectedId && !atCap;
+
+  async function handleSubmit() {
+    if (!canSubmit || !selected) return;
+    setBusyAssetId(selectedId);
+    try {
+      const res = await apiFetch<{
+        r2Url: string;
+        costCents: number;
+        asset_iterations?: { used: number; cap: number };
+      }>(`/v1/assets/${selectedId}/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({ feedback: instruction.trim().slice(0, 500) }),
+      });
+      onAssetUpdated(selectedId, res.r2Url);
+      if (res.asset_iterations) {
+        setIterations((prev) => ({
+          ...prev,
+          [selectedId]: res.asset_iterations as { used: number; cap: number },
+        }));
+      }
+      setInstruction("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const apiErr = err as { status?: number };
+      // Backend returns 429 with asset_iterations on cap-reached.
+      if (apiErr?.status === 429) {
+        const detail = (err as { body?: { asset_iterations?: { used: number; cap: number } } })
+          ?.body?.asset_iterations;
+        if (detail) {
+          setIterations((prev) => ({ ...prev, [selectedId]: detail }));
+        }
+      }
+      // Surface via console; the global ErrorState/Toaster catches the
+      // ApiError if it bubbles via SWR; here it's a direct apiFetch
+      // call so we just log and reset.
+      // eslint-disable-next-line no-console
+      console.error("[regen]", msg);
+    } finally {
+      setBusyAssetId(null);
+    }
+  }
+
+  return (
+    <div className="mt-5 md-surface-container-low border ff-hairline rounded-m3-md px-5 py-4">
+      <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
+        <div>
+          <div className="ff-stamp-label">Tweak an image · 微调</div>
+          <div className="md-typescale-body-small text-on-surface-variant mt-0.5">
+            Pick an image, describe what to fix. We'll regenerate just that
+            one — $0.30 per iteration, up to {cap} per image.
+          </div>
+        </div>
+        {selectedIters && (
+          <Badge
+            variant={atCap ? "flagged" : remaining <= 1 ? "pending" : "neutral"}
+            size="sm"
+          >
+            {used}/{cap} used
+          </Badge>
+        )}
+      </div>
+      <div className="flex flex-col gap-2">
+        <select
+          value={selectedId}
+          onChange={(e) => setSelectedId(e.target.value)}
+          disabled={!!busyAssetId}
+          className="w-full h-10 px-3 rounded-m3-md bg-surface-container border ff-hairline md-typescale-body-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
+        >
+          {assets.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.platform} · {a.slot}
+              {a.format ? ` · ${a.format}` : ""}
+              {iterations[a.id] ? ` · ${iterations[a.id].used}/${iterations[a.id].cap}` : ""}
+            </option>
+          ))}
+        </select>
+        <textarea
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          disabled={!!busyAssetId || atCap}
+          maxLength={500}
+          rows={3}
+          placeholder='e.g. "rod is cropped — show the full length end-to-end" or "white background has color banding, make it pure white"'
+          className="w-full px-3 py-2 rounded-m3-md bg-surface-container-low border ff-hairline md-typescale-body-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-primary resize-y disabled:opacity-50"
+        />
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <span
+            className={cn(
+              "md-typescale-body-small font-mono tabular-nums",
+              instruction.length > 480
+                ? "text-ff-amber"
+                : "text-on-surface-variant/70"
+            )}
+          >
+            {instruction.length} / 500
+            {selected && busyAssetId === selectedId && " · regenerating…"}
+          </span>
+          {atCap ? (
+            <a
+              href="https://calendar.app.google/SKMgxvqGGoCbSZut8"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 h-9 rounded-m3-full md-typescale-label-medium border border-outline text-primary bg-transparent hover:bg-primary/[0.04] transition-colors"
+            >
+              Schedule a call for further refinement →
+            </a>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              className={cn(
+                "inline-flex items-center gap-1.5 px-3 h-9 rounded-m3-full md-typescale-label-medium",
+                "bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2 transition-shadow",
+                "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
+                "disabled:opacity-50 disabled:cursor-not-allowed"
+              )}
+            >
+              {busyAssetId === selectedId
+                ? "Regenerating…"
+                : `Regenerate · $${(0.30).toFixed(2)}`}
+            </button>
+          )}
+        </div>
+      </div>
+      {/* SKU label kept here so a screen-reader user knows which product
+          they're iterating without scrolling back to the eyebrow. */}
+      <span className="sr-only">Product SKU: {sku}</span>
+    </div>
+  );
+}
+
 // ── Result panel — surfaces SEO + asset download inline (Issue 9) ──────
 
 // P2-4 — memoized; the parent re-renders on every cost-preview tick
@@ -923,11 +1101,15 @@ function ResultPanelImpl({
   dryRun,
   assets,
   productNameEn,
+  onAssetUpdated,
 }: {
   result: LaunchResult;
   dryRun: boolean;
   assets: PlatformAssetRow[] | null;
   productNameEn: string;
+  /** Image QA Layer 3 — called after a successful client iteration so
+   * the parent can swap the asset's r2Url + thumbUrl in launchAssets. */
+  onAssetUpdated?: (assetId: string, newR2Url: string) => void;
 }) {
   const seoSurfaces = result.seo?.surfaces ?? [];
   const isFullRunSucceeded = !dryRun && result.status === "succeeded";
@@ -995,6 +1177,18 @@ function ResultPanelImpl({
                   />
                 ))}
               </div>
+            )}
+            {/* Image QA Layer 3 — per-image client iteration chat panel.
+                Visible once assets land. The user picks an image, types
+                a correction (e.g. "rod is cropped — show full length"),
+                and the system regenerates that single image with the
+                instruction merged into the FAL prompt. */}
+            {assets && assets.length > 0 && onAssetUpdated && (
+              <TweakImagePanel
+                assets={assets}
+                sku={result.product_sku}
+                onAssetUpdated={onAssetUpdated}
+              />
             )}
           </div>
         )}

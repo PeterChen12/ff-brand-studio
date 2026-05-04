@@ -12,15 +12,17 @@
  * invoking. We trust the caller.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
 import {
   platformAssets,
   productVariants,
   products,
+  imageQaJudgments,
   type PlatformAsset,
   type Product,
 } from "../db/schema.js";
+import { sql } from "drizzle-orm";
 import { auditEvent } from "./audit.js";
 import {
   chargeWallet,
@@ -31,6 +33,10 @@ import { getDeriver } from "../pipeline/derivers/index.js";
 import { publicUrl } from "../pipeline/cache.js";
 
 export const REGEN_COST_CENTS = 30;
+// Image QA Layer 3 — per-asset cap on client-driven regenerations. After
+// this, the dashboard's chat panel disables and points the user to a
+// scheduled call. Tunable per-tenant in a future iteration.
+export const CLIENT_REGEN_PER_ASSET_CAP = 5;
 
 export interface RegenInput {
   assetId: string;
@@ -42,8 +48,44 @@ export interface RegenInput {
 }
 
 export type RegenResult =
-  | { ok: true; asset: PlatformAsset; newR2Url: string; costCents: number }
-  | { ok: false; reason: "not_found" | "fal_missing" | "wallet" | "fal_error"; message?: string };
+  | {
+      ok: true;
+      asset: PlatformAsset;
+      newR2Url: string;
+      costCents: number;
+      clientIterations: { used: number; cap: number };
+    }
+  | {
+      ok: false;
+      reason:
+        | "not_found"
+        | "fal_missing"
+        | "wallet"
+        | "fal_error"
+        | "asset_cap_reached";
+      message?: string;
+      clientIterations?: { used: number; cap: number };
+    };
+
+/**
+ * Count the client-driven regenerations already attempted on a given
+ * asset. Reads from image_qa_judgments where judge_id='client'.
+ */
+export async function countClientRegens(
+  db: DbClient,
+  assetId: string
+): Promise<number> {
+  const rows = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(imageQaJudgments)
+    .where(
+      and(
+        eq(imageQaJudgments.assetId, assetId),
+        eq(imageQaJudgments.judgeId, "client")
+      )
+    );
+  return Number(rows[0]?.c ?? 0);
+}
 
 export async function regenerateAsset(
   env: CloudflareBindings,
@@ -59,6 +101,19 @@ export async function regenerateAsset(
     .limit(1);
   if (!asset || !input.tenantIdsInScope.includes(asset.tenantId)) {
     return { ok: false, reason: "not_found" };
+  }
+
+  // Image QA Layer 3 — per-asset client-iteration cap. After 5 the
+  // dashboard disables further iteration and points to Calendly. We
+  // count BEFORE charging so a capped call doesn't burn a refund.
+  const usedBefore = await countClientRegens(db, asset.id);
+  if (usedBefore >= CLIENT_REGEN_PER_ASSET_CAP) {
+    return {
+      ok: false,
+      reason: "asset_cap_reached",
+      message: `${usedBefore}/${CLIENT_REGEN_PER_ASSET_CAP} client iterations already used on this asset.`,
+      clientIterations: { used: usedBefore, cap: CLIENT_REGEN_PER_ASSET_CAP },
+    };
   }
 
   // Resolve the parent product so we can pick the correct deriver.
@@ -189,7 +244,42 @@ export async function regenerateAsset(
     },
   });
 
-  return { ok: true, asset: updated, newR2Url, costCents: REGEN_COST_CENTS };
+  // Image QA Layer 3 — persist this client iteration so the cap counter
+  // increments and the audit trail captures the freeform instruction
+  // alongside model judgments.
+  try {
+    await db.insert(imageQaJudgments).values({
+      tenantId: input.tenantId,
+      assetId: asset.id,
+      judgeId: "client",
+      verdict: "rework",
+      reason: input.feedback.slice(0, 500),
+      model: "fal:gemini-3-pro-image-preview:regen",
+      costCents: REGEN_COST_CENTS,
+      iteration: usedBefore + 1,
+      meta: {
+        chips: input.chips,
+        prior_r2_url: asset.r2Url,
+        new_r2_url: newR2Url,
+      },
+    });
+  } catch (persistErr) {
+    console.warn(
+      "[regen] image_qa_judgments persist failed",
+      persistErr instanceof Error ? persistErr.message : String(persistErr)
+    );
+  }
+
+  return {
+    ok: true,
+    asset: updated,
+    newR2Url,
+    costCents: REGEN_COST_CENTS,
+    clientIterations: {
+      used: usedBefore + 1,
+      cap: CLIENT_REGEN_PER_ASSET_CAP,
+    },
+  };
 }
 
 async function refundOnFail(db: DbClient, tenantId: string, assetId: string): Promise<void> {

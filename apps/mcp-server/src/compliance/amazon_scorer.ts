@@ -7,21 +7,35 @@
  */
 import { eq, and } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
-import { platformAssets, platformSpecs, productVariants, products } from "../db/schema.js";
+import {
+  platformAssets,
+  platformSpecs,
+  productVariants,
+  products,
+  productReferences,
+} from "../db/schema.js";
 import type {
   PlatformComplianceRatingType,
   PlatformComplianceResultType,
 } from "@ff/types";
-import { visionScoreAmazonMain } from "./vision_scorer.js";
+import { judgeImage, dualJudgeToComplianceResult } from "./dual_judge.js";
 
 export interface ScoreAmazonComplianceOptions {
   /**
-   * Phase 4-follow: opt in to the Opus 4.7 vision second pass. Default false.
-   * Adds ~$0.02 per call; catches text/logos/watermarks/props.
+   * Phase 4-follow: opt in to the Image-QA Layer 1 dual-judge pass.
+   * Default false. Adds ~$0.012 per call (two parallel Haiku 4.5
+   * calls); catches similarity-to-source mismatches + framing /
+   * background-integrity failures the deterministic scorer can't see.
    */
   vision?: boolean;
   /** Anthropic API key (required if vision=true). */
   anthropic_api_key?: string;
+  /**
+   * When set, dual_judge persists each per-judge verdict row to
+   * image_qa_judgments. Pass the current evaluator-optimizer iteration
+   * number so retries are correlatable.
+   */
+  persist_iteration?: number;
 }
 
 const RATING_RANK: Record<PlatformComplianceRatingType, number> = {
@@ -176,31 +190,60 @@ export async function scoreAmazonCompliance(
       return { rating: "POOR", issues, suggestions, metrics };
     }
 
-    // Look up category for the rubric hint via the product table chain
+    // Look up category + tenant + reference URLs in one chained query.
     const productRow = await db
-      .select({ category: products.category })
+      .select({
+        category: products.category,
+        tenantId: products.tenantId,
+        productId: products.id,
+      })
       .from(platformAssets)
       .innerJoin(productVariants, eq(productVariants.id, platformAssets.variantId))
       .innerJoin(products, eq(products.id, productVariants.productId))
       .where(eq(platformAssets.id, asset_id))
       .limit(1);
     const category = productRow[0]?.category;
+    const tenantId = productRow[0]?.tenantId;
+    const productId = productRow[0]?.productId;
 
-    const visionResult = await visionScoreAmazonMain({
-      asset_url: a.r2Url,
+    // Pull up to 4 reference photos for the similarity judge — the
+    // operator's onboarding photos are the canonical source-of-truth.
+    const refs = productId
+      ? await db
+          .select({ r2Url: productReferences.r2Url })
+          .from(productReferences)
+          .where(eq(productReferences.productId, productId))
+          .limit(4)
+      : [];
+
+    const visionResult = await judgeImage({
+      generated_image_url: a.r2Url,
+      reference_image_urls: refs.map((r) => r.r2Url).filter(Boolean) as string[],
+      slot_label: `amazon-us · ${a.slot}`,
       category,
       api_key: opts.anthropic_api_key,
+      persist:
+        tenantId && opts.persist_iteration !== undefined
+          ? {
+              db,
+              tenantId,
+              assetId: asset_id,
+              iteration: opts.persist_iteration,
+            }
+          : undefined,
     });
+    const compat = dualJudgeToComplianceResult(visionResult);
 
-    metrics.vision_rating = visionResult.rating;
-    metrics.vision_cost_cents = visionResult.cost_cents;
-    metrics.vision_issues = visionResult.issues;
+    metrics.vision_rating = compat.rating;
+    metrics.vision_cost_cents = compat.cost_cents;
+    metrics.vision_issues = compat.issues;
+    metrics.vision_judgments = visionResult.judgments;
 
-    // Merge vision findings — vision can downgrade but not upgrade the rating
-    for (const v of visionResult.issues) issues.push(`vision: ${v}`);
-    for (const s of visionResult.suggestions) suggestions.push(`vision: ${s}`);
-    if (RATING_RANK[visionResult.rating] < RATING_RANK[rating]) {
-      rating = visionResult.rating;
+    // Merge dual-judge findings — judges can downgrade but not upgrade.
+    for (const v of compat.issues) issues.push(`vision: ${v}`);
+    for (const s of compat.suggestions) suggestions.push(`vision: ${s}`);
+    if (RATING_RANK[compat.rating] < RATING_RANK[rating]) {
+      rating = compat.rating;
     }
   }
 
