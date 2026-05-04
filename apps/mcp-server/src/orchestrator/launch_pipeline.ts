@@ -20,7 +20,7 @@
  * Phase 4 will inject evaluator-optimizer between workers and adapters.
  */
 
-import { eq, and, sql as drizzleSql } from "drizzle-orm";
+import { eq, and, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
 import {
   products,
@@ -28,10 +28,12 @@ import {
   productVariants,
   sellerProfiles,
   launchRuns,
+  platformAssets,
   platformListings,
   tenants,
   type Product,
 } from "../db/schema.js";
+import { checkBatchConsistency } from "../compliance/batch_consistency.js";
 import { planSkuLaunch, type LaunchPlatform, type PlannedWork } from "./planner.js";
 import { runProductionPipeline } from "../pipeline/index.js";
 import type { TenantFeatures, PipelineCtx } from "../pipeline/types.js";
@@ -544,9 +546,77 @@ export async function runLaunchPipeline(
     notes.push("seo_pipeline skipped (no ANTHROPIC_API_KEY)");
   }
 
+  // ── 6.5 Image QA Layer 2 — batch consistency check ─────────────────────
+  // Runs ONCE after every image has passed Layer 1's per-image dual judge.
+  // Verifies cross-image properties Layer 1 cannot see (same product
+  // across all shots, uniform background style, no near-duplicates).
+  // V1 behavior on overall_approved=false: demote to hitl_blocked and
+  // attach per-image issues to the result notes; auto-regenerate the
+  // inconsistent images is deferred to a later iteration.
+  let batchConsistencyCostCents = 0;
+  let batchInconsistencyCount = 0;
+  if (
+    input.vision_pass &&
+    input.anthropic_api_key &&
+    adapterResults.length > 1
+  ) {
+    try {
+      const assetIds = adapterResults.map((r) => r.asset_id);
+      const rows = await db
+        .select({
+          id: platformAssets.id,
+          platform: platformAssets.platform,
+          slot: platformAssets.slot,
+          r2Url: platformAssets.r2Url,
+        })
+        .from(platformAssets)
+        .where(inArray(platformAssets.id, assetIds));
+      const consistencyResult = await checkBatchConsistency({
+        api_key: input.anthropic_api_key,
+        images: rows.map((r) => ({
+          asset_id: r.id,
+          platform: r.platform,
+          slot: r.slot,
+          url: r.r2Url,
+        })),
+        persist: { db, tenantId },
+      });
+      batchConsistencyCostCents = consistencyResult.cost_cents;
+      batchInconsistencyCount = consistencyResult.per_image.filter(
+        (j) => !j.approved
+      ).length;
+      notes.push(
+        `batch_consistency: overall=${consistencyResult.overall_approved ? "approve" : "reject"} (${consistencyResult.overall_reason}); ${batchInconsistencyCount} image(s) flagged`
+      );
+      for (const j of consistencyResult.per_image) {
+        if (!j.approved && j.issue) {
+          notes.push(
+            `batch_consistency reject [${j.asset_id.slice(0, 8)}…]: ${j.issue}`
+          );
+        }
+      }
+      if (!consistencyResult.overall_approved) {
+        // Demote run-level HITL count by adding the inconsistency
+        // count; the pipeline's finalStatus logic below catches this
+        // and ends up `hitl_blocked` if hitlCount > 0.
+        hitlCount += Math.max(1, batchInconsistencyCount);
+      }
+    } catch (err) {
+      // Layer 2 failure must not tank an otherwise-clean launch — the
+      // per-image floor (Layer 1) still stands. Log and move on.
+      notes.push(
+        `batch_consistency skipped: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   // ── 7. Finalize launch_runs ─────────────────────────────────────────────
   const durationMs = Date.now() - startedAt;
-  const totalCostCents = workerCostCents + evaluatorCostCents + seoCostCents;
+  const totalCostCents =
+    workerCostCents +
+    evaluatorCostCents +
+    seoCostCents +
+    batchConsistencyCostCents;
   const finalStatus: LaunchPipelineResult["status"] = costCapped
     ? "cost_capped"
     : hitlCount > 0
