@@ -8,11 +8,20 @@
  * Workers AI free tier covers expected triage volume comfortably. CLIP
  * embeddings cached in R2 by sha256(image bytes) so the same image
  * triaged twice is one embed call.
+ *
+ * 2026-05-06 — Workers AI removed `@cf/openai/clip-vit-base-patch16`
+ * from the catalog (every call returns AiError 5007). With no drop-in
+ * replacement, the LYKAN spike was burning ~18 subrequests on dead
+ * AI.run calls per launch and tipping the pipeline past Cloudflare's
+ * Bundled-plan 50-subrequest cap. Treat triage as unavailable until
+ * Cloudflare ships a replacement (or we wire OpenAI/FAL as a fallback);
+ * iterate.ts already handles `null` as "skip CLIP, escalate to vision".
  */
 
 import { sha256Hex } from "./cache.js";
 
 const CLIP_MODEL = "@cf/openai/clip-vit-base-patch16";
+const CLIP_DISABLED = true;
 
 interface ClipEmbedResponse {
   embedding?: number[];
@@ -77,6 +86,7 @@ export async function clipSimilarityFromR2(
   aKey: string,
   bKey: string
 ): Promise<number | null> {
+  if (CLIP_DISABLED) return null;
   const [aObj, bObj] = await Promise.all([env.R2.get(aKey), env.R2.get(bKey)]);
   if (!aObj || !bObj) return null;
   const [aBytes, bBytes] = await Promise.all([aObj.arrayBuffer(), bObj.arrayBuffer()]);
