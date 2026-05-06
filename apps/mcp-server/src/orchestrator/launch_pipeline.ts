@@ -478,11 +478,19 @@ export async function runLaunchPipeline(
           : "succeeded"
         : "failed";
 
+      // dual_judge.tokenCostCents returns tenths of a cent (e.g. 90.57)
+      // so the running total accumulates a fractional value. The
+      // launch_runs.total_cost_cents column is integer — round at the
+      // storage boundary. Same value goes into the handler's
+      // delta-refund calc, so the wallet ledger (also integer) stays
+      // consistent.
+      const actualTotalCents = Math.round(pipelineRes.totalCostCents);
+
       await db
         .update(launchRuns)
         .set({
           status,
-          totalCostCents: pipelineRes.totalCostCents,
+          totalCostCents: actualTotalCents,
           hitlInterventions: pipelineRes.fairCount,
           durationMs: Date.now() - startedAt,
         })
@@ -494,7 +502,7 @@ export async function runLaunchPipeline(
         product_sku: product.sku,
         status,
         duration_ms: Date.now() - startedAt,
-        total_cost_cents: pipelineRes.totalCostCents,
+        total_cost_cents: actualTotalCents,
         plan,
         canonicals: [],
         adapter_results: [],
@@ -502,7 +510,7 @@ export async function runLaunchPipeline(
         notes: [
           ...notes,
           `production_pipeline: ${pipelineRes.slotsWritten} slot(s) written, ` +
-            `${pipelineRes.fairCount} FAIR, ${pipelineRes.totalCostCents}¢ spent`,
+            `${pipelineRes.fairCount} FAIR, ${actualTotalCents}¢ spent`,
           ...pipelineRes.errors.map((e) => `pipeline error: ${e}`),
         ],
       };
