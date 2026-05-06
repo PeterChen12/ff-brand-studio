@@ -951,6 +951,14 @@ app.post("/v1/launches", async (c) => {
 
     return c.json(result);
   } catch (err) {
+    // Surface the original pipeline exception in the worker log so
+    // wrangler tail captures it. Without this, the catch swallows the
+    // error and only the formatted ApiError shows up — making spike
+    // diagnosis (LYKAN spike, 2026-05-06) impossible from logs alone.
+    console.error(
+      "[launch] pipeline threw:",
+      err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ""}` : String(err)
+    );
     // P0-4 — refund the entire pre-charge if the pipeline crashed before
     // it could record actual costs. If the refund itself fails we MUST
     // surface that loudly: a swallowed refund failure means the operator
