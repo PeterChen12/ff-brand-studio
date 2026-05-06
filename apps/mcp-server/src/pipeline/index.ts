@@ -280,21 +280,52 @@ export async function runProductionPipeline(
     }
     const fairForThisCrop = refinedAssets.find((a) => sourceMatchesAsset(target.source, a))?.fair ?? false;
     const compliance = fairForThisCrop ? "FAIR" : "EXCELLENT";
-    await db.insert(platformAssets).values({
-      tenantId: ctx.tenantId,
-      variantId: ctx.variantId,
-      platform: target.platform,
-      slot: target.slot,
-      r2Url: `${env.R2_PUBLIC_URL.replace(/\/$/, "")}/${r2Key}`,
-      width: 2000,
-      height: 2000,
-      format: "png",
-      status: fairForThisCrop ? "fair" : "approved",
-      modelUsed: sourceModelLabel(target.source),
-      complianceScore: compliance,
-      costCents: estimateSlotCost(target.source),
-      generationParams: { source: target.source, runId: ctx.runId },
-    });
+    const r2Url = `${env.R2_PUBLIC_URL.replace(/\/$/, "")}/${r2Key}`;
+    const status = fairForThisCrop ? "fair" : "approved";
+    const modelUsed = sourceModelLabel(target.source);
+    const costCents = estimateSlotCost(target.source);
+    const generationParams = { source: target.source, runId: ctx.runId };
+    // Re-launching the same product upserts: a new run replaces the prior
+    // (variant, platform, slot) tuple — the active set is "latest run's
+    // outputs". Without onConflictDoUpdate, the unique index
+    // platform_assets_uniq_variant_slot rejects the second INSERT and the
+    // entire pipeline catches that as a fatal error (LYKAN re-launch
+    // surfaced this 2026-05-06).
+    await db
+      .insert(platformAssets)
+      .values({
+        tenantId: ctx.tenantId,
+        variantId: ctx.variantId,
+        platform: target.platform,
+        slot: target.slot,
+        r2Url,
+        width: 2000,
+        height: 2000,
+        format: "png",
+        status,
+        modelUsed,
+        complianceScore: compliance,
+        costCents,
+        generationParams,
+      })
+      .onConflictDoUpdate({
+        target: [
+          platformAssets.variantId,
+          platformAssets.platform,
+          platformAssets.slot,
+        ],
+        set: {
+          r2Url,
+          width: 2000,
+          height: 2000,
+          format: "png",
+          status,
+          modelUsed,
+          complianceScore: compliance,
+          costCents,
+          generationParams,
+        },
+      });
     slotsWritten++;
   }
 
