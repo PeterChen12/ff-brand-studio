@@ -136,43 +136,63 @@ export async function runProductionPipeline(
     { tag: "C", cropKey: deriveRes.outputs.cropCKey },
   ];
 
-  for (const t of cropTargets) {
-    if (budget < 30) {
-      errors.push(`wallet capped before refine_${t.tag}`);
+  // Refine all 4 crops in parallel — sequential was ~95s each × 4 = 6+ min
+  // wallclock, which busts Cloudflare Workers' 5-min request cap. Each
+  // refineWithIteration manages its own per-crop budget (passed in
+  // `remainingBudgetCents`); the worst case is N × per-crop spend, but
+  // per-crop spend is bounded ~100¢ so 4 crops max ~400¢ < cost_cap_cents.
+  // Subrequest count is the same as sequential (Workers counts the total,
+  // not concurrency), so we don't hit a different limit.
+  const studioKey = deriveRes.outputs.studioR2Key;
+  const cleanupKey = cleanupRes.outputR2Key;
+  type CropResult =
+    | { tag: typeof cropTargets[number]["tag"]; capped: true }
+    | { tag: typeof cropTargets[number]["tag"]; out: Awaited<ReturnType<typeof refineWithIteration>> };
+  const refineResults: CropResult[] = await Promise.all(
+    cropTargets.map(async (t): Promise<CropResult> => {
+      if (budget < 30) {
+        return { tag: t.tag, capped: true };
+      }
+      const out = await refineWithIteration(env, ctx, {
+        cropTag: t.tag === "studio" ? "studio" : `crop_${t.tag}`,
+        cropR2Key: t.cropKey,
+        studioR2Key: studioKey,
+        referenceR2Key: cleanupKey,
+        remainingBudgetCents: budget,
+      });
+      return { tag: t.tag, out };
+    })
+  );
+  for (const r of refineResults) {
+    if ("capped" in r) {
+      errors.push(`wallet capped before refine_${r.tag}`);
       continue;
     }
-    const out = await refineWithIteration(env, ctx, {
-      cropTag: t.tag === "studio" ? "studio" : `crop_${t.tag}`,
-      cropR2Key: t.cropKey,
-      studioR2Key: deriveRes.outputs.studioR2Key,
-      referenceR2Key: cleanupRes.outputR2Key,
-      remainingBudgetCents: budget,
-    });
-    if ("error" in out) {
-      errors.push(`refine_${t.tag} failed: ${out.error}`);
+    if ("error" in r.out) {
+      errors.push(`refine_${r.tag} failed: ${r.out.error}`);
       continue;
     }
-    budget -= out.costCents;
-    totalCostCents += out.costCents;
-    refinedAssets.push(out.asset);
+    budget -= r.out.costCents;
+    totalCostCents += r.out.costCents;
+    refinedAssets.push(r.out.asset);
 
-    if (t.tag === "studio") outputs.refine_studio = out.asset.finalR2Key;
-    if (t.tag === "A") outputs.refine_crop_A = out.asset.finalR2Key;
-    if (t.tag === "B") outputs.refine_crop_B = out.asset.finalR2Key;
-    if (t.tag === "C") outputs.refine_crop_C = out.asset.finalR2Key;
+    if (r.tag === "studio") outputs.refine_studio = r.out.asset.finalR2Key;
+    if (r.tag === "A") outputs.refine_crop_A = r.out.asset.finalR2Key;
+    if (r.tag === "B") outputs.refine_crop_B = r.out.asset.finalR2Key;
+    if (r.tag === "C") outputs.refine_crop_C = r.out.asset.finalR2Key;
 
     await auditEvent(db, {
       tenantId: ctx.tenantId,
       actor: null,
-      action: out.asset.fair ? "launch.failed" : "launch.complete",
+      action: r.out.asset.fair ? "launch.failed" : "launch.complete",
       targetType: "pipeline_step",
       targetId: ctx.runId,
       metadata: {
-        step: `refine_${t.tag}`,
-        costCents: out.costCents,
-        clipScore: out.asset.clipScore,
-        iters: out.asset.iters,
-        fair: out.asset.fair,
+        step: `refine_${r.tag}`,
+        costCents: r.out.costCents,
+        clipScore: r.out.asset.clipScore,
+        iters: r.out.asset.iters,
+        fair: r.out.asset.fair,
       },
     });
   }
