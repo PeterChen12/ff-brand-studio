@@ -13,6 +13,16 @@ RUN npx tsc -p tsconfig.json
 FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# fonts-liberation: Helvetica/Times/Courier metric-compatible fallbacks so
+# the SVG overlay's `font-family="Georgia,'Times New Roman',serif"` etc.
+# actually renders (slim ships zero fonts; without these, all <text> in
+# /composite-text and /banner-extend overlays comes out as box glyphs —
+# observed on the LYKAN spike, 2026-05-06).
+# fonts-noto-cjk: covers any Chinese product name / spec text (LYKAN
+# product seed has nameZh "LYKAN 奈肯 斩翘 …") that flows into the SVG.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends fonts-liberation fonts-noto-cjk \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json ./
 RUN npm install --production=true && npm cache clean --force
 COPY --from=builder /app/dist ./dist
