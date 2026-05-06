@@ -76,7 +76,12 @@ export async function cleanupStep(
         method: "POST",
         headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` },
         body: form,
-        signal: AbortSignal.timeout(60_000),
+        // gpt-image-2 medium-quality 1024x1024 edits routinely run 60-90s
+        // and occasionally up to ~110s under load. 60s was too tight —
+        // observed back-to-back timeouts on the LYKAN spike. 120s is safe;
+        // the outer pipeline budget is 1500¢ and Workers Unbound wallclock
+        // is 5 min, so we're not bumping into a hard ceiling.
+        signal: AbortSignal.timeout(120_000),
       });
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err), transient: true };
