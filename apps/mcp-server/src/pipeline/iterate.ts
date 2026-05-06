@@ -16,9 +16,16 @@ import type { PipelineCtx, RefinedAsset, Verdict } from "./types.js";
 import { getDeriver, type RefinePromptArgs } from "./derivers/index.js";
 import { refineCall, REFINE_COST_CENTS } from "./refine.js";
 import { clipSimilarityFromR2 } from "./triage.js";
-import { visionVerdictFromR2, VISION_COST_CENTS } from "./audit.js";
+import { judgeImage } from "../compliance/dual_judge.js";
 
 const MAX_ITERS = 3;
+/** Pre-flight budget guard for the per-crop QA call. Two Haiku calls
+ *  typically come in under this; treated as a floor, not a debit. */
+const VISION_COST_CENTS = 2;
+
+function r2KeyToPublicUrl(env: CloudflareBindings, key: string): string {
+  return `${env.R2_PUBLIC_URL.replace(/\/$/, "")}/${key}`;
+}
 
 export interface IterateInput {
   cropTag: string;
@@ -109,22 +116,38 @@ export async function refineWithIteration(
       };
     }
 
-    // Below threshold (or CLIP unavailable) — escalate to vision once per crop.
+    // Below threshold (or CLIP unavailable) — escalate to dual-judge once per crop.
     if (lastVerdict === null) {
       if (budget < VISION_COST_CENTS) break;
-      const v = await visionVerdictFromR2(env, ctx, input.referenceR2Key, stepRes.outputR2Key);
-      if ("error" in v) {
-        // Vision unavailable — fall back to "ship despite low CLIP" with FAIR flag at end.
-        lastVerdict = { verdict: "fail", reasons: [v.error], details: {} };
-      } else {
-        lastVerdict = v.verdict;
-        totalCost += v.costCents;
-        budget -= v.costCents;
+      if (!env.ANTHROPIC_API_KEY) break;
+      const dual = await judgeImage({
+        generated_image_url: r2KeyToPublicUrl(env, stepRes.outputR2Key),
+        reference_image_urls: [r2KeyToPublicUrl(env, input.referenceR2Key)],
+        slot_label: input.cropTag,
+        category: ctx.category,
+        api_key: env.ANTHROPIC_API_KEY,
+      });
+      // Differentiate infra failure (don't poison iter-2 prompt) from
+      // a real rejection with usable visual critique.
+      const infraFailure =
+        ("fetch_error" in (dual.metrics ?? {})) ||
+        dual.reasons.some((r) => r.includes("crashed:"));
+      if (infraFailure) {
+        // Vision unavailable — fall through to "ship best with FAIR" below
+        // without amending the prompt with error strings.
+        break;
       }
+      totalCost += dual.cost_cents;
+      budget -= dual.cost_cents;
+      lastVerdict = {
+        verdict: dual.approved ? "pass" : "fail",
+        reasons: dual.reasons,
+        details: {},
+      };
       history[history.length - 1].verdict = lastVerdict;
 
       if (lastVerdict.verdict === "pass") {
-        // CLIP false negative — ship anyway.
+        // CLIP false negative — dual-judge approved; ship.
         return {
           asset: {
             cropName: input.cropTag,

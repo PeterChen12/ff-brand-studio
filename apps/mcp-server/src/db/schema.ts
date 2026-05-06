@@ -445,6 +445,41 @@ export type NewWalletLedgerEntry = typeof walletLedger.$inferInsert;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type NewAuditEvent = typeof auditEvents.$inferInsert;
 
+// ── Promo codes (testing wallet top-ups) ─────────────────────────────────
+
+export const promoCodes = pgTable("promo_codes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  code: text("code").notNull().unique(),
+  topUpCents: integer("top_up_cents").notNull(),
+  maxRedemptions: integer("max_redemptions").notNull(),
+  currentRedemptions: integer("current_redemptions").notNull().default(0),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const promoRedemptions = pgTable(
+  "promo_redemptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    promoCodeId: uuid("promo_code_id")
+      .notNull()
+      .references(() => promoCodes.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    redeemedAt: timestamp("redeemed_at").defaultNow(),
+  },
+  (t) => ({
+    uniqPromoTenant: uniqueIndex("promo_redemptions_uniq_promo_tenant").on(
+      t.promoCodeId,
+      t.tenantId
+    ),
+  })
+);
+
+export type PromoCode = typeof promoCodes.$inferSelect;
+export type NewPromoCode = typeof promoCodes.$inferInsert;
+export type PromoRedemption = typeof promoRedemptions.$inferSelect;
+export type NewPromoRedemption = typeof promoRedemptions.$inferInsert;
+
 /**
  * Hard-coded UUID for the legacy-demo "Sample Catalog" tenant. Every row
  * created before Phase G is owned by this tenant; new signups also see

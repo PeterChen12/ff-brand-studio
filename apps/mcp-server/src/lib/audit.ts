@@ -38,7 +38,9 @@ export type AuditAction =
   | "billing.subscription_change"
   // api keys (Phase L)
   | "api_key.created"
-  | "api_key.revoked";
+  | "api_key.revoked"
+  // promo codes (testing wallet top-ups)
+  | "promo.redeem";
 
 export interface AuditEventInput {
   tenantId: string;

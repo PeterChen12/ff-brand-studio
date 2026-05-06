@@ -35,6 +35,7 @@ type Reason =
   | "stripe_topup"
   | "refund"
   | "admin_grant"
+  | "promo"
   | "tenant_created";
 
 export interface WalletChangeInput {

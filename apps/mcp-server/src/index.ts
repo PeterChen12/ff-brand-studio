@@ -20,6 +20,8 @@ import {
   walletLedger,
   auditEvents,
   tenants,
+  promoCodes,
+  promoRedemptions,
   SAMPLE_TENANT_ID,
   type Product,
   type Tenant,
@@ -218,6 +220,7 @@ app.use("/v1/webhooks", requireTenant);
 app.use("/v1/webhooks/*", requireTenant);
 app.use("/v1/tenant", requireTenant);
 app.use("/v1/tenant/*", requireTenant);
+app.use("/v1/promo-codes/*", requireTenant);
 
 // Phase M1 — rate limit AFTER auth so we have tenant context to scope
 // counters by. Open routes (/v1/clerk-webhook, /v1/stripe-webhook,
@@ -238,6 +241,7 @@ app.use("/v1/api-keys", rateLimitMiddleware);
 app.use("/v1/api-keys/*", rateLimitMiddleware);
 app.use("/v1/webhooks", rateLimitMiddleware);
 app.use("/v1/webhooks/*", rateLimitMiddleware);
+app.use("/v1/promo-codes/*", rateLimitMiddleware);
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -595,6 +599,130 @@ app.get("/v1/billing/ledger", async (c) => {
     ledger: rows,
     balance_cents: tenant.walletBalanceCents,
   });
+});
+
+// ── Promo codes — testing wallet top-ups ─────────────────────────────────
+//
+// One promo row per code (e.g. SPIKE100 = $100, 10 redemptions max).
+// `promo_redemptions` enforces "one redemption per tenant per code" via a
+// UNIQUE(promo_code_id, tenant_id) index. The global cap is enforced
+// inside a transaction:
+//   1. atomic UPDATE...WHERE current_redemptions < max_redemptions (the
+//      cap-check happens in SQL so two parallel POSTs can't race past it)
+//   2. INSERT into promo_redemptions — UNIQUE violation rolls the whole
+//      tx back (counter increment too)
+//   3. creditWallet + audit
+//
+// All errors throw ApiError so the transaction rolls back and the global
+// onError handler returns a sanitized JSON response.
+
+const PromoRedeemInput = z.object({
+  code: z
+    .string()
+    .min(1)
+    .max(64)
+    .transform((s) => s.trim().toUpperCase()),
+});
+
+app.post("/v1/promo-codes/redeem", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = PromoRedeemInput.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+  const db = createDbClient(c.env);
+  const code = parsed.data.code;
+
+  const out = await db.transaction(async (tx) => {
+    const [promo] = await tx
+      .select()
+      .from(promoCodes)
+      .where(eq(promoCodes.code, code))
+      .limit(1);
+    if (!promo) {
+      throw new ApiError(404, "promo_not_found", "Promo code not found.");
+    }
+    if (promo.expiresAt && promo.expiresAt < new Date()) {
+      throw new ApiError(410, "promo_expired", "Promo code has expired.");
+    }
+
+    const updated = await tx
+      .update(promoCodes)
+      .set({
+        currentRedemptions: sql`${promoCodes.currentRedemptions} + 1`,
+      })
+      .where(
+        and(
+          eq(promoCodes.id, promo.id),
+          sql`${promoCodes.currentRedemptions} < ${promoCodes.maxRedemptions}`
+        )
+      )
+      .returning({ currentRedemptions: promoCodes.currentRedemptions });
+    if (updated.length === 0) {
+      throw new ApiError(
+        409,
+        "promo_exhausted",
+        "Promo code redemptions exhausted."
+      );
+    }
+
+    try {
+      await tx.insert(promoRedemptions).values({
+        promoCodeId: promo.id,
+        tenantId: tenant.id,
+      });
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        err.message.toLowerCase().includes("duplicate")
+      ) {
+        throw new ApiError(
+          409,
+          "already_redeemed",
+          "This tenant has already redeemed this promo."
+        );
+      }
+      throw err;
+    }
+
+    // Drizzle's PgTransaction is API-compatible with the helpers'
+    // DbClient at runtime (both expose insert/select/update) but the
+    // transaction type is missing `$client`. Cast — never log or use the
+    // helper's $client property elsewhere, so this is sound.
+    const txAsDb = tx as unknown as ReturnType<typeof createDbClient>;
+
+    const credit = await creditWallet(txAsDb, {
+      tenantId: tenant.id,
+      cents: promo.topUpCents,
+      reason: "promo",
+      referenceType: "promo_code",
+      referenceId: promo.id,
+    });
+
+    await auditEvent(txAsDb, {
+      tenantId: tenant.id,
+      actor: actor ?? null,
+      action: "promo.redeem",
+      targetType: "promo_code",
+      targetId: promo.id,
+      metadata: {
+        code: promo.code,
+        top_up_cents: promo.topUpCents,
+        redemptions_remaining:
+          promo.maxRedemptions - updated[0].currentRedemptions,
+      },
+    });
+
+    return {
+      code: promo.code,
+      top_up_cents: promo.topUpCents,
+      balance_after_cents: credit.balanceAfterCents,
+      redemptions_remaining:
+        promo.maxRedemptions - updated[0].currentRedemptions,
+    };
+  });
+
+  return c.json({ ok: true, ...out });
 });
 
 // ── Phase H4 — launch preview + versioned launch endpoint ────────────────

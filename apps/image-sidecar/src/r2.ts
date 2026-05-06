@@ -8,24 +8,49 @@
 
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
-const ACCOUNT_ID = process.env.R2_ACCOUNT_ID ?? "40595082727ca8581658c1f562d5f1ff";
+const ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
+const ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
+const SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+if (!ACCOUNT_ID || !ACCESS_KEY_ID || !SECRET_ACCESS_KEY) {
+  throw new Error(
+    "R2 credentials missing — required env vars: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY"
+  );
+}
 const BUCKET = process.env.R2_BUCKET ?? "ff-brand-studio-assets";
+
+/** Render free tier ceiling is 512MB. A single 50MB PNG expanded to raw
+ *  RGBA is ~16MB, but /derive runs four sharp pipelines concurrently on
+ *  the same source, so we cap input bytes to keep the headroom. */
+const MAX_R2_BYTES = 20 * 1024 * 1024;
 
 const client = new S3Client({
   region: "auto",
   endpoint: `https://${ACCOUNT_ID}.r2.cloudflarestorage.com`,
   credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+    accessKeyId: ACCESS_KEY_ID,
+    secretAccessKey: SECRET_ACCESS_KEY,
   },
 });
 
 export async function getR2(key: string): Promise<Buffer> {
   const res = await client.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
   if (!res.Body) throw new Error(`R2 get returned no body for ${key}`);
-  // SDK returns a stream — consume it.
+  if (typeof res.ContentLength === "number" && res.ContentLength > MAX_R2_BYTES) {
+    throw new Error(
+      `R2 object ${key} too large: ${res.ContentLength} > ${MAX_R2_BYTES} bytes`
+    );
+  }
+  // Stream consumption with a running size guard for the case where the
+  // server didn't return ContentLength.
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of res.Body as AsyncIterable<Uint8Array>) {
+    total += chunk.length;
+    if (total > MAX_R2_BYTES) {
+      throw new Error(
+        `R2 object ${key} stream exceeded ${MAX_R2_BYTES} bytes`
+      );
+    }
     chunks.push(Buffer.from(chunk));
   }
   return Buffer.concat(chunks);

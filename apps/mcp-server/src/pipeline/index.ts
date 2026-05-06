@@ -17,7 +17,6 @@ import type { DbClient } from "../db/client.js";
 import { platformAssets } from "../db/schema.js";
 import type { LaunchPlatform } from "../orchestrator/planner.js";
 import { auditEvent } from "../lib/audit.js";
-import { chargeWallet, InsufficientFundsError } from "../lib/wallet.js";
 import {
   planProductionSlots,
   type PipelineSource,
@@ -279,26 +278,10 @@ export async function runProductionPipeline(
     slotsWritten++;
   }
 
-  // Charge wallet at the end with the accumulated total. We charge in one
-  // shot rather than per-step so a wallet failure rolls back the whole
-  // launch's billing intent (rows are still written with status=fair).
-  try {
-    if (totalCostCents > 0) {
-      await chargeWallet(db, {
-        tenantId: ctx.tenantId,
-        cents: totalCostCents,
-        reason: "image_gen",
-        referenceType: "launch_run",
-        referenceId: ctx.runId,
-      });
-    }
-  } catch (err) {
-    if (err instanceof InsufficientFundsError) {
-      errors.push(`wallet final charge failed: insufficient funds (${err.balanceCents}¢ available)`);
-    } else {
-      errors.push(`wallet final charge failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  // Wallet billing is handled by the /v1/launches handler — it pre-charges
+  // `prediction.total_cents` up front and refunds the delta against
+  // `result.total_cost_cents` (which we set from `totalCostCents`). Charging
+  // here too would double-debit the tenant.
 
   return finalize(slotsWritten > 0);
 
