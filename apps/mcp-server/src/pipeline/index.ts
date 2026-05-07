@@ -14,7 +14,7 @@
 
 import { eq } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
-import { platformAssets } from "../db/schema.js";
+import { platformAssets, launchRuns } from "../db/schema.js";
 import type { LaunchPlatform } from "../orchestrator/planner.js";
 import { auditEvent } from "../lib/audit.js";
 import {
@@ -85,6 +85,20 @@ export async function runProductionPipeline(
     return true;
   }
 
+  // Phase A5 — granular phase visibility for polling clients. Best-effort:
+  // a single launch_runs UPDATE per step boundary; failure is logged but
+  // does not abort the pipeline (we'd rather lose visibility than the run).
+  async function setPhase(phase: string): Promise<void> {
+    try {
+      await db
+        .update(launchRuns)
+        .set({ currentPhase: phase })
+        .where(eq(launchRuns.id, ctx.runId));
+    } catch (err) {
+      console.warn("[pipeline] setPhase failed", phase, err);
+    }
+  }
+
   // Pick the first reference image; the pipeline operates on a single
   // canonical input for now (multi-reference support is a future iteration).
   const sourceR2Key = ctx.referenceR2Keys[0];
@@ -100,6 +114,7 @@ export async function runProductionPipeline(
   }
 
   // ── Step 2: cleanup ────────────────────────────────────────────────
+  await setPhase("cleanup");
   const cleanupRes = await cleanupStep(env, ctx, sourceR2Key);
   if (cleanupRes.status !== "ok") {
     errors.push(`cleanup failed: ${stepError(cleanupRes)}`);
@@ -118,6 +133,7 @@ export async function runProductionPipeline(
   });
 
   // ── Step 3: derive (sidecar) ──────────────────────────────────────
+  await setPhase("derive");
   const deriveRes = await deriveStep(env, ctx, cleanupRes.outputR2Key);
   if (deriveRes.result.status !== "ok" || !deriveRes.outputs) {
     errors.push(`derive failed: ${stepError(deriveRes.result)}`);
@@ -136,6 +152,7 @@ export async function runProductionPipeline(
     { tag: "C", cropKey: deriveRes.outputs.cropCKey },
   ];
 
+  await setPhase("refine_all_crops");
   // Refine all 4 crops in parallel — sequential was ~95s each × 4 = 6+ min
   // wallclock, which busts Cloudflare Workers' 5-min request cap. Each
   // refineWithIteration manages its own per-crop budget (passed in
@@ -198,6 +215,7 @@ export async function runProductionPipeline(
   }
 
   // ── Lifestyle ─────────────────────────────────────────────────────
+  await setPhase("lifestyle");
   if (outputs.refine_studio && budget >= 30) {
     const lifeRes = await lifestyleRender(env, ctx, outputs.refine_studio);
     if (lifeRes.status === "ok") {
@@ -210,6 +228,7 @@ export async function runProductionPipeline(
   }
 
   // ── Composites (3 spec variants) ──────────────────────────────────
+  await setPhase("composites");
   if (outputs.refine_studio) {
     const specRes = await extractSpecs(env, {
       id: product.id,
@@ -259,6 +278,7 @@ export async function runProductionPipeline(
   }
 
   // ── Banner (Shopify-only target, but always produced if requested) ──
+  await setPhase("banner");
   if (outputs.refine_studio && platforms.includes("shopify")) {
     const tenantBrand = (ctx.features as { brand_hex?: string }).brand_hex;
     // Banner background sits behind the product — keep it neutral unless
@@ -270,6 +290,7 @@ export async function runProductionPipeline(
   }
 
   // ── Slot matrix → platform_assets writes ─────────────────────────
+  await setPhase("write_slots");
   const slots = planProductionSlots({ platforms, features: ctx.features });
   let slotsWritten = 0;
   for (const target of slots) {

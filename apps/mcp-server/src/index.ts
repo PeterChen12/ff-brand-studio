@@ -243,6 +243,12 @@ app.use("/v1/webhooks", rateLimitMiddleware);
 app.use("/v1/webhooks/*", rateLimitMiddleware);
 app.use("/v1/promo-codes/*", rateLimitMiddleware);
 
+// Phase A4 — Idempotency-Key on the launch endpoint. Network retries on
+// a 2-min synchronous launch are normal; without this, every retry
+// double-charges the wallet and creates a duplicate run row.
+import { idempotencyMiddleware } from "./lib/idempotency.js";
+app.use("/v1/launches", idempotencyMiddleware());
+
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
 const UploadIntentInput = z.object({
@@ -843,6 +849,9 @@ app.post("/v1/launches", async (c) => {
       status: "pending",
       totalCostCents: 0,
       hitlInterventions: 0,
+      // Phase A2 — snapshot the predicted charge so the zombie sweeper
+      // knows the refund amount without rebuilding the prediction inputs.
+      predictedCents: prediction.total_cents,
     })
     .returning();
   const runId = runRow.id;
@@ -2376,4 +2385,50 @@ app.post("/demo/launch-sku", async (c) => {
   }
 });
 
-export default app;
+// Phase A2/A3 — scheduled handler. Runs on the cron defined in
+// wrangler.toml ("*/5 * * * *"). Best-effort: each task is independent;
+// a failure in one doesn't abort the others. Long jobs honour the cron
+// trigger's 15-min wallclock budget.
+import { sweepZombieRuns, purgeStaleIdempotencyKeys } from "./pipeline/zombie_sweeper.js";
+import { processDuePromise } from "./lib/webhooks.js";
+
+async function handleScheduled(
+  event: ScheduledEvent,
+  env: CloudflareBindings,
+  ctx: ExecutionContext
+): Promise<void> {
+  const db = createDbClient(env);
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const z = await sweepZombieRuns(db);
+        if (z.scanned > 0) {
+          console.log("[cron] zombie sweep", JSON.stringify(z));
+        }
+      } catch (err) {
+        console.error("[cron] zombie sweep failed", err);
+      }
+      try {
+        const w = await processDuePromise(db);
+        if (w.scanned > 0) {
+          console.log("[cron] webhook deliveries", JSON.stringify(w));
+        }
+      } catch (err) {
+        console.error("[cron] webhook delivery failed", err);
+      }
+      try {
+        const purged = await purgeStaleIdempotencyKeys(db);
+        if (purged > 0) {
+          console.log("[cron] idempotency keys purged", purged);
+        }
+      } catch (err) {
+        console.error("[cron] idempotency purge failed", err);
+      }
+    })()
+  );
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled: handleScheduled,
+};

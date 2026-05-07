@@ -168,9 +168,12 @@ export async function runLaunchPipeline(
   let runId: string;
   if (input.existing_run_id) {
     runId = input.existing_run_id;
+    // Phase A2 — startedAt is the deadline anchor for the zombie sweeper.
+    // We set it on the running flip so a row that's still 'pending' can't
+    // be misclassified as a zombie.
     await db
       .update(launchRuns)
-      .set({ status: "running" })
+      .set({ status: "running", startedAt: new Date() })
       .where(eq(launchRuns.id, runId));
   } else {
     const inserted = await db
@@ -182,6 +185,7 @@ export async function runLaunchPipeline(
         status: "pending",
         totalCostCents: 0,
         hitlInterventions: 0,
+        startedAt: new Date(),
       })
       .returning();
     runId = inserted[0].id;

@@ -217,14 +217,87 @@ async function deliverOne(
 }
 
 /**
- * Pulled from cron / queue (Phase M) — find every delivery that's
- * past its next_attempt_at, retry once, schedule the next attempt or
- * mark exhausted.
+ * Phase A3 — implemented. Scheduled handler picks up deliveries whose
+ * next_attempt_at is due, replays deliverOne, and either marks
+ * delivered_at on success, schedules the next backoff, or marks
+ * exhausted (no more next_attempt_at) when MAX_ATTEMPTS hit.
  */
-export async function processDuePromise(_db: DbClient): Promise<void> {
-  // Stub for Phase M. Implementation: select where next_attempt_at <= now()
-  // and delivered_at IS NULL, attempt < MAX_ATTEMPTS, deliverOne(), update.
-  return;
+export async function processDuePromise(
+  db: DbClient
+): Promise<{ scanned: number; delivered: number; failed: number; exhausted: number }> {
+  const { lte, and: dAnd, isNull: dIsNull, lt: dLt } = await import("drizzle-orm");
+  const due = await db
+    .select({
+      delivery: webhookDeliveries,
+      subscription: webhookSubscriptions,
+    })
+    .from(webhookDeliveries)
+    .innerJoin(
+      webhookSubscriptions,
+      eq(webhookDeliveries.subscriptionId, webhookSubscriptions.id)
+    )
+    .where(
+      dAnd(
+        dIsNull(webhookDeliveries.deliveredAt),
+        dLt(webhookDeliveries.attempt, MAX_ATTEMPTS),
+        lte(webhookDeliveries.nextAttemptAt, new Date())
+      )
+    )
+    .limit(50);
+
+  let delivered = 0;
+  let failed = 0;
+  let exhausted = 0;
+
+  for (const row of due) {
+    const sub = row.subscription;
+    const d = row.delivery;
+    if (sub.disabledAt) continue;
+
+    const event = d.payload as DeliveryEvent;
+    const nextAttempt = (d.attempt ?? 0) + 1;
+    const result = await deliverOne(sub, event, nextAttempt);
+
+    if (result.delivered) {
+      await db
+        .update(webhookDeliveries)
+        .set({
+          attempt: nextAttempt,
+          statusCode: result.status,
+          responseBody: result.responseBody?.slice(0, 600) ?? null,
+          deliveredAt: new Date(),
+          nextAttemptAt: null,
+        })
+        .where(eq(webhookDeliveries.id, d.id));
+      delivered += 1;
+    } else if (nextAttempt >= MAX_ATTEMPTS) {
+      await db
+        .update(webhookDeliveries)
+        .set({
+          attempt: nextAttempt,
+          statusCode: result.status,
+          responseBody: result.responseBody?.slice(0, 600) ?? null,
+          nextAttemptAt: null,
+        })
+        .where(eq(webhookDeliveries.id, d.id));
+      exhausted += 1;
+    } else {
+      const delay = ATTEMPT_DELAYS_SECONDS[nextAttempt] ?? ATTEMPT_DELAYS_SECONDS.at(-1)!;
+      const next = new Date(Date.now() + delay * 1000);
+      await db
+        .update(webhookDeliveries)
+        .set({
+          attempt: nextAttempt,
+          statusCode: result.status,
+          responseBody: result.responseBody?.slice(0, 600) ?? null,
+          nextAttemptAt: next,
+        })
+        .where(eq(webhookDeliveries.id, d.id));
+      failed += 1;
+    }
+  }
+
+  return { scanned: due.length, delivered, failed, exhausted };
 }
 
 export const WEBHOOK_RETRY_POLICY = {

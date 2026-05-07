@@ -217,12 +217,39 @@ export const launchRuns = pgTable(
     status: text("status").default("pending"),
     langfuseTraceId: text("langfuse_trace_id"),
     createdAt: timestamp("created_at").defaultNow(),
+    // Phase A2/A5: zombie sweeper deadline + granular phase visibility.
+    startedAt: timestamp("started_at"),
+    currentPhase: text("current_phase"),
+    async: boolean("async").notNull().default(false),
+    predictedCents: integer("predicted_cents"),
   },
   (t) => ({
     // P1-4 — drives /v1/launches cursor pagination + /api/launches list
     tenantCreatedIdx: index("idx_launch_runs_tenant_created").on(
       t.tenantId,
       desc(t.createdAt)
+    ),
+  })
+);
+
+// Phase A4 — idempotency keys for write endpoints. Stripe pattern:
+// client supplies `Idempotency-Key` header; same key + tenant within
+// the TTL replays the cached response instead of re-running the work.
+export const idempotencyKeys = pgTable(
+  "idempotency_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    keyHash: text("key_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    responseStatus: integer("response_status"),
+    responseBody: jsonb("response_body"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (t) => ({
+    uniqTenantKey: uniqueIndex("idempotency_keys_uniq_tenant_key").on(
+      t.tenantId,
+      t.keyHash
     ),
   })
 );
@@ -241,6 +268,8 @@ export type PlatformSpec = typeof platformSpecs.$inferSelect;
 export type NewPlatformSpec = typeof platformSpecs.$inferInsert;
 export type LaunchRun = typeof launchRuns.$inferSelect;
 export type NewLaunchRun = typeof launchRuns.$inferInsert;
+export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
+export type NewIdempotencyKey = typeof idempotencyKeys.$inferInsert;
 
 // ── Phase G: SEO copy persistence + wallet + audit ────────────────────────
 

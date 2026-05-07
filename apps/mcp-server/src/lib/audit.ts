@@ -40,7 +40,10 @@ export type AuditAction =
   | "api_key.created"
   | "api_key.revoked"
   // promo codes (testing wallet top-ups)
-  | "promo.redeem";
+  | "promo.redeem"
+  // Phase A2 — emitted by the scheduled zombie sweeper when it
+  // force-fails a stuck 'running' run and refunds the pre-charge.
+  | "launch.refund_zombie";
 
 export interface AuditEventInput {
   tenantId: string;

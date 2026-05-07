@@ -19,6 +19,13 @@ binding = "AI"
 ENVIRONMENT = "production"
 R2_PUBLIC_URL = "https://pub-db3f39e3386347d58359ba96517eec84.r2.dev"
 
+# Phase A2/A3 — scheduled handler. Every 5 min:
+#   - sweep zombie launch_runs (status=running > 10 min) and refund
+#   - retry due webhook_deliveries (next_attempt_at <= now)
+#   - purge stale idempotency_keys (created_at older than 24h)
+[triggers]
+crons = ["*/5 * * * *"]
+
 # Secrets — set with: wrangler secret put ANTHROPIC_API_KEY
 # ANTHROPIC_API_KEY, OPENAI_API_KEY, FAL_KEY
 # PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD
