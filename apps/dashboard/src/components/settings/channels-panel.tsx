@@ -23,8 +23,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-
-const CALENDLY_URL = "https://calendar.app.google/SKMgxvqGGoCbSZut8";
+import { CALENDLY_URL, ENTERPRISE_BLURB_EN } from "@/lib/enterprise";
+import { useTenant } from "@/lib/tenant-context";
 
 interface ChannelDef {
   id: "amazon" | "shopify";
@@ -62,76 +62,110 @@ const CHANNELS: ChannelDef[] = [
 ];
 
 export function ChannelsPanel() {
+  const tenant = useTenant();
+  // Single source of truth for enterprise gating: tenants.plan column
+  // (open question 3 in PHASE_B_ITERATION.md, resolved to use plan).
+  // Self-serve and starter plans see the consolidated booking card;
+  // enterprise plans see the actual integration cards (currently still
+  // "Coming soon" — Phase B-2 wires real OAuth).
+  const isEnterprise = tenant?.plan === "enterprise";
+
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <div>
-            <CardEyebrow>Channels · 销售渠道</CardEyebrow>
-            <CardTitle className="mt-1.5">Marketplace integrations</CardTitle>
-          </div>
-          <Badge variant="neutral" size="sm">
-            Enterprise
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          <p className="md-typescale-body-medium text-on-surface-variant">
-            Self-serve plan generates the Amazon-shaped + Shopify-shaped
-            outputs — image slots and listings in the right format, ready
-            to download from <a className="text-primary underline" href="/launch">Launch SKU</a> or
-            the <a className="text-primary underline" href="/library">Library</a>.
-            Auto-publish (push assets + listings to your account directly)
-            is part of the Enterprise tier; book a call below to scope
-            integration for your org.
-          </p>
-        </CardContent>
-      </Card>
+      {/* Primary CTA — single unified "Set up enterprise account ·
+          Schedule onboarding" booking card. Replaces the previous
+          intro card + per-channel disabled buttons + footer link
+          (3 separate Calendly entry points → 1). */}
+      {!isEnterprise ? (
+        <Card>
+          <CardHeader>
+            <div>
+              <CardEyebrow>Channels · 销售渠道</CardEyebrow>
+              <CardTitle className="mt-1.5">
+                Set up enterprise account
+              </CardTitle>
+            </div>
+            <Badge variant="neutral" size="sm">
+              Enterprise
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="md-typescale-body-medium text-on-surface-variant">
+              {ENTERPRISE_BLURB_EN}
+            </p>
+            <a
+              href={CALENDLY_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="h-10 px-5 rounded-m3-full bg-primary text-primary-on shadow-m3-1 md-typescale-label-large inline-flex items-center hover:shadow-m3-2 transition-shadow"
+            >
+              Schedule onboarding call →
+            </a>
+            <p className="md-typescale-body-small text-on-surface-variant/70">
+              In-person meetings welcome — let us know in the booking
+              notes and we'll come to your office.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardHeader>
+            <div>
+              <CardEyebrow>Channels · 销售渠道</CardEyebrow>
+              <CardTitle className="mt-1.5">
+                Marketplace integrations
+              </CardTitle>
+            </div>
+            <Badge variant="neutral" size="sm">
+              Enterprise · active
+            </Badge>
+          </CardHeader>
+          <CardContent>
+            <p className="md-typescale-body-medium text-on-surface-variant">
+              Connect your Seller Central or Shopify account and approved
+              assets auto-publish from the operator inbox.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {CHANNELS.map((channel) => (
-          <Card key={channel.id} className="opacity-95">
-            <CardHeader>
-              <div>
-                <CardEyebrow className="text-on-surface-variant">
-                  {channel.nameZh}
-                </CardEyebrow>
-                <CardTitle className="mt-1.5">{channel.name}</CardTitle>
-              </div>
-              <Badge variant="neutral" size="sm">
-                Not connected
-              </Badge>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="md-typescale-body-medium text-on-surface-variant">
-                {channel.blurb}
-              </p>
-              <ul className="md-typescale-body-small text-on-surface-variant/80 space-y-1.5 font-mono">
-                {channel.bullets.map((b) => (
-                  <li key={b}>· {b}</li>
-                ))}
-              </ul>
-              <div className="pt-3 border-t ff-hairline flex items-center gap-3">
-                <button
-                  type="button"
-                  disabled
-                  className="h-9 px-4 rounded-m3-full bg-surface-container border ff-hairline md-typescale-label-medium text-on-surface-variant/60 cursor-not-allowed"
-                  title="Auto-publish requires Enterprise integration"
-                >
-                  Connect — Enterprise feature
-                </button>
-                <a
-                  href={CALENDLY_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="h-9 px-4 rounded-m3-full bg-primary text-primary-on shadow-m3-1 md-typescale-label-medium inline-flex items-center hover:shadow-m3-2 transition-shadow"
-                >
-                  Schedule onboarding call →
-                </a>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      {/* Per-marketplace cards — visible only to enterprise tenants.
+          Self-serve plans don't see locked OAuth flows because they
+          don't exist (Phase B-2). For now even enterprise tenants see
+          "Coming soon" until a real adapter ships. */}
+      {isEnterprise && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {CHANNELS.map((channel) => (
+            <Card key={channel.id}>
+              <CardHeader>
+                <div>
+                  <CardEyebrow className="text-on-surface-variant">
+                    {channel.nameZh}
+                  </CardEyebrow>
+                  <CardTitle className="mt-1.5">{channel.name}</CardTitle>
+                </div>
+                <Badge variant="neutral" size="sm">
+                  Coming soon
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="md-typescale-body-medium text-on-surface-variant">
+                  {channel.blurb}
+                </p>
+                <ul className="md-typescale-body-small text-on-surface-variant/80 space-y-1.5 font-mono">
+                  {channel.bullets.map((b) => (
+                    <li key={b}>· {b}</li>
+                  ))}
+                </ul>
+                <p className="md-typescale-body-small text-on-surface-variant/70 pt-3 border-t ff-hairline">
+                  Operator-provisioned today via secure credential vault.
+                  Self-serve OAuth ships in Phase B-2.
+                </p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <Card>
         <CardHeader>

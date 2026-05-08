@@ -43,7 +43,18 @@ export type AuditAction =
   | "promo.redeem"
   // Phase A2 — emitted by the scheduled zombie sweeper when it
   // force-fails a stuck 'running' run and refunds the pre-charge.
-  | "launch.refund_zombie";
+  | "launch.refund_zombie"
+  // Phase B (B1) — inbound product ingest from a customer admin.
+  // Fires on successful POST /v1/products/ingest; idempotent re-sends
+  // do NOT re-emit. Subscribers correlate via metadata.external_id +
+  // metadata.external_source so they can match it to their own row.
+  | "product.ingested"
+  // Phase B (B3) — operator-driven asset review outcomes. Wired by
+  // POST /v1/assets/:id/approve and /v1/assets/:id/reject (F4 inbox).
+  // asset.published is emitted by marketplace adapters on success.
+  | "asset.approved"
+  | "asset.rejected"
+  | "asset.published";
 
 export interface AuditEventInput {
   tenantId: string;
@@ -64,6 +75,13 @@ const WEBHOOK_FAN_OUT: ReadonlySet<AuditAction> = new Set<AuditAction>([
   "listing.publish",
   "listing.unpublish",
   "billing.stripe_topup",
+  // Phase B (B3) — events that customer admins (e.g. buyfishingrod-admin)
+  // subscribe to so they can pull approved assets back into their own
+  // catalog without polling.
+  "product.ingested",
+  "asset.approved",
+  "asset.rejected",
+  "asset.published",
 ]);
 
 export async function auditEvent(

@@ -106,6 +106,13 @@ export const products = pgTable(
     loraUrl: text("lora_url"),
     triggerPhrase: text("trigger_phrase"),
     brandConfig: jsonb("brand_config"),
+    // Phase B (B1) — inbound integration mapping. When a customer
+    // admin (e.g. buyfishingrod-admin) sends a draft via
+    // /v1/products/ingest, we store their own product identifier here
+    // so re-sends are idempotent and webhook events back to the
+    // source can quote the customer's id, not ours.
+    externalId: text("external_id"),
+    externalSource: text("external_source"),
     createdAt: timestamp("created_at").defaultNow(),
   },
   (t) => ({
@@ -138,6 +145,24 @@ export const productVariants = pgTable("product_variants", {
   color: text("color"),
   pattern: text("pattern"),
   generatedCount: integer("generated_count").default(0),
+});
+
+// Phase B (B6) — encrypted marketplace credential storage. Empty in v1
+// (no marketplace adapters live yet); the table exists so adapter
+// implementations in B-2 can land without another migration.
+export const integrationCredentials = pgTable("integration_credentials", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  provider: text("provider").notNull(),
+  accountLabel: text("account_label"),
+  // jsonb envelope: { iv: base64, ciphertext: base64, kek_version: int }.
+  // Decryption helpers in lib/crypto.ts; never log the cleartext.
+  encryptedCredentials: jsonb("encrypted_credentials").notNull(),
+  scopes: text("scopes").array(),
+  expiresAt: timestamp("expires_at"),
+  status: text("status").notNull().default("active"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  rotatedAt: timestamp("rotated_at"),
 });
 
 export const platformAssets = pgTable(

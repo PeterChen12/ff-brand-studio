@@ -220,6 +220,8 @@ app.use("/v1/webhooks", requireTenant);
 app.use("/v1/webhooks/*", requireTenant);
 app.use("/v1/tenant", requireTenant);
 app.use("/v1/tenant/*", requireTenant);
+// Phase B (F4) — operator HITL inbox.
+app.use("/v1/inbox", requireTenant);
 app.use("/v1/promo-codes/*", requireTenant);
 
 // Phase M1 — rate limit AFTER auth so we have tenant context to scope
@@ -248,6 +250,10 @@ app.use("/v1/promo-codes/*", rateLimitMiddleware);
 // double-charges the wallet and creates a duplicate run row.
 import { idempotencyMiddleware } from "./lib/idempotency.js";
 app.use("/v1/launches", idempotencyMiddleware());
+// Phase B (B1) — same idempotency story for the inbound ingest
+// endpoint. A flaky network on the customer's side shouldn't double-
+// charge or create two products from the same draft.
+app.use("/v1/products/ingest", idempotencyMiddleware());
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -494,6 +500,290 @@ app.post("/v1/products", async (c) => {
     category: product.category,
     kind: product.kind,
   });
+});
+
+// ── Phase B (B1) — inbound ingest from a customer admin ──────────────────
+//
+// Customers (e.g. buyfishingrod-admin) already have a product row in
+// their own DB and CDN-hosted images. The dashboard form's two-step
+// upload-intent → finalize dance doesn't fit that integration mode.
+//
+// This endpoint takes the customer's external_id + a list of public
+// image URLs, fetches them server-side into R2, and creates a product
+// row tagged with (external_source, external_id) so a re-POST is
+// idempotent at the data layer (and at the wallet layer — onboard
+// only charges on a fresh insert).
+
+const IngestProductInput = z.object({
+  external_id: z.string().min(1).max(120),
+  external_source: z.string().min(1).max(60),
+  sku: z.string().min(2).max(64).optional(),
+  name_en: z.string().min(2).max(200),
+  name_zh: z.string().max(200).optional(),
+  description: z.string().max(2000).optional(),
+  category: z.string().min(2).max(80).optional(),
+  kind: z.string().min(2).max(40).optional(),
+  dimensions: z.record(z.unknown()).optional(),
+  materials: z.array(z.string()).optional(),
+  colors_hex: z.array(z.string()).optional(),
+  references: z
+    .array(
+      z.object({
+        url: z.string().url(),
+        kind: z.enum(["hero", "lifestyle", "detail", "other"]).default("other"),
+        alt: z.string().max(280).optional(),
+      })
+    )
+    .min(1)
+    .max(10),
+});
+
+const ALLOWED_REFERENCE_CONTENT_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+]);
+const MAX_REFERENCE_BYTES = 20_000_000; // matches sidecar guard
+
+async function fetchReferenceToR2(
+  env: CloudflareBindings,
+  tenantId: string,
+  productSlug: string,
+  ref: { url: string; kind: string },
+  index: number
+): Promise<{ key: string; publicUrl: string; contentType: string; bytes: number }> {
+  const { referenceUnreachable } = await import("./lib/api-error.js");
+  let res: Response;
+  try {
+    res = await fetch(ref.url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (err) {
+    throw referenceUnreachable(ref.url);
+  }
+  if (!res.ok) throw referenceUnreachable(ref.url, res.status);
+
+  const contentType = (res.headers.get("content-type") ?? "").toLowerCase().split(";")[0].trim();
+  if (!ALLOWED_REFERENCE_CONTENT_TYPES.has(contentType)) {
+    throw new ApiError(
+      422,
+      "reference_bad_content_type",
+      `Reference ${ref.url} returned content-type '${contentType}'. Allowed: jpg, png, webp.`,
+      { url: ref.url, content_type: contentType }
+    );
+  }
+  const declared = Number(res.headers.get("content-length") ?? "0");
+  if (declared && declared > MAX_REFERENCE_BYTES) {
+    throw new ApiError(
+      413,
+      "reference_too_large",
+      `Reference ${ref.url} is ${declared} bytes (cap ${MAX_REFERENCE_BYTES}).`,
+      { url: ref.url, bytes: declared }
+    );
+  }
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength > MAX_REFERENCE_BYTES) {
+    throw new ApiError(
+      413,
+      "reference_too_large",
+      `Reference ${ref.url} streamed ${buf.byteLength} bytes (cap ${MAX_REFERENCE_BYTES}).`,
+      { url: ref.url, bytes: buf.byteLength }
+    );
+  }
+  const ext = contentType === "image/png" ? "png" : contentType === "image/webp" ? "webp" : "jpg";
+  const key = `ingest/${tenantId}/${productSlug}/${Date.now()}-${index}.${ext}`;
+  await env.R2.put(key, buf, { httpMetadata: { contentType } });
+  const publicHost = (env.R2_PUBLIC_URL ?? "").replace(/\/$/, "");
+  return {
+    key,
+    publicUrl: `${publicHost}/${key}`,
+    contentType,
+    bytes: buf.byteLength,
+  };
+}
+
+app.post("/v1/products/ingest", async (c) => {
+  const body = await c.req.json();
+  const parsed = IngestProductInput.safeParse(body);
+  if (!parsed.success) {
+    const { validationError } = await import("./lib/api-error.js");
+    throw validationError("Invalid ingest payload.", undefined, parsed.error.flatten());
+  }
+  const p = parsed.data;
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+
+  const db = createDbClient(c.env);
+
+  // 1. Idempotency check at the data layer: same (tenant, source, id)?
+  //    The Idempotency-Key middleware handles in-flight network retries
+  //    inside a 24h window; this catches re-sends from a customer
+  //    admin that doesn't bother with the header (or is hitting a
+  //    different ingest server later).
+  const [existing] = await db
+    .select({ id: products.id, sku: products.sku, category: products.category, kind: products.kind })
+    .from(products)
+    .where(
+      and(
+        eq(products.tenantId, tenant.id),
+        eq(products.externalSource, p.external_source),
+        eq(products.externalId, p.external_id)
+      )
+    )
+    .limit(1);
+
+  if (existing) {
+    // Idempotent re-ingest — return the existing product, no charge.
+    return c.json(
+      {
+        product_id: existing.id,
+        sku: existing.sku,
+        category: existing.category,
+        kind: existing.kind,
+        idempotent: true,
+        billing: { onboard_charged_cents: 0 },
+      },
+      200
+    );
+  }
+
+  // 2. Charge wallet upfront (rejects on insufficient funds).
+  try {
+    await chargeWallet(db, {
+      tenantId: tenant.id,
+      cents: PRODUCT_ONBOARD_CENTS,
+      reason: "image_gen",
+      referenceType: "product",
+    });
+  } catch (err) {
+    if (err instanceof InsufficientFundsError) {
+      const { walletInsufficient } = await import("./lib/api-error.js");
+      throw walletInsufficient(err.requestedCents, err.balanceCents);
+    }
+    throw err;
+  }
+
+  // 3. Fetch each reference URL into R2 (sequential — most customers
+  //    send <=5 refs and this preserves order without a Promise.all
+  //    that could cap the worker subrequest budget on a big batch).
+  const productSlug = p.external_id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || "ingest";
+  const uploaded: Array<{ key: string; publicUrl: string; kind: string; alt?: string }> = [];
+  for (let i = 0; i < p.references.length; i++) {
+    const ref = p.references[i];
+    const r = await fetchReferenceToR2(c.env, tenant.id, productSlug, ref, i);
+    uploaded.push({ key: r.key, publicUrl: r.publicUrl, kind: ref.kind, alt: ref.alt });
+  }
+
+  // 4. Ensure seller_profiles row exists for the tenant.
+  let sellerId: string;
+  const [existingSeller] = await db
+    .select({ id: sellerProfiles.id })
+    .from(sellerProfiles)
+    .where(eq(sellerProfiles.tenantId, tenant.id))
+    .limit(1);
+  if (existingSeller) {
+    sellerId = existingSeller.id;
+  } else {
+    const [newSeller] = await db
+      .insert(sellerProfiles)
+      .values({
+        tenantId: tenant.id,
+        orgNameEn: tenant.name,
+        contactEmail: null,
+      })
+      .returning({ id: sellerProfiles.id });
+    sellerId = newSeller.id;
+  }
+
+  // 5. Derive category/kind via Sonnet if the customer didn't pass them.
+  let resolvedCategory = p.category;
+  let resolvedKind = p.kind;
+  if (!resolvedCategory || !resolvedKind) {
+    const derived = await deriveProductMetadata({
+      name: p.name_zh ?? p.name_en,
+      description: p.description ?? null,
+      anthropicKey: c.env.ANTHROPIC_API_KEY,
+    });
+    resolvedCategory = resolvedCategory ?? derived.category;
+    resolvedKind = resolvedKind ?? derived.kind;
+  }
+
+  // 6. Create product + variant + references rows.
+  const sku = p.sku ?? `${tenant.id.slice(0, 6).toUpperCase()}-${nanoid(8).toUpperCase()}`;
+  const [product] = await db
+    .insert(products)
+    .values({
+      tenantId: tenant.id,
+      sellerId,
+      sku,
+      nameEn: p.name_en,
+      nameZh: p.name_zh ?? null,
+      description: p.description?.trim() || null,
+      category: resolvedCategory!,
+      kind: resolvedKind ?? "compact_square",
+      dimensions: p.dimensions ?? null,
+      materials: p.materials ?? null,
+      colorsHex: p.colors_hex ?? null,
+      externalId: p.external_id,
+      externalSource: p.external_source,
+    })
+    .returning();
+
+  const [variant] = await db
+    .insert(productVariants)
+    .values({
+      tenantId: tenant.id,
+      productId: product.id,
+      color: null,
+      pattern: null,
+    })
+    .returning();
+
+  await db.insert(productReferences).values(
+    uploaded.map((u) => ({
+      tenantId: tenant.id,
+      productId: product.id,
+      r2Url: u.publicUrl,
+      kind: u.kind,
+      uploadedBy: actor ?? `ingest:${p.external_source}`,
+    }))
+  );
+
+  // 7. Audit + emit product.ingested webhook (B3). The audit event
+  //    auto-fans-out to subscribers because product.ingested is in
+  //    WEBHOOK_FAN_OUT (lib/audit.ts).
+  await auditEvent(db, {
+    tenantId: tenant.id,
+    actor: actor ?? null,
+    action: "product.ingested",
+    targetType: "product",
+    targetId: product.id,
+    metadata: {
+      sku,
+      external_id: p.external_id,
+      external_source: p.external_source,
+      reference_count: uploaded.length,
+      onboard_cents: PRODUCT_ONBOARD_CENTS,
+    },
+  });
+
+  return c.json(
+    {
+      product_id: product.id,
+      sku: product.sku,
+      variant_id: variant.id,
+      external_id: p.external_id,
+      external_source: p.external_source,
+      references_uploaded: uploaded.length,
+      category: product.category,
+      kind: product.kind,
+      idempotent: false,
+      billing: { onboard_charged_cents: PRODUCT_ONBOARD_CENTS },
+    },
+    201
+  );
 });
 
 // ── Phase H2 — onboarding state ──────────────────────────────────────────
@@ -1511,6 +1801,167 @@ app.delete("/v1/api-keys/:id", async (c) => {
 });
 
 // Phase K3 — approve all assets + listings for a SKU.
+// ── Phase B (F4) — operator HITL inbox endpoints ────────────────────────
+//
+// Per-asset approve/reject lets an operator triage a single image
+// without flipping every asset on the product. Per-SKU approve below
+// remains the bulk shortcut.
+//
+// On approve, we set platform_assets.status='approved' and emit
+// asset.approved (which fans out to webhook subscribers, including
+// customer admins like buyfishingrod-admin that pull the r2_url back
+// into their own catalog).
+
+app.post("/v1/assets/:id/approve", async (c) => {
+  const db = createDbClient(c.env);
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+  const assetId = c.req.param("id");
+
+  const [asset] = await db
+    .select({
+      id: platformAssets.id,
+      tenantId: platformAssets.tenantId,
+      variantId: platformAssets.variantId,
+      platform: platformAssets.platform,
+      slot: platformAssets.slot,
+      r2Url: platformAssets.r2Url,
+    })
+    .from(platformAssets)
+    .where(eq(platformAssets.id, assetId))
+    .limit(1);
+  if (!asset || !visibleTenantIds(tenant).includes(asset.tenantId)) {
+    throw new ApiError(404, "asset_not_found", "Asset not found.");
+  }
+
+  const now = new Date();
+  await db
+    .update(platformAssets)
+    .set({ status: "approved", approvedAt: now })
+    .where(eq(platformAssets.id, assetId));
+
+  // Look up parent product so the webhook payload carries external_id
+  // (lets the customer admin match without keeping a mapping table).
+  const [variantRow] = await db
+    .select({ productId: productVariants.productId })
+    .from(productVariants)
+    .where(eq(productVariants.id, asset.variantId))
+    .limit(1);
+  let externalId: string | null = null;
+  let externalSource: string | null = null;
+  let productSku: string | null = null;
+  if (variantRow) {
+    const [productRow] = await db
+      .select({
+        externalId: products.externalId,
+        externalSource: products.externalSource,
+        sku: products.sku,
+      })
+      .from(products)
+      .where(eq(products.id, variantRow.productId))
+      .limit(1);
+    if (productRow) {
+      externalId = productRow.externalId ?? null;
+      externalSource = productRow.externalSource ?? null;
+      productSku = productRow.sku;
+    }
+  }
+
+  await auditEvent(db, {
+    tenantId: asset.tenantId,
+    actor: actor ?? null,
+    action: "asset.approved",
+    targetType: "platform_asset",
+    targetId: assetId,
+    metadata: {
+      platform: asset.platform,
+      slot: asset.slot,
+      r2_url: asset.r2Url,
+      external_id: externalId,
+      external_source: externalSource,
+      sku: productSku,
+      approved_at: now.toISOString(),
+    },
+  });
+
+  return c.json({ ok: true, asset_id: assetId, approved_at: now.toISOString() });
+});
+
+app.post("/v1/assets/:id/reject", async (c) => {
+  const db = createDbClient(c.env);
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+  const assetId = c.req.param("id");
+
+  const body = await c.req.json().catch(() => ({}));
+  const reason: string | null = typeof body?.reason === "string" ? body.reason.slice(0, 500) : null;
+
+  const [asset] = await db
+    .select({
+      id: platformAssets.id,
+      tenantId: platformAssets.tenantId,
+      variantId: platformAssets.variantId,
+      platform: platformAssets.platform,
+      slot: platformAssets.slot,
+    })
+    .from(platformAssets)
+    .where(eq(platformAssets.id, assetId))
+    .limit(1);
+  if (!asset || !visibleTenantIds(tenant).includes(asset.tenantId)) {
+    throw new ApiError(404, "asset_not_found", "Asset not found.");
+  }
+
+  await db
+    .update(platformAssets)
+    .set({ status: "rejected", approvedAt: null })
+    .where(eq(platformAssets.id, assetId));
+
+  await auditEvent(db, {
+    tenantId: asset.tenantId,
+    actor: actor ?? null,
+    action: "asset.rejected",
+    targetType: "platform_asset",
+    targetId: assetId,
+    metadata: {
+      platform: asset.platform,
+      slot: asset.slot,
+      reason,
+    },
+  });
+
+  return c.json({ ok: true, asset_id: assetId, status: "rejected", reason });
+});
+
+// GET /v1/inbox — review queue. Lists runs with status='hitl_blocked'
+// for visible tenants, with a count of assets needing review per run.
+app.get("/v1/inbox", async (c) => {
+  const db = createDbClient(c.env);
+  const tenant = c.get("tenant") as Tenant;
+  const visibleIds = visibleTenantIds(tenant);
+
+  const runs = await db
+    .select({
+      id: launchRuns.id,
+      tenantId: launchRuns.tenantId,
+      productId: launchRuns.productId,
+      status: launchRuns.status,
+      createdAt: launchRuns.createdAt,
+      durationMs: launchRuns.durationMs,
+      totalCostCents: launchRuns.totalCostCents,
+    })
+    .from(launchRuns)
+    .where(
+      and(
+        inArray(launchRuns.tenantId, visibleIds),
+        eq(launchRuns.status, "hitl_blocked")
+      )
+    )
+    .orderBy(desc(launchRuns.createdAt))
+    .limit(50);
+
+  return c.json({ runs });
+});
+
 app.post("/v1/skus/:productId/approve", async (c) => {
   try {
     const db = createDbClient(c.env);
@@ -2310,6 +2761,8 @@ app.post("/demo/seo-preview", async (c) => {
     loraUrl: null,
     triggerPhrase: null,
     brandConfig: null,
+    externalId: null,
+    externalSource: null,
     createdAt: new Date(),
   };
 

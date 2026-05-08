@@ -39,6 +39,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListingCopy } from "@/components/listings/ListingCopy";
 import { cn } from "@/lib/cn";
+import { CALENDLY_URL } from "@/lib/enterprise";
 
 interface ProductRow {
   id: string;
@@ -454,17 +455,17 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                     Shopify DTC are always produced; this is a value-prop
                     statement, not a toggle. */}
                 <div>
-                  <div className="ff-stamp-label mb-2">Output formats</div>
+                  <div className="ff-stamp-label mb-2">Optimize for</div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full bg-primary-container text-primary-on-container md-typescale-label-medium">
-                      ✓ Amazon US (7 image slots)
+                      Amazon US — 7 image specs
                     </span>
                     <span className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full bg-primary-container text-primary-on-container md-typescale-label-medium">
-                      ✓ Shopify DTC (5 image slots)
+                      Shopify DTC — 5 image specs
                     </span>
                   </div>
                   <p className="md-typescale-body-small text-on-surface-variant/70 mt-1.5">
-                    Bundle download includes both formats · auto-publish requires Enterprise.
+                    Generated assets are returned to your dashboard. Direct push to Seller Central / Shopify Admin is an enterprise feature.
                   </p>
                 </div>
 
@@ -533,7 +534,9 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                     ))}
                   </div>
                   <a
-                    href="/settings?tab=channels"
+                    href={CALENDLY_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="inline-flex items-center gap-1.5 mt-2.5 px-3 h-8 rounded-m3-full md-typescale-label-medium border border-outline text-primary bg-transparent hover:bg-primary/[0.04] transition-colors duration-m3-short3"
                   >
                     Schedule onboarding call →

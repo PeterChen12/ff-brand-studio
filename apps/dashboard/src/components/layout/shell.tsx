@@ -33,9 +33,10 @@ const NAV: { href: string; label: string; sub: string; index: string }[] = [
   { href: "/products/new", label: "Add product", sub: "添加产品", index: "02" },
   { href: "/launch", label: "Launch SKU", sub: "上线产品", index: "03" },
   { href: "/library", label: "Library", sub: "资产库", index: "04" },
-  { href: "/costs", label: "Costs", sub: "成本", index: "05" },
-  { href: "/billing", label: "Billing", sub: "账户", index: "06" },
-  { href: "/settings", label: "Settings", sub: "设置", index: "07" },
+  { href: "/inbox", label: "Inbox", sub: "审核队列", index: "05" },
+  { href: "/costs", label: "Costs", sub: "成本", index: "06" },
+  { href: "/billing", label: "Billing", sub: "账户", index: "07" },
+  { href: "/settings", label: "Settings", sub: "设置", index: "08" },
 ];
 
 type HealthState = "ok" | "degraded" | "error" | "loading";
