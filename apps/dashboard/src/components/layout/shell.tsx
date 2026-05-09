@@ -95,6 +95,17 @@ function ShellInner({
   // (e.g. LaunchWizard) can read default_platforms without a second
   // /v1/me/state call.
   const [tenant, setTenant] = useState<TenantSnapshot | null>(null);
+  // Phase C · Iter 13 — language display preference. Drives whether
+  // sidebar nav labels show English only / 中文 only / both. Default
+  // "both" (backwards compatible). Read from tenant.features once it
+  // arrives.
+  const langDisplay: "en" | "zh" | "both" = (() => {
+    const raw = tenant?.features?.language_display;
+    if (raw === "en" || raw === "zh" || raw === "both") return raw;
+    return "both";
+  })();
+  const showEn = langDisplay === "en" || langDisplay === "both";
+  const showZh = langDisplay === "zh" || langDisplay === "both";
   // P1-4 — surface offline state so silent fetch failures aren't
   // misread as bugs; banner pulls down at the top until reconnect.
   const [online, setOnline] = useState<boolean>(
@@ -304,19 +315,26 @@ function ShellInner({
                   {n.index}
                 </span>
                 <span className="flex-1 min-w-0">
-                  <div className="md-typescale-label-large leading-tight">
-                    {n.label}
-                  </div>
-                  <div
-                    className={cn(
-                      "md-typescale-body-small leading-tight mt-0.5",
-                      active
-                        ? "text-primary-on-container/70"
-                        : "text-on-surface-variant/60"
-                    )}
-                  >
-                    {n.sub}
-                  </div>
+                  {showEn && (
+                    <div className="md-typescale-label-large leading-tight">
+                      {n.label}
+                    </div>
+                  )}
+                  {showZh && (
+                    <div
+                      className={cn(
+                        "md-typescale-body-small leading-tight",
+                        showEn && "mt-0.5",
+                        active
+                          ? "text-primary-on-container/70"
+                          : "text-on-surface-variant/60",
+                        // When zh-only, promote font size to match label
+                        !showEn && "md-typescale-label-large"
+                      )}
+                    >
+                      {n.sub}
+                    </div>
+                  )}
                 </span>
               </Link>
             );
@@ -512,7 +530,7 @@ function ShellInner({
                     <span className="font-mono text-[0.6875rem] tracking-stamp mr-3 text-ff-vermilion-deep">
                       {n.index}
                     </span>
-                    {n.label}
+                    {showEn ? n.label : n.sub}
                   </Link>
                 );
               })}

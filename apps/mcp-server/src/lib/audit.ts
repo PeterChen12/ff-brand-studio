@@ -54,7 +54,12 @@ export type AuditAction =
   // asset.published is emitted by marketplace adapters on success.
   | "asset.approved"
   | "asset.rejected"
-  | "asset.published";
+  | "asset.published"
+  // Phase C · Iter 11 — operator un-approve. Fires when an inbox approve
+  // action is rolled back via the dashboard's undo toast (within 30s).
+  // Webhook subscribers should treat this as cancellation of the
+  // corresponding asset.approved event (same target_id).
+  | "asset.unapproved";
 
 export interface AuditEventInput {
   tenantId: string;
@@ -82,6 +87,7 @@ const WEBHOOK_FAN_OUT: ReadonlySet<AuditAction> = new Set<AuditAction>([
   "asset.approved",
   "asset.rejected",
   "asset.published",
+  "asset.unapproved",
 ]);
 
 export async function auditEvent(

@@ -397,8 +397,20 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const canLaunch =
     !launching && !!productId && platforms.length > 0 && effectiveSufficient;
 
+  // Phase C · Iter 12 — three-step indicator. Step 1 (Pick product) is
+  // done once productId is set; Step 2 (Configure) is the active state
+  // while we're on this page; Step 3 (Launch) is done once a launch
+  // result exists. Stays static-positioned at the top of the grid so
+  // the user always has a "where am I" anchor.
+  const stepperState: ("done" | "active" | "future")[] = [
+    productId ? "done" : "active",
+    productId && !result ? "active" : productId ? "done" : "future",
+    result ? "active" : "future",
+  ];
+
   return (
     <div className="grid grid-cols-12 gap-6">
+      <LaunchStepper state={stepperState} />
       {/* ── Product picker / breadcrumb ─────────────────────────────────── */}
       <Card className="col-span-12 md-fade-in">
         <CardHeader>
@@ -761,6 +773,73 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
 }
 
 // ── Building blocks ─────────────────────────────────────────────────────
+
+// Phase C · Iter 12 — three-step horizontal stepper. Mei sees where she
+// is in the flow (Product → Configure → Launch) without inferring it
+// from the eyebrow stamps on each card.
+function LaunchStepper({
+  state,
+}: {
+  state: ("done" | "active" | "future")[];
+}) {
+  const steps = [
+    { label: "Pick product", sub: "选品" },
+    { label: "Configure", sub: "配置" },
+    { label: "Launch", sub: "启动" },
+  ];
+  return (
+    <div className="col-span-12">
+      <ol className="flex items-center gap-2 md-typescale-label-medium">
+        {steps.map((s, i) => {
+          const status = state[i] ?? "future";
+          const isLast = i === steps.length - 1;
+          return (
+            <li key={s.label} className="flex items-center gap-2 min-w-0">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[0.6875rem] font-mono",
+                  status === "done" &&
+                    "bg-tertiary text-on-tertiary",
+                  status === "active" &&
+                    "bg-primary text-primary-on shadow-m3-1",
+                  status === "future" &&
+                    "bg-surface-container text-on-surface-variant/60 border ff-hairline"
+                )}
+              >
+                {status === "done" ? "✓" : i + 1}
+              </span>
+              <span
+                className={cn(
+                  "shrink-0",
+                  status === "active"
+                    ? "text-on-surface"
+                    : "text-on-surface-variant"
+                )}
+              >
+                {s.label}
+                <span className="text-on-surface-variant/60 ml-1.5">
+                  {s.sub}
+                </span>
+              </span>
+              {!isLast && (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "h-px flex-1 min-w-[1.5rem]",
+                    state[i] === "done" || state[i] === "active"
+                      ? "bg-outline"
+                      : "bg-outline-variant"
+                  )}
+                />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
 
 // Phase C · Iter 09 — searchable product picker. Replaces the native
 // <select> that became unusable past ~50 SKUs. Filters case-insensitively

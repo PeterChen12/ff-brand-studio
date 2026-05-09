@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
 import { formatCents, friendlyStatus } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
@@ -105,6 +106,8 @@ export default function InboxClient() {
   const approveAsset = useCallback(
     async (assetId: string) => {
       setBusyAssetId(assetId);
+      const removed =
+        assets?.find((a) => a.id === assetId) ?? null;
       try {
         await apiFetch(`/v1/assets/${assetId}/approve`, { method: "POST" });
         setAssets((prev) =>
@@ -115,13 +118,40 @@ export default function InboxClient() {
           next.delete(assetId);
           return next;
         });
+        // Phase C · Iter 11 — 5-second Undo toast that calls the
+        // un-approve endpoint and re-injects the asset into the list.
+        toast.success("Approved.", {
+          duration: 5000,
+          action: removed
+            ? {
+                label: "Undo",
+                onClick: async () => {
+                  try {
+                    await apiFetch(`/v1/assets/${assetId}/un-approve`, {
+                      method: "POST",
+                    });
+                    setAssets((prev) =>
+                      prev ? [removed, ...prev] : [removed]
+                    );
+                    toast.message("Undone.");
+                  } catch (e) {
+                    toast.error(
+                      e instanceof Error
+                        ? `Undo failed: ${e.message}`
+                        : "Undo failed"
+                    );
+                  }
+                },
+              }
+            : undefined,
+        });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setBusyAssetId(null);
       }
     },
-    [apiFetch]
+    [apiFetch, assets]
   );
 
   const submitReject = useCallback(async () => {

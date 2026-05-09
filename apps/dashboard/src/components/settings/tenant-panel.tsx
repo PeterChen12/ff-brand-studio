@@ -44,6 +44,8 @@ export function TenantPanel() {
   const [defaultQuality, setDefaultQuality] = useState<
     "budget" | "balanced" | "premium"
   >("balanced");
+  // Phase C · Iter 13 — sidebar language toggle.
+  const [langDisplay, setLangDisplay] = useState<"en" | "zh" | "both">("both");
 
   useEffect(() => {
     apiFetch<MeStateResponse>("/v1/me/state")
@@ -73,6 +75,13 @@ export function TenantPanel() {
         ) {
           setDefaultQuality(f.default_quality_preset);
         }
+        if (
+          f.language_display === "en" ||
+          f.language_display === "zh" ||
+          f.language_display === "both"
+        ) {
+          setLangDisplay(f.language_display);
+        }
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [apiFetch]);
@@ -92,6 +101,7 @@ export function TenantPanel() {
         amazon_a_plus_grid: amazonAPlusGrid,
         default_output_langs: defaultLangs,
         default_quality_preset: defaultQuality,
+        language_display: langDisplay,
       };
       if (rateLimit.trim()) {
         const n = parseInt(rateLimit.trim(), 10);
@@ -197,6 +207,44 @@ export function TenantPanel() {
             </div>
             <span className="md-typescale-body-small text-on-surface-variant block mt-1">
               Picked once here; the launch wizard pre-selects this. Tweakable per-launch.
+            </span>
+          </div>
+
+          <div>
+            <label className="md-typescale-label-medium block mb-2">
+              Display language
+            </label>
+            <div role="radiogroup" className="flex flex-wrap gap-2">
+              {(
+                [
+                  { id: "en" as const, label: "English only" },
+                  { id: "zh" as const, label: "中文 only" },
+                  { id: "both" as const, label: "Both" },
+                ] as const
+              ).map((choice) => {
+                const active = langDisplay === choice.id;
+                return (
+                  <button
+                    key={choice.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setLangDisplay(choice.id)}
+                    className={[
+                      "h-9 px-4 rounded-m3-full md-typescale-label-medium border ff-hairline transition-colors",
+                      active
+                        ? "bg-primary text-primary-on border-transparent"
+                        : "bg-surface-container hover:bg-surface-container-high",
+                    ].join(" ")}
+                  >
+                    {active ? "✓ " : ""}
+                    {choice.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="md-typescale-body-small text-on-surface-variant block mt-1">
+              Controls whether sidebar nav shows English, Chinese, or both labels.
             </span>
           </div>
 

@@ -2013,6 +2013,74 @@ const BulkApproveInput = z.object({
   asset_ids: z.array(z.string().uuid()).min(1).max(50),
 });
 
+// Phase C · Iter 11 — un-approve an asset. Window-bounded undo for the
+// inbox approve action; the dashboard surfaces a 5-second toast with
+// an Undo button. Refuses to un-approve if the approval is older than
+// UNAPPROVE_WINDOW_MS (30 s) so this can't be abused as a "publish
+// then quietly retract" workflow.
+const UNAPPROVE_WINDOW_MS = 30_000;
+
+app.post("/v1/assets/:id/un-approve", async (c) => {
+  const db = createDbClient(c.env);
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+  const assetId = c.req.param("id");
+
+  const [asset] = await db
+    .select({
+      id: platformAssets.id,
+      tenantId: platformAssets.tenantId,
+      variantId: platformAssets.variantId,
+      platform: platformAssets.platform,
+      slot: platformAssets.slot,
+      status: platformAssets.status,
+      approvedAt: platformAssets.approvedAt,
+    })
+    .from(platformAssets)
+    .where(eq(platformAssets.id, assetId))
+    .limit(1);
+  if (!asset || !visibleTenantIds(tenant).includes(asset.tenantId)) {
+    throw new ApiError(404, "asset_not_found", "Asset not found.");
+  }
+  if (asset.status !== "approved") {
+    throw new ApiError(
+      409,
+      "not_approved",
+      "Asset is not in approved state — nothing to undo."
+    );
+  }
+  if (asset.approvedAt) {
+    const elapsed = Date.now() - asset.approvedAt.getTime();
+    if (elapsed > UNAPPROVE_WINDOW_MS) {
+      throw new ApiError(
+        410,
+        "undo_window_expired",
+        `Undo window (${UNAPPROVE_WINDOW_MS / 1000}s) has elapsed; reject + regenerate instead.`
+      );
+    }
+  }
+
+  await db
+    .update(platformAssets)
+    .set({ status: "draft", approvedAt: null })
+    .where(eq(platformAssets.id, assetId));
+
+  await auditEvent(db, {
+    tenantId: asset.tenantId,
+    actor: actor ?? null,
+    action: "asset.unapproved",
+    targetType: "platform_asset",
+    targetId: assetId,
+    metadata: {
+      platform: asset.platform,
+      slot: asset.slot,
+      undone_at: new Date().toISOString(),
+    },
+  });
+
+  return c.json({ ok: true, asset_id: assetId, status: "draft" });
+});
+
 app.post("/v1/inbox/bulk-approve", async (c) => {
   const tenant = c.get("tenant") as Tenant;
   const actor = c.get("actor") as string | undefined;
