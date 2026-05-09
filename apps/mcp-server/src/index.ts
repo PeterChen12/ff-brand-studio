@@ -210,6 +210,10 @@ app.use("/v1/products", requireTenant);
 app.use("/v1/products/*", requireTenant);
 app.use("/v1/me/*", requireTenant);
 app.use("/v1/billing/*", requireTenant);
+// Phase C · Iter 03 — gate the tenant-prefs PATCH behind tenant auth.
+// Mounted with the rest of /v1/* gates rather than next to the route
+// so middleware fires before the handler is matched.
+app.use("/v1/tenants/me/*", requireTenant);
 app.use("/v1/audit", requireTenant);
 app.use("/v1/listings/*", requireTenant);
 app.use("/v1/assets/*", requireTenant);
@@ -855,8 +859,6 @@ app.patch("/v1/tenants/me/preferences", async (c) => {
     .where(eq(tenants.id, tenant.id));
   return c.json({ ok: true, features: merged });
 });
-
-app.use("/v1/tenants/me/*", requireTenant);
 
 // ── Phase H3 — Stripe top-up checkout session ────────────────────────────
 
