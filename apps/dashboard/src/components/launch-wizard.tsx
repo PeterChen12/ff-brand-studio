@@ -39,7 +39,6 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListingCopy } from "@/components/listings/ListingCopy";
 import { cn } from "@/lib/cn";
-import { CALENDLY_URL } from "@/lib/enterprise";
 
 interface ProductRow {
   id: string;
@@ -92,6 +91,12 @@ interface LaunchResult {
       rating: Rating;
       iterations: number;
       cost_cents: number;
+      grounding?: {
+        rating: "GROUNDED" | "PARTIALLY_GROUNDED" | "UNGROUNDED";
+        ungrounded_claims: string[];
+        confidence?: number;
+        source?: "ai" | "fallback";
+      } | null;
     }>;
   };
 }
@@ -144,25 +149,36 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // replaces the dropdown with a retry block — see Bug 4 fix.
   const [productNotice, setProductNotice] = useState<string | null>(null);
   const [productId, setProductId] = useState<string | null>(seedProductId);
-  // Issue E — both marketplaces are always generated (the value prop is
-  // a compliance-shaped bundle covering Amazon US + Shopify DTC). The
-  // only knob the operator turns is which language(s) to render copy
-  // in. Auto-publish to Seller Central / Shopify Admin lives behind
-  // the Enterprise tier and is rendered as a locked panel below.
+  // Phase C · Iteration 02 — marketplace selection becomes real. Mei
+  // (the marketing PM persona) picks which marketplaces she actually
+  // sells on; we generate only those. Defaults to both for backwards
+  // compat. Deselecting both is refused with a soft warning.
   const [outputLangs, setOutputLangs] = useState<SeoLang[]>(["en"]);
-  // Stable identity so the cost-preview useCallback can list them in
-  // its dep array without refiring on every render.
-  const platforms = useMemo<("amazon" | "shopify")[]>(
-    () => ["amazon", "shopify"],
-    []
-  );
+  const [platforms, setPlatforms] = useState<("amazon" | "shopify")[]>([
+    "amazon",
+    "shopify",
+  ]);
+  const togglePlatform = useCallback((p: "amazon" | "shopify") => {
+    setPlatforms((prev) => {
+      if (prev.includes(p)) {
+        const next = prev.filter((x) => x !== p);
+        if (next.length === 0) return prev; // refuse deselect-all
+        return next;
+      }
+      return [...prev, p];
+    });
+  }, []);
   const surfaces = useMemo(
     () =>
-      outputLangs.flatMap((lang) => [
-        { surface: "amazon-us" as const, language: lang },
-        { surface: "shopify" as const, language: lang },
-      ]),
-    [outputLangs]
+      outputLangs.flatMap((lang) =>
+        platforms.map((p) => ({
+          surface: (p === "amazon" ? "amazon-us" : "shopify") as
+            | "amazon-us"
+            | "shopify",
+          language: lang,
+        }))
+      ),
+    [outputLangs, platforms]
   );
   // Issue 8 — model-routing preset. budget/balanced/premium changes
   // the per-image price (35¢/50¢/70¢) and downstream model selection
@@ -170,7 +186,9 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const [qualityPreset, setQualityPreset] = useState<
     "budget" | "balanced" | "premium"
   >("balanced");
-  const [dryRun, setDryRun] = useState(true);
+  // Phase C · Iteration 02 — full-run is the default. First-time users
+  // running with dryRun=true got no images and didn't know why.
+  const [dryRun, setDryRun] = useState(false);
 
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -448,24 +466,62 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
           <form onSubmit={handleLaunch} className="flex flex-col gap-6">
             <ConfigRow
               label="Marketplaces"
-              sub="Both formats always generated"
+              sub="Pick where you sell · 选择销售渠道"
             >
               <div className="flex flex-col gap-5">
-                {/* Output formats — info-only chips. Both Amazon US +
-                    Shopify DTC are always produced; this is a value-prop
-                    statement, not a toggle. */}
+                {/* Phase C · Iteration 02 — real toggle pills. Click to
+                    select/deselect; deselect-all is refused (need ≥1). */}
                 <div>
-                  <div className="ff-stamp-label mb-2">Optimize for</div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full bg-primary-container text-primary-on-container md-typescale-label-medium">
-                      Amazon US — 7 image specs
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full bg-primary-container text-primary-on-container md-typescale-label-medium">
-                      Shopify DTC — 5 image specs
-                    </span>
+                  <div className="ff-stamp-label mb-2">Generate for</div>
+                  <div role="group" className="flex flex-wrap items-center gap-2">
+                    {(
+                      [
+                        { id: "amazon" as const, label: "Amazon US", spec: "7 image specs" },
+                        { id: "shopify" as const, label: "Shopify DTC", spec: "5 image specs" },
+                      ]
+                    ).map((mkt) => {
+                      const active = platforms.includes(mkt.id);
+                      const wouldRemoveLast = active && platforms.length === 1;
+                      return (
+                        <button
+                          key={mkt.id}
+                          type="button"
+                          role="checkbox"
+                          aria-checked={active}
+                          aria-disabled={wouldRemoveLast}
+                          onClick={() => togglePlatform(mkt.id)}
+                          title={
+                            wouldRemoveLast
+                              ? "At least one marketplace required"
+                              : active
+                                ? "Click to remove"
+                                : "Click to add"
+                          }
+                          className={cn(
+                            "inline-flex items-center gap-2 px-3 h-9 rounded-m3-full md-typescale-label-medium border transition-colors duration-m3-short3",
+                            active
+                              ? "bg-primary-container text-primary-on-container border-primary"
+                              : "border-outline-variant text-on-surface-variant bg-surface-container hover:bg-surface-container-high",
+                            wouldRemoveLast && "cursor-not-allowed opacity-70"
+                          )}
+                        >
+                          <span aria-hidden="true">{active ? "✓" : "+"}</span>
+                          <span>{mkt.label}</span>
+                          <span className="text-on-surface-variant/70 text-[0.6875rem]">
+                            {mkt.spec}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                   <p className="md-typescale-body-small text-on-surface-variant/70 mt-1.5">
-                    Generated assets are returned to your dashboard. Direct push to Seller Central / Shopify Admin is an enterprise feature.
+                    Auto-publish to Seller Central / Shopify Admin is an enterprise feature —{" "}
+                    <a
+                      href="/settings?tab=channels"
+                      className="text-primary hover:underline"
+                    >
+                      set up in Settings · Channels →
+                    </a>
                   </p>
                 </div>
 
@@ -504,43 +560,6 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                       );
                     })}
                   </div>
-                </div>
-
-                {/* Auto-publish — locked Enterprise panel. Cards are
-                    visibly greyed; CTA opens the channels settings page
-                    where the Calendly link lives. */}
-                <div>
-                  <div className="ff-stamp-label mb-2 flex items-center gap-1.5">
-                    🔒 Auto-publish · Enterprise
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {[
-                      { label: "Push to Seller Central", sub: "amazon · seller-central.amazon.com" },
-                      { label: "Push to Shopify Admin", sub: "shopify · admin.shopify.com" },
-                    ].map((item) => (
-                      <div
-                        key={item.label}
-                        aria-disabled="true"
-                        className="flex flex-col gap-1 px-4 py-3 rounded-m3-md border border-dashed border-outline-variant bg-surface-container/40 opacity-60"
-                      >
-                        <div className="md-typescale-title-small leading-tight flex items-center gap-1.5">
-                          <span aria-hidden="true">🔒</span>
-                          {item.label}
-                        </div>
-                        <div className="md-typescale-body-small text-on-surface-variant font-mono">
-                          {item.sub}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <a
-                    href={CALENDLY_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 mt-2.5 px-3 h-8 rounded-m3-full md-typescale-label-medium border border-outline text-primary bg-transparent hover:bg-primary/[0.04] transition-colors duration-m3-short3"
-                  >
-                    Schedule onboarding call →
-                  </a>
                 </div>
               </div>
             </ConfigRow>
@@ -592,14 +611,14 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
 
             <ConfigRow
               label="Image generation"
-              sub={dryRun ? "Skip — SEO only" : "Generate images via FAL pipeline"}
+              sub={dryRun ? "Preview only · free" : "Generate images · charges wallet"}
             >
               <Toggle
                 on={!dryRun}
                 onChange={(next) => setDryRun(!next)}
-                offLabel="Dry run · SEO only"
-                onLabel="Full run · images + SEO"
-                offHint="Free of FAL spend; SEO surfaces still run."
+                offLabel="Preview only · free"
+                onLabel="Generate images · charges wallet"
+                offHint="Skip image generation; SEO listing copy still runs."
                 onHint="Charges per slot per the breakdown on the right."
               />
             </ConfigRow>
@@ -1229,6 +1248,7 @@ function ResultPanelImpl({
                     surface={s.surface}
                     language={s.language}
                     copy={s.copy}
+                    grounding={s.grounding ?? null}
                   />
                 </div>
               ))}

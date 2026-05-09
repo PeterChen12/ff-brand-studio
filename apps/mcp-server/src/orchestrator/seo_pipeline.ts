@@ -103,6 +103,15 @@ export interface SeoSurfaceResult {
   metrics: Record<string, unknown>;
   iterations: number;
   cost_cents: number;
+  /** Phase C · Iteration 01 — claims-grounding judge output. Set by
+   *  the launch pipeline AFTER seo runs but BEFORE results are returned.
+   *  null = grounding never ran (no anthropic key, no copy). */
+  grounding?: {
+    rating: "GROUNDED" | "PARTIALLY_GROUNDED" | "UNGROUNDED";
+    ungrounded_claims: string[];
+    confidence: number;
+    source: "ai" | "fallback";
+  } | null;
 }
 
 export interface SeoPipelineResult {

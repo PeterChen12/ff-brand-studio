@@ -309,9 +309,10 @@ const ProductCreateInput = z.object({
   sku: z.string().min(2).max(64).optional(),
   name_en: z.string().min(2).max(200),
   name_zh: z.string().max(200).optional(),
-  // Issue 2 — optional long-form description. Cap matches Amazon
-  // listing-description max so SEO can use it verbatim where needed.
-  description: z.string().max(2000).optional(),
+  // Phase C · Iteration 04 — raised from 2000 to 10000 so marketers can
+  // paste full supplier spec sheets. Description text is the strongest
+  // input signal for SEO copy quality and the claims-grounding judge.
+  description: z.string().max(10000).optional(),
   // Issue 3 — category and kind are now optional. When the dashboard
   // form omits them we derive both server-side via Sonnet (see
   // deriveProductMetadata). Operators can still pass values manually
@@ -520,7 +521,7 @@ const IngestProductInput = z.object({
   sku: z.string().min(2).max(64).optional(),
   name_en: z.string().min(2).max(200),
   name_zh: z.string().max(200).optional(),
-  description: z.string().max(2000).optional(),
+  description: z.string().max(10000).optional(),
   category: z.string().min(2).max(80).optional(),
   kind: z.string().min(2).max(40).optional(),
   dimensions: z.record(z.unknown()).optional(),

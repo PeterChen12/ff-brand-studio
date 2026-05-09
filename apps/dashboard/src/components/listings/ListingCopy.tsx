@@ -20,17 +20,28 @@
 
 import { memo, useState } from "react";
 
+interface GroundingInfo {
+  rating: "GROUNDED" | "PARTIALLY_GROUNDED" | "UNGROUNDED";
+  ungrounded_claims: string[];
+  confidence?: number;
+  source?: "ai" | "fallback";
+}
+
 interface ListingCopyProps {
   surface: string;
   language: string;
   copy: Record<string, unknown> | null;
+  /** Phase C · Iteration 01 — output of the claims-grounding judge.
+   *  When present and non-GROUNDED, surfaces a yellow callout above
+   *  the copy listing the AI-flagged unsupported claims. */
+  grounding?: GroundingInfo | null;
 }
 
 // P2-4 — memoized so cost-preview ticks in launch-wizard don't force
 // re-renders of every surface card on every keystroke. Surface + copy
 // shallow-compare correctly: copy is the same Record reference until
 // the next /v1/launches result arrives.
-function ListingCopyImpl({ surface, copy }: ListingCopyProps) {
+function ListingCopyImpl({ surface, copy, grounding }: ListingCopyProps) {
   if (!copy) {
     return (
       <div className="md-typescale-body-small text-on-surface-variant font-mono">
@@ -39,13 +50,53 @@ function ListingCopyImpl({ surface, copy }: ListingCopyProps) {
     );
   }
 
-  if (surface === "amazon-us") {
-    return <AmazonCopy copy={copy} />;
-  }
-  if (surface === "shopify") {
-    return <ShopifyCopy copy={copy} />;
-  }
-  return <GenericJsonCopy copy={copy} />;
+  return (
+    <>
+      <GroundingCallout grounding={grounding ?? null} />
+      {surface === "amazon-us" ? (
+        <AmazonCopy copy={copy} />
+      ) : surface === "shopify" ? (
+        <ShopifyCopy copy={copy} />
+      ) : (
+        <GenericJsonCopy copy={copy} />
+      )}
+    </>
+  );
+}
+
+function GroundingCallout({ grounding }: { grounding: GroundingInfo | null }) {
+  if (!grounding) return null;
+  if (grounding.rating === "GROUNDED") return null;
+  const isHigh = grounding.rating === "UNGROUNDED";
+  return (
+    <div
+      className={[
+        "mt-3 rounded-m3-md border px-4 py-3 md-typescale-body-small",
+        isHigh
+          ? "border-error/40 bg-error-container/30"
+          : "border-ff-amber/40 bg-ff-amber/10",
+      ].join(" ")}
+      role={isHigh ? "alert" : "status"}
+    >
+      <div className="md-typescale-label-medium mb-1.5">
+        {isHigh
+          ? "AI flagged unsupported claims — verify before publishing"
+          : "AI flagged a few claims worth double-checking"}
+      </div>
+      {grounding.ungrounded_claims.length > 0 ? (
+        <ul className="space-y-0.5 list-disc list-inside text-on-surface-variant">
+          {grounding.ungrounded_claims.map((claim) => (
+            <li key={claim}>{claim}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-on-surface-variant">
+          The judge couldn't enumerate specific claims; review the copy by
+          hand or regenerate with a richer source description.
+        </p>
+      )}
+    </div>
+  );
 }
 
 export const ListingCopy = memo(ListingCopyImpl);

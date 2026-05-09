@@ -299,17 +299,24 @@ export default function NewProductPageInner() {
                   className="w-full px-4 py-3 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary resize-y"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  maxLength={2000}
-                  rows={5}
-                  placeholder="What it does, materials, key features, what's in the box. The richer the input, the sharper the generated SEO copy. 描述产品功能、材质、卖点、包装。详细的输入能让生成的SEO文案更精准。"
+                  maxLength={10000}
+                  rows={6}
+                  placeholder="What it does, materials, key features, what's in the box. The richer the input, the sharper the generated SEO copy. Paste a full supplier spec sheet if you have one — we use everything. 描述产品功能、材质、卖点、包装。详细的输入能让生成的SEO文案更精准。"
                 />
                 <div className="flex items-baseline justify-between mt-1">
                   <span className="md-typescale-body-small text-on-surface-variant">
-                    Optional but strongly recommended for high-quality
-                    listings. Up to 2000 characters.
+                    Optional but strongly recommended. Paste your full
+                    supplier spec sheet — up to 10,000 characters.
                   </span>
-                  <span className="md-typescale-body-small font-mono text-on-surface-variant/60 tabular-nums">
-                    {description.length} / 2000
+                  <span
+                    className={cn(
+                      "md-typescale-body-small font-mono tabular-nums",
+                      description.length > 9500
+                        ? "text-ff-amber"
+                        : "text-on-surface-variant/60"
+                    )}
+                  >
+                    {description.length.toLocaleString()} / 10,000
                   </span>
                 </div>
               </Field>

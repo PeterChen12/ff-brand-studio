@@ -34,6 +34,11 @@ import {
   type Product,
 } from "../db/schema.js";
 import { checkBatchConsistency } from "../compliance/batch_consistency.js";
+import {
+  checkClaimsGrounding,
+  combineRating,
+  type ClaimsGroundingResult,
+} from "../lib/claims-grounding.js";
 import { getLangfuse } from "../lib/langfuse.js";
 import type Langfuse from "langfuse";
 import { planSkuLaunch, type LaunchPlatform, type PlannedWork } from "./planner.js";
@@ -52,6 +57,7 @@ import { runEvaluatorOptimizer } from "./evaluator_optimizer.js";
 import {
   runSeoPipeline,
   type SeoPipelineResult,
+  type SeoSurfaceResult,
   type SeoSurfaceSpec,
 } from "./seo_pipeline.js";
 
@@ -664,7 +670,61 @@ export async function runLaunchPipeline(
       // P1-5 — track persist failures so we can demote the run status to
       // hitl_blocked (the dashboard then shows "X of Y listings saved" so
       // the operator triages instead of seeing silently-missing rows).
+      //
+      // Phase C · Iteration 01 — claims-grounding pass. After SEO copy is
+      // generated but before persistence, ask Haiku 4.5 whether each surface
+      // contains factual claims not supported by the source product. If
+      // UNGROUNDED, downgrade the rating so the run lands in HITL inbox.
+      let groundingCostCents = 0;
       for (const surface of seoResult.surfaces) {
+        let grounding: ClaimsGroundingResult | null = null;
+        if (input.anthropic_api_key && surface.copy) {
+          try {
+            grounding = await checkClaimsGrounding({
+              source: {
+                name: product.nameEn ?? product.nameZh ?? "",
+                description: product.description ?? null,
+                category: product.category ?? null,
+              },
+              generated: {
+                surface: surface.surface,
+                language: surface.language,
+                copy: surface.copy as Record<string, unknown>,
+              },
+              anthropicKey: input.anthropic_api_key,
+            });
+            groundingCostCents += grounding.costCents;
+            if (
+              grounding.rating === "UNGROUNDED" ||
+              grounding.rating === "PARTIALLY_GROUNDED"
+            ) {
+              notes.push(
+                `claims_grounding ${surface.surface}:${surface.language} → ${grounding.rating} (${grounding.ungroundedClaims.length} flagged)`
+              );
+            }
+          } catch (groundErr) {
+            notes.push(
+              `claims_grounding failed for ${surface.surface}:${surface.language} — ${
+                groundErr instanceof Error ? groundErr.message : String(groundErr)
+              }`
+            );
+          }
+        }
+        const finalRating = grounding
+          ? combineRating(surface.rating ?? null, grounding.rating)
+          : surface.rating ?? null;
+        // Mutate the surface object so the response carries grounding back
+        // to the dashboard, where ListingCopy renders the callout.
+        if (grounding) {
+          (surface as SeoSurfaceResult).rating =
+            finalRating as SeoSurfaceResult["rating"];
+          (surface as SeoSurfaceResult).grounding = {
+            rating: grounding.rating,
+            ungrounded_claims: grounding.ungroundedClaims,
+            confidence: grounding.confidence,
+            source: grounding.source,
+          };
+        }
         try {
           await db
             .insert(platformListings)
@@ -676,10 +736,18 @@ export async function runLaunchPipeline(
               copy: (surface.copy ?? {}) as Record<string, unknown>,
               flags: surface.flags as unknown as Record<string, unknown>[],
               violations: surface.violations as unknown as string[],
-              rating: surface.rating ?? null,
+              rating: finalRating,
               iterations: surface.iterations,
               costCents: Math.round(surface.cost_cents),
               status: "draft",
+              grounding: grounding
+                ? ({
+                    rating: grounding.rating,
+                    ungrounded_claims: grounding.ungroundedClaims,
+                    confidence: grounding.confidence,
+                    source: grounding.source,
+                  } as Record<string, unknown>)
+                : null,
               updatedAt: new Date(),
             })
             .onConflictDoUpdate({
@@ -692,9 +760,17 @@ export async function runLaunchPipeline(
                 copy: (surface.copy ?? {}) as Record<string, unknown>,
                 flags: surface.flags as unknown as Record<string, unknown>[],
                 violations: surface.violations as unknown as string[],
-                rating: surface.rating ?? null,
+                rating: finalRating,
                 iterations: surface.iterations,
                 costCents: Math.round(surface.cost_cents),
+                grounding: grounding
+                  ? ({
+                      rating: grounding.rating,
+                      ungrounded_claims: grounding.ungroundedClaims,
+                      confidence: grounding.confidence,
+                      source: grounding.source,
+                    } as Record<string, unknown>)
+                  : null,
                 updatedAt: new Date(),
               },
             });
@@ -707,6 +783,10 @@ export async function runLaunchPipeline(
             }`
           );
         }
+      }
+      if (groundingCostCents > 0) {
+        seoCostCents += groundingCostCents;
+        notes.push(`claims_grounding total → ${groundingCostCents}¢`);
       }
       // Honor the run-level cost cap retroactively.
       if (
