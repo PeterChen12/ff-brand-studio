@@ -39,6 +39,11 @@ export function TenantPanel() {
   const [defaultPlatforms, setDefaultPlatforms] = useState<string[]>(["amazon", "shopify"]);
   const [amazonAPlusGrid, setAmazonAPlusGrid] = useState(false);
   const [rateLimit, setRateLimit] = useState<string>("");
+  // Phase C · Iteration 03 — listing-defaults the marketer sets once.
+  const [defaultLangs, setDefaultLangs] = useState<("en" | "zh")[]>(["en"]);
+  const [defaultQuality, setDefaultQuality] = useState<
+    "budget" | "balanced" | "premium"
+  >("balanced");
 
   useEffect(() => {
     apiFetch<MeStateResponse>("/v1/me/state")
@@ -53,6 +58,21 @@ export function TenantPanel() {
         }
         if (typeof f.amazon_a_plus_grid === "boolean") setAmazonAPlusGrid(f.amazon_a_plus_grid);
         if (typeof f.rate_limit_per_min === "number") setRateLimit(String(f.rate_limit_per_min));
+        if (
+          Array.isArray(f.default_output_langs) &&
+          f.default_output_langs.every(
+            (l: unknown) => l === "en" || l === "zh"
+          )
+        ) {
+          setDefaultLangs(f.default_output_langs as ("en" | "zh")[]);
+        }
+        if (
+          f.default_quality_preset === "budget" ||
+          f.default_quality_preset === "balanced" ||
+          f.default_quality_preset === "premium"
+        ) {
+          setDefaultQuality(f.default_quality_preset);
+        }
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [apiFetch]);
@@ -70,6 +90,8 @@ export function TenantPanel() {
         brand_hex: brandHex,
         default_platforms: defaultPlatforms,
         amazon_a_plus_grid: amazonAPlusGrid,
+        default_output_langs: defaultLangs,
+        default_quality_preset: defaultQuality,
       };
       if (rateLimit.trim()) {
         const n = parseInt(rateLimit.trim(), 10);
@@ -125,6 +147,93 @@ export function TenantPanel() {
             <dt className="text-on-surface-variant">Tenant ID</dt>
             <dd className="font-mono text-[0.75rem]">{tenant.id}</dd>
           </dl>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <CardEyebrow>Listing defaults · 默认</CardEyebrow>
+            <CardTitle className="mt-1.5">
+              Applied to every new listing
+            </CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div>
+            <label className="md-typescale-label-medium block mb-2">
+              Output language
+            </label>
+            <div role="radiogroup" className="flex flex-wrap gap-2">
+              {(
+                [
+                  { id: "en", label: "English only", langs: ["en"] as ("en" | "zh")[] },
+                  { id: "zh", label: "中文 only", langs: ["zh"] as ("en" | "zh")[] },
+                  { id: "both", label: "Both languages", langs: ["en", "zh"] as ("en" | "zh")[] },
+                ] as const
+              ).map((choice) => {
+                const active =
+                  defaultLangs.length === choice.langs.length &&
+                  choice.langs.every((l) => defaultLangs.includes(l));
+                return (
+                  <button
+                    key={choice.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setDefaultLangs([...choice.langs])}
+                    className={[
+                      "h-9 px-4 rounded-m3-full md-typescale-label-medium border ff-hairline transition-colors",
+                      active
+                        ? "bg-primary text-primary-on border-transparent"
+                        : "bg-surface-container hover:bg-surface-container-high",
+                    ].join(" ")}
+                  >
+                    {active ? "✓ " : ""}
+                    {choice.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="md-typescale-body-small text-on-surface-variant block mt-1">
+              Picked once here; the launch wizard pre-selects this. Tweakable per-launch.
+            </span>
+          </div>
+
+          <div>
+            <label className="md-typescale-label-medium block mb-2">
+              Quality preset
+            </label>
+            <div role="radiogroup" className="flex flex-wrap gap-2">
+              {(
+                [
+                  { id: "balanced", label: "Recommended · 推荐", price: 50 },
+                  { id: "premium", label: "Best performing · 最佳画质", price: 70 },
+                  { id: "budget", label: "Most cost saving · 经济", price: 35 },
+                ] as const
+              ).map((q) => {
+                const active = defaultQuality === q.id;
+                return (
+                  <button
+                    key={q.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setDefaultQuality(q.id)}
+                    className={[
+                      "h-9 px-4 rounded-m3-full md-typescale-label-medium border ff-hairline transition-colors",
+                      active
+                        ? "bg-primary text-primary-on border-transparent"
+                        : "bg-surface-container hover:bg-surface-container-high",
+                    ].join(" ")}
+                  >
+                    {active ? "✓ " : ""}
+                    {q.label} · ${(q.price / 100).toFixed(2)}/img
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </CardContent>
       </Card>
 

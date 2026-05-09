@@ -32,6 +32,7 @@ import {
 } from "@/lib/uploader";
 import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
+import { UploadModeTabs } from "@/components/products/upload-mode-tabs";
 import {
   Card,
   CardContent,
@@ -329,14 +330,15 @@ export default function BulkUploadPageInner() {
   return (
     <>
       <PageHeader
-        eyebrow="Bulk add · 批量添加"
-        title="Onboard a batch of SKUs"
+        eyebrow="Bulk upload · 批量添加"
+        title="Onboard a batch of products"
         description={`Drop a folder where each subfolder is one product. We charge $${(
           ONBOARD_FEE_CENTS / 100
         ).toFixed(
           2
-        )} per onboarded SKU. Cap: ${MAX_PRODUCTS} products and 100 MB total per batch.`}
+        )} per onboarded product. Cap: ${MAX_PRODUCTS} products and 100 MB total per batch.`}
       />
+      <UploadModeTabs />
 
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto space-y-6">
         {/* Folder picker + format help */}

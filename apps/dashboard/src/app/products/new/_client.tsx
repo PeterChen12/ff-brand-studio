@@ -7,7 +7,7 @@
  * land in /launch?product_id=...
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
 import { toast } from "sonner";
@@ -25,6 +25,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
+import { UploadModeTabs } from "@/components/products/upload-mode-tabs";
 import { cn } from "@/lib/cn";
 
 interface PendingFile {
@@ -54,10 +55,36 @@ export default function NewProductPageInner() {
   // is preserved without migration; for Chinese inputs we duplicate
   // the value into name_en too so the NOT NULL column stays satisfied.
   const [name, setName] = useState("");
-  // Issue 2 — optional long-form description. Drives SEO copy quality.
-  // Cap matches Amazon listing-description max (2000 chars) and is
-  // enforced by Zod server-side too.
+  // Phase C · Iteration 04 — long-form description. Server cap 10000
+  // chars (raised from 2000) so marketers can paste full supplier
+  // spec sheets. Drives SEO copy quality + claims-grounding judge.
   const [description, setDescription] = useState("");
+
+  // Phase C · Iteration 04 — restore typed text after a reload. We can't
+  // persist file blobs (sessionStorage size cap, non-serializable), so
+  // dropped images don't survive — but the typed name + description do,
+  // so a wifi blip doesn't lose 5 minutes of writing.
+  const DRAFT_KEY = "ff:add-product:draft:v1";
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = sessionStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as { name?: string; description?: string };
+      if (typeof draft.name === "string") setName(draft.name);
+      if (typeof draft.description === "string") setDescription(draft.description);
+    } catch {
+      // ignore — bad/corrupt draft just gets a fresh form
+    }
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!name && !description) {
+      sessionStorage.removeItem(DRAFT_KEY);
+      return;
+    }
+    sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ name, description }));
+  }, [name, description]);
   // Issue 3 — category and kind are derived server-side from name +
   // description (Sonnet) instead of asked of the user. Removed from the
   // form. Worker still accepts manual values (integration tests / a
@@ -247,17 +274,10 @@ export default function NewProductPageInner() {
     <>
       <PageHeader
         eyebrow="Add product · 添加产品"
-        title="Onboard a new SKU"
-        description="Drop 1-10 reference images plus the basic facts. We'll charge $0.50 to onboard the product, then you can launch it to Amazon and Shopify with one click. Reference images train the model on what your real product looks like."
+        title="Onboard a new product"
+        description="Drop 1-10 reference images plus the basic facts. We'll charge $0.50 to onboard, then you can create your first listing with one click. Reference images train the model on what your real product looks like."
       />
-      <section className="px-6 md:px-12 pt-2 max-w-7xl mx-auto">
-        <a
-          href="/products/bulk"
-          className="md-typescale-label-medium text-primary hover:underline inline-flex items-center gap-1.5"
-        >
-          Or bulk-upload a folder of SKUs →
-        </a>
-      </section>
+      <UploadModeTabs />
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto">
         <form onSubmit={handleSubmit} className="grid grid-cols-12 gap-6">
           <Card className="col-span-12 md:col-span-7">
@@ -274,7 +294,7 @@ export default function NewProductPageInner() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   maxLength={200}
-                  placeholder="渔王 Apex 12英尺海钓鱼竿  ·  CastMaster Apex 12ft Surf Rod"
+                  placeholder='e.g. "Aluminum Camp Stove 1500W" or 中文名'
                   required
                 />
                 <div className="flex items-baseline justify-between mt-1 gap-3">
@@ -335,14 +355,16 @@ export default function NewProductPageInner() {
               </div>
             </CardContent>
             <CardFooter>
-              <span className="md-typescale-label-small">$0.50 onboard fee</span>
+              <span className="md-typescale-label-small text-on-surface-variant">
+                One-time onboarding fee, charged on submit
+              </span>
               <Button
                 type="submit"
                 variant="accent"
                 size="lg"
                 disabled={!canSubmit}
               >
-                {submitting ? "Onboarding…" : "Add product →"}
+                {submitting ? "Onboarding…" : "Add product · $0.50 →"}
               </Button>
             </CardFooter>
           </Card>

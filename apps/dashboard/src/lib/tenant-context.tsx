@@ -26,6 +26,13 @@ export interface TenantFeatures {
   feedback_regen?: boolean;
   has_sample_access?: boolean;
   max_regens_per_month?: number;
+  // Phase C · Iteration 03 — tenant defaults read by the launch wizard
+  // so per-launch radios can hide behind a "Tweak this run" disclosure.
+  default_output_langs?: ("en" | "zh")[];
+  default_quality_preset?: "budget" | "balanced" | "premium";
+  // Phase C · Iteration 05 — folds API keys + Webhooks into one
+  // Advanced tab that's always visible; no gating yet.
+  developer_mode?: boolean;
   // Any additional flags surfaced server-side land in this Record bag.
   [key: string]: unknown;
 }

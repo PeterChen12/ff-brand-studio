@@ -3,7 +3,12 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { useApiQuery } from "@/lib/api-query";
-import { formatCents, formatDurationMs, formatTimestamp } from "@/lib/format";
+import {
+  formatCents,
+  formatDurationMs,
+  formatTimestamp,
+  friendlyStatus,
+} from "@/lib/format";
 import { useNow } from "@/lib/use-now";
 import { PageHeader } from "@/components/layout/page-header";
 import {
@@ -50,15 +55,23 @@ export default function OverviewPage() {
 
   const stats = useMemo(() => {
     if (launches === null || v2Assets === null) return null;
-    const totalCents = launches.reduce(
+    // Phase C · Iter 07 — KPI ribbon scoped to last 30 days so a marketer
+    // doesn't read "Total spend $42.50" as this-month when it's all-time.
+    const cutoffMs = Date.now() - 30 * 86_400_000;
+    const recent = launches.filter((x) => {
+      if (!x.createdAt) return false;
+      const t = Date.parse(x.createdAt);
+      return Number.isFinite(t) && t >= cutoffMs;
+    });
+    const totalCents = recent.reduce(
       (s, x) => s + (x.totalCostCents ?? 0),
       0
     );
     const skus = new Set(v2Assets.map((x) => x.sku).filter(Boolean));
     return {
       totalSpend: totalCents / 100,
-      launchCount: launches.length,
-      succeeded: launches.filter((x) => x.status === "succeeded").length,
+      launchCount: recent.length,
+      succeeded: recent.filter((x) => x.status === "succeeded").length,
       hitl: launches.filter(
         (x) =>
           (x.hitlInterventions ?? 0) > 0 || x.status === "hitl_blocked"
@@ -132,26 +145,26 @@ export default function OverviewPage() {
             <EmptyState
               eyebrow="Get started · 三步上手"
               title="Three steps to your first SKU"
-              body="Each step is reversible. Dry runs are free of FAL spend. Sample catalog SKUs (fishing rods) are visible until you onboard your own."
+              body="Each step is reversible. Preview-only runs are free. Sample products are visible until you onboard your own."
               steps={[
                 {
                   index: "01",
                   title: "Add a product",
-                  sub: "Drop reference images + name + kind",
+                  sub: "Drop reference images + product name",
                   href: "/products/new",
                   cta: "Add product →",
                 },
                 {
                   index: "02",
-                  title: "Launch",
-                  sub: "Pick platforms + dry/full + see live cost",
+                  title: "Create your first listing",
+                  sub: "Pick marketplaces, see live cost preview",
                   href: "/launch",
                   cta: "Open wizard →",
                 },
                 {
                   index: "03",
-                  title: "Inspect + ship",
-                  sub: "Edit listings, regen images, export ZIP",
+                  title: "Review and download",
+                  sub: "Approve assets, edit copy, export ZIP",
                   href: "/library",
                   cta: "Open library →",
                 },
@@ -174,14 +187,14 @@ export default function OverviewPage() {
         {/* ── KPI ribbon — small, secondary, single line on desktop ────────── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-px md-surface-container border ff-hairline rounded-m3-md overflow-hidden mb-14">
           <KpiCell
-            label="Total spend"
+            label="Spend (last 30 days)"
             value={
               stats === null ? null : `$${stats.totalSpend.toFixed(2)}`
             }
             tone="primary"
           />
           <KpiCell
-            label="Launches"
+            label="Listings (last 30 days)"
             value={stats === null ? null : stats.launchCount.toString()}
             sub={stats ? `${stats.succeeded} succeeded` : undefined}
           />
@@ -191,9 +204,9 @@ export default function OverviewPage() {
             sub={stats ? `${stats.assetCount} assets` : undefined}
           />
           <KpiCell
-            label="HITL holds"
+            label="Needs review"
             value={stats === null ? null : stats.hitl.toString()}
-            sub="needing review"
+            sub="awaiting approval"
             tone={stats && stats.hitl > 0 ? "amber" : "tertiary"}
           />
         </div>
@@ -214,24 +227,24 @@ export default function OverviewPage() {
               <ActionRow
                 href="/launch"
                 index="01"
-                title="Launch a SKU"
-                hint="Pick a product → get per-platform images + bilingual SEO copy + compliance scoring · ~10–50¢"
+                title="Create a listing"
+                hint="Pick a product → get per-marketplace images + bilingual copy + quality grades · ~$0.10–$0.50"
               />
               <ActionRow
                 href="/library"
                 index="02"
                 title="Browse the library"
-                hint="Every asset shipped, grouped by SKU + platform slot"
+                hint="Every asset shipped, grouped by product + marketplace slot"
               />
               <ActionRow
                 href="/costs"
                 index="03"
                 title="Review costs"
-                hint="Per-run breakdowns across Sonnet, Flux, GPT Image 2, DataForSEO, Kling"
+                hint="Per-run breakdowns across image generation, listing copy, and quality checks"
               />
             </CardContent>
             <CardFooter>
-              <span className="md-typescale-label-small">v0.2.0 · live</span>
+              <span className="md-typescale-label-small">Quick actions</span>
               <Link
                 href="/launch"
                 className="md-typescale-label-small text-ff-vermilion-deep hover:text-primary transition-colors"
@@ -249,20 +262,20 @@ export default function OverviewPage() {
             <CardHeader>
               <div>
                 <CardEyebrow>Reference · 参考</CardEyebrow>
-                <CardTitle className="mt-1.5">Compliance bands</CardTitle>
+                <CardTitle className="mt-1.5">Quality grades</CardTitle>
               </div>
             </CardHeader>
             <CardContent>
               <p className="md-typescale-body-small text-on-surface-variant leading-relaxed">
-                Per-platform scores band into{" "}
+                Each generated asset gets a grade:{" "}
                 <span className="text-tertiary">EXCELLENT</span> / GOOD (publish-ready),{" "}
-                <span className="text-ff-amber">FAIR</span> (HITL review), and{" "}
-                <span className="text-error">POOR</span> (regenerate). The orchestrator retries up
-                to 3× before holding for human review.
+                <span className="text-ff-amber">FAIR</span> (needs your review), and{" "}
+                <span className="text-error">POOR</span> (regenerate). We retry up to 3× before
+                routing to your inbox for human review.
               </p>
             </CardContent>
             <CardFooter>
-              <span>Optional Opus 4.7 vision pass · ~$0.02/asset</span>
+              <span>Includes AI quality double-check · ~$0.02/asset</span>
             </CardFooter>
           </Card>
         </div>
@@ -377,7 +390,7 @@ function LaunchRowItem({
         </div>
       </div>
       <Badge variant={statusVariant} size="sm">
-        {status}
+        {friendlyStatus(status)}
       </Badge>
     </Link>
   );

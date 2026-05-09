@@ -186,13 +186,15 @@ export function ChannelsPanel() {
               get produced.
             </li>
             <li>
-              On success, the result panel surfaces a "Download bundle"
+              On success, the result panel shows a "Download bundle"
               button. The ZIP includes every generated image plus a
+              spreadsheet (
               <code className="font-mono mx-1 px-1.5 py-0.5 bg-surface-container-low rounded-m3-sm text-[0.6875rem]">
-                manifest.csv
+                upload-checklist.csv
               </code>
-              so you (or your VA) can hand-upload to Seller Central and
-              Shopify Admin.
+              ) listing each image with its target slot — Amazon hero,
+              Shopify lifestyle, etc. — so you (or a VA) know which file
+              goes where without guessing.
             </li>
             <li>
               The Library tab keeps the full asset catalog with

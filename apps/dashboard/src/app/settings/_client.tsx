@@ -16,13 +16,31 @@ import { WebhooksPanel } from "@/components/settings/webhooks-panel";
 import { TenantPanel } from "@/components/settings/tenant-panel";
 import { ChannelsPanel } from "@/components/settings/channels-panel";
 
-type Tab = "api-keys" | "webhooks" | "tenant" | "channels";
+type Tab = "api-keys" | "webhooks" | "tenant" | "channels" | "advanced";
 
-const TABS: { id: Tab; label: string; sub: string }[] = [
-  { id: "channels", label: "Channels", sub: "销售渠道" },
-  { id: "api-keys", label: "API keys", sub: "密钥" },
-  { id: "webhooks", label: "Webhooks", sub: "事件订阅" },
-  { id: "tenant", label: "Tenant", sub: "租户配置" },
+// Phase C · Iteration 05 — vocabulary sweep. "Tenant" is real-estate
+// jargon; renamed to "Brand profile". "API keys" + "Webhooks" are
+// developer surfaces — folded under a single "Advanced" tab so a
+// non-technical marketer doesn't see two tabs they don't understand.
+const TABS: { id: Tab; label: string; sub: string; description: string }[] = [
+  {
+    id: "channels",
+    label: "Channels",
+    sub: "销售渠道",
+    description: "Where your listings get published",
+  },
+  {
+    id: "tenant",
+    label: "Brand profile",
+    sub: "品牌资料",
+    description: "Defaults applied to every new listing",
+  },
+  {
+    id: "advanced",
+    label: "Advanced",
+    sub: "开发者",
+    description: "Developer integrations — API keys & webhooks",
+  },
 ];
 
 function readTabFromUrl(): Tab {
@@ -33,7 +51,8 @@ function readTabFromUrl(): Tab {
     t === "webhooks" ||
     t === "tenant" ||
     t === "api-keys" ||
-    t === "channels"
+    t === "channels" ||
+    t === "advanced"
   ) {
     return t;
   }
@@ -68,7 +87,7 @@ export default function SettingsClient() {
       />
 
       <section className="px-6 md:px-12 pt-8 pb-12 max-w-5xl mx-auto">
-        <div role="tablist" className="flex items-center gap-1 mb-6 border-b ff-hairline">
+        <div role="tablist" className="flex items-center gap-1 border-b ff-hairline">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -91,11 +110,23 @@ export default function SettingsClient() {
             </button>
           ))}
         </div>
+        {/* Phase C · Iter 08 — one-line tab description so a marketer knows
+            what's in each tab before clicking around. */}
+        <p className="md-typescale-body-small text-on-surface-variant mt-3 mb-6">
+          {TABS.find((t) => t.id === tab)?.description ?? ""}
+        </p>
 
         {tab === "channels" && <ChannelsPanel />}
+        {tab === "tenant" && <TenantPanel />}
+        {tab === "advanced" && (
+          <div className="space-y-10">
+            <ApiKeysPanel />
+            <WebhooksPanel />
+          </div>
+        )}
+        {/* Direct-URL access still works for power users who bookmarked the old tabs. */}
         {tab === "api-keys" && <ApiKeysPanel />}
         {tab === "webhooks" && <WebhooksPanel />}
-        {tab === "tenant" && <TenantPanel />}
       </section>
     </>
   );

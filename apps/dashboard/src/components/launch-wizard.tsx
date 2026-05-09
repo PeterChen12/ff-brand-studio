@@ -38,6 +38,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListingCopy } from "@/components/listings/ListingCopy";
+import { useTenant } from "@/lib/tenant-context";
 import { cn } from "@/lib/cn";
 
 interface ProductRow {
@@ -103,35 +104,31 @@ interface LaunchResult {
 
 type SeoLang = "en" | "zh";
 
-// Issue 8 — quality preset selector. Each maps to an ADR-0002 model
-// routing tier. Per-image price comes from the worker; we display it
-// here as a hint so the operator knows what they're picking.
+// Phase C · Iteration 05 — quality preset for marketers. Internal model
+// routing (ADR-0002) is hidden; the marketer picks a tier and the
+// per-image price is the only number that matters to her.
 const QUALITY_PRESETS: {
   id: "budget" | "balanced" | "premium";
   label: string;
-  models: string;
   hint: string;
   perImageCents: number;
 }[] = [
   {
     id: "balanced",
     label: "Recommended · 推荐",
-    models: "nano-banana-pro · gpt-image-2 · flux-kontext-pro",
     hint: "Best image quality for the price",
     perImageCents: 50,
   },
   {
     id: "premium",
     label: "Best performing · 最佳画质",
-    models: "nano-banana-pro 4K · gpt-image-2 high · flux-kontext-pro",
-    hint: "4K lifestyle, full-quality infographics",
+    hint: "4K lifestyle imagery, full-quality infographics",
     perImageCents: 70,
   },
   {
     id: "budget",
     label: "Most cost saving · 经济",
-    models: "nano-banana-batch · gpt-image-2 medium · flux-2-pro",
-    hint: "Async batch endpoints, -30% per image",
+    hint: "Lower-cost batch generation, ~30% cheaper per image",
     perImageCents: 35,
   },
 ];
@@ -140,6 +137,24 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   const apiFetch = useApiFetch();
   const searchParams = useSearchParams();
   const seedProductId = searchParams.get("product_id");
+  // Phase C · Iteration 03 — read tenant defaults so a marketer doesn't
+  // have to re-pick output language + quality preset every launch.
+  const tenant = useTenant();
+  const tenantDefaultLangs = useMemo<SeoLang[]>(() => {
+    const raw = tenant?.features?.default_output_langs;
+    if (Array.isArray(raw)) {
+      const filtered = raw.filter((l): l is SeoLang => l === "en" || l === "zh");
+      if (filtered.length > 0) return filtered;
+    }
+    return ["en"];
+  }, [tenant?.features?.default_output_langs]);
+  const tenantDefaultQuality = useMemo<
+    "budget" | "balanced" | "premium"
+  >(() => {
+    const raw = tenant?.features?.default_quality_preset;
+    if (raw === "budget" || raw === "balanced" || raw === "premium") return raw;
+    return "balanced";
+  }, [tenant?.features?.default_quality_preset]);
 
   // ── State ─────────────────────────────────────────────────────────────
   const [products, setProducts] = useState<ProductRow[] | null>(null);
@@ -153,7 +168,7 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   // (the marketing PM persona) picks which marketplaces she actually
   // sells on; we generate only those. Defaults to both for backwards
   // compat. Deselecting both is refused with a soft warning.
-  const [outputLangs, setOutputLangs] = useState<SeoLang[]>(["en"]);
+  const [outputLangs, setOutputLangs] = useState<SeoLang[]>(tenantDefaultLangs);
   const [platforms, setPlatforms] = useState<("amazon" | "shopify")[]>([
     "amazon",
     "shopify",
@@ -182,10 +197,23 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   );
   // Issue 8 — model-routing preset. budget/balanced/premium changes
   // the per-image price (35¢/50¢/70¢) and downstream model selection
-  // per ADR-0002. balanced is the current default.
+  // per ADR-0002. balanced is the current default. Phase C · Iter 03 —
+  // initial value comes from tenant defaults.
   const [qualityPreset, setQualityPreset] = useState<
     "budget" | "balanced" | "premium"
-  >("balanced");
+  >(tenantDefaultQuality);
+  // Sync state if tenant defaults arrive after first render (poll race).
+  useEffect(() => {
+    setOutputLangs((prev) =>
+      prev === tenantDefaultLangs ? prev : tenantDefaultLangs
+    );
+    setQualityPreset((prev) =>
+      prev === tenantDefaultQuality ? prev : tenantDefaultQuality
+    );
+    // Intentionally only on tenant-default changes; user edits aren't
+    // overwritten because the prev-equals-default check would be false.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantDefaultLangs, tenantDefaultQuality]);
   // Phase C · Iteration 02 — full-run is the default. First-time users
   // running with dryRun=true got no images and didn't know why.
   const [dryRun, setDryRun] = useState(false);
@@ -435,18 +463,11 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
               </a>
             </div>
           ) : (
-            <select
-              value={productId ?? ""}
-              onChange={(e) => setProductId(e.target.value)}
-              className="w-full h-11 px-4 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary"
-            >
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.isSample ? "[demo] " : ""}
-                  {p.sku} — {p.nameEn || p.nameZh || "(unnamed)"} ({p.category})
-                </option>
-              ))}
-            </select>
+            <ProductPicker
+              products={products}
+              value={productId}
+              onChange={setProductId}
+            />
           )}
         </CardContent>
       </Card>
@@ -596,9 +617,6 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
                         <div className="md-typescale-title-small leading-tight">
                           {q.label}
                         </div>
-                        <div className="md-typescale-body-small font-mono opacity-60 mt-0.5">
-                          {q.models}
-                        </div>
                         <div className="md-typescale-body-small opacity-80 mt-0.5">
                           {q.hint} · {formatCents(q.perImageCents)}/image
                         </div>
@@ -744,6 +762,133 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
 
 // ── Building blocks ─────────────────────────────────────────────────────
 
+// Phase C · Iter 09 — searchable product picker. Replaces the native
+// <select> that became unusable past ~50 SKUs. Filters case-insensitively
+// across SKU, English name, Chinese name, and category. Shows the
+// selected product compactly when collapsed.
+function ProductPicker({
+  products,
+  value,
+  onChange,
+}: {
+  products: ProductRow[];
+  value: string | null;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selected = products.find((p) => p.id === value) ?? null;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return products.slice(0, 50);
+    return products
+      .filter((p) => {
+        const hay = [p.sku, p.nameEn, p.nameZh, p.category]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(q);
+      })
+      .slice(0, 50);
+  }, [products, query]);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full h-11 px-4 rounded-m3-md bg-surface-container-low border ff-hairline text-left hover:bg-surface-container transition-colors flex items-center justify-between gap-3"
+      >
+        <span className="truncate">
+          {selected ? (
+            <>
+              {selected.isSample && (
+                <span className="text-on-surface-variant/70 mr-1">[demo]</span>
+              )}
+              <span className="font-mono text-[0.75rem] text-on-surface-variant/80 mr-2">
+                {selected.sku}
+              </span>
+              <span>
+                {selected.nameEn || selected.nameZh || "(unnamed)"}
+              </span>
+            </>
+          ) : (
+            <span className="text-on-surface-variant">Pick a product…</span>
+          )}
+        </span>
+        <span className="text-on-surface-variant/60">⌄</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-m3-md bg-surface-container-low border ff-hairline">
+      <div className="p-2 flex items-center gap-2 border-b ff-hairline">
+        <input
+          type="text"
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by name, SKU, or category…"
+          className="flex-1 h-9 px-3 rounded-m3-md bg-transparent md-typescale-body-medium focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="h-9 px-3 md-typescale-label-medium text-on-surface-variant hover:text-on-surface"
+        >
+          Cancel
+        </button>
+      </div>
+      <ul role="listbox" className="max-h-80 overflow-y-auto">
+        {filtered.length === 0 ? (
+          <li className="px-4 py-6 text-center md-typescale-body-medium text-on-surface-variant">
+            No products match "{query}".
+          </li>
+        ) : (
+          filtered.map((p) => {
+            const isActive = p.id === value;
+            return (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  onClick={() => {
+                    onChange(p.id);
+                    setOpen(false);
+                    setQuery("");
+                  }}
+                  className={cn(
+                    "w-full text-left px-4 py-2.5 flex items-baseline gap-3 hover:bg-surface-container transition-colors",
+                    isActive && "bg-primary-container/40"
+                  )}
+                >
+                  {p.isSample && (
+                    <span className="md-typescale-body-small text-on-surface-variant/70 shrink-0">
+                      [demo]
+                    </span>
+                  )}
+                  <span className="font-mono text-[0.6875rem] text-on-surface-variant/80 shrink-0">
+                    {p.sku}
+                  </span>
+                  <span className="flex-1 truncate">
+                    {p.nameEn || p.nameZh || "(unnamed)"}
+                  </span>
+                  <span className="md-typescale-body-small text-on-surface-variant/60 shrink-0">
+                    {p.category}
+                  </span>
+                </button>
+              </li>
+            );
+          })
+        )}
+      </ul>
+    </div>
+  );
+}
+
 function ConfigRow({
   label,
   sub,
@@ -860,7 +1005,7 @@ function CostPreview({
       />
       <Row
         label="Listings"
-        detail={seoEnabled ? `${b.listings.count} surfaces × ${formatCents(b.listings.per_unit_cents)}` : "off — assets only"}
+        detail={seoEnabled ? `${b.listings.count} listings × ${formatCents(b.listings.per_unit_cents)}` : "off — images only"}
         cents={seoEnabled ? b.listings.subtotal : 0}
         muted={!seoEnabled}
       />
@@ -1061,7 +1206,7 @@ function TweakImagePanel({
           disabled={!!busyAssetId || atCap}
           maxLength={500}
           rows={3}
-          placeholder='e.g. "rod is cropped — show the full length end-to-end" or "white background has color banding, make it pure white"'
+          placeholder='e.g. "logo is too small — make it 30% larger" or "white background has color banding, make it pure white"'
           className="w-full px-3 py-2 rounded-m3-md bg-surface-container-low border ff-hairline md-typescale-body-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-primary resize-y disabled:opacity-50"
         />
         <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -1077,14 +1222,20 @@ function TweakImagePanel({
             {selected && busyAssetId === selectedId && " · regenerating…"}
           </span>
           {atCap ? (
-            <a
-              href="https://calendar.app.google/SKMgxvqGGoCbSZut8"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 h-9 rounded-m3-full md-typescale-label-medium border border-outline text-primary bg-transparent hover:bg-primary/[0.04] transition-colors"
-            >
-              Schedule a call for further refinement →
-            </a>
+            <div className="flex flex-col gap-2 items-end max-w-md">
+              <p className="md-typescale-body-small text-on-surface-variant">
+                You've reached {cap} regenerations on this image. We cap
+                iterations to keep costs predictable. Need more tries?
+              </p>
+              <a
+                href="https://calendar.app.google/SKMgxvqGGoCbSZut8"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 h-9 rounded-m3-full md-typescale-label-medium border border-outline text-primary bg-transparent hover:bg-primary/[0.04] transition-colors"
+              >
+                Schedule a call to discuss →
+              </a>
+            </div>
           ) : (
             <button
               type="button"
@@ -1202,7 +1353,7 @@ function ResultPanelImpl({
             )}
             {/* Image QA Layer 3 — per-image client iteration chat panel.
                 Visible once assets land. The user picks an image, types
-                a correction (e.g. "rod is cropped — show full length"),
+                a correction (e.g. "logo is too small — make it 30% larger"),
                 and the system regenerates that single image with the
                 instruction merged into the FAL prompt. */}
             {assets && assets.length > 0 && onAssetUpdated && (

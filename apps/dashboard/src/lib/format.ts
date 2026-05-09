@@ -18,6 +18,36 @@ export function formatCents(cents: number | null | undefined): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/**
+ * Phase C · Iteration 05 — friendly status labels.
+ *
+ * The DB stores raw enums (`succeeded`, `hitl_blocked`, `cost_capped`,
+ * `failed`, `pending`, `running`) — engineering language a marketer
+ * doesn't speak. This helper translates at the rendering boundary so
+ * we never leak `hitl_blocked` into a badge.
+ */
+export function friendlyStatus(status: string | null | undefined): string {
+  if (!status) return "—";
+  const map: Record<string, string> = {
+    succeeded: "Done",
+    hitl_blocked: "Needs review",
+    cost_capped: "Hit budget cap",
+    failed: "Failed",
+    pending: "Pending",
+    running: "Running",
+    queued: "Queued",
+    draft: "Draft",
+    approved: "Approved",
+    rejected: "Rejected",
+    pending_review: "Needs review",
+  };
+  if (map[status]) return map[status];
+  return status
+    .split(/[_\s]+/)
+    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
 export function formatDurationMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || ms <= 0) return "—";
   return `${(ms / 1000).toFixed(1)}s`;

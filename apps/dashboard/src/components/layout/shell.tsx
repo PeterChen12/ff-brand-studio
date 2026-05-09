@@ -31,7 +31,7 @@ import { OrgGate } from "@/components/layout/org-gate";
 const NAV: { href: string; label: string; sub: string; index: string }[] = [
   { href: "/", label: "Overview", sub: "总览", index: "01" },
   { href: "/products/new", label: "Add product", sub: "添加产品", index: "02" },
-  { href: "/launch", label: "Launch SKU", sub: "上线产品", index: "03" },
+  { href: "/launch", label: "Create listing", sub: "新建产品", index: "03" },
   { href: "/library", label: "Library", sub: "资产库", index: "04" },
   { href: "/inbox", label: "Inbox", sub: "审核队列", index: "05" },
   { href: "/costs", label: "Costs", sub: "成本", index: "06" },
@@ -337,30 +337,37 @@ function ShellInner({
           )}
           title={
             walletState.kind === "auth-error"
-              ? "Wallet auth check failed — sign back in"
+              ? "Credits check failed — sign back in"
               : walletState.kind === "unknown-error"
-                ? "Wallet poll failed — temporary network issue"
-                : "Wallet · click to top up"
+                ? "Credits poll failed — temporary network issue"
+                : "Click to add credits"
           }
         >
-          <span className="ff-stamp-label">Wallet · 余额</span>
+          <span className="ff-stamp-label">Credits · 余额</span>
           {walletState.kind === "auth-error" ? (
             <span className="md-typescale-label-medium text-error">
               Sign in →
             </span>
           ) : walletState.kind === "ok" ? (
-            <span
-              className={cn(
-                "font-brand tabular-nums text-lg",
-                walletState.cents < 50
-                  ? "text-error"
-                  : walletState.cents < 100
-                    ? "text-ff-amber"
-                    : "text-ff-vermilion-deep"
+            <div className="flex flex-col items-end">
+              <span
+                className={cn(
+                  "font-brand tabular-nums text-lg",
+                  walletState.cents < 50
+                    ? "text-error"
+                    : walletState.cents < 100
+                      ? "text-ff-amber"
+                      : "text-ff-vermilion-deep"
+                )}
+              >
+                {formatCents(walletState.cents)}
+              </span>
+              {walletState.cents < 50 && (
+                <span className="md-typescale-body-small text-error/90 leading-tight">
+                  Top up to keep launching
+                </span>
               )}
-            >
-              {formatCents(walletState.cents)}
-            </span>
+            </div>
           ) : (
             <span className="font-brand tabular-nums text-lg text-on-surface-variant/60">
               —

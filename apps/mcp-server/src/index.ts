@@ -821,6 +821,43 @@ app.get("/v1/me/state", async (c) => {
   });
 });
 
+// ── Phase C · Iteration 03 — tenant default preferences ─────────────────
+//
+// Marketers set output language + quality preset once and never touch them
+// per launch. PATCH merges the keys into tenants.features (jsonb) so the
+// existing /v1/me/state poll surfaces them to the wizard automatically.
+
+const TenantPreferencesInput = z.object({
+  default_output_langs: z
+    .array(z.enum(["en", "zh"]))
+    .min(1)
+    .max(2)
+    .optional(),
+  default_quality_preset: z.enum(["budget", "balanced", "premium"]).optional(),
+  language_display: z.enum(["en", "zh", "both"]).optional(),
+});
+
+app.patch("/v1/tenants/me/preferences", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = TenantPreferencesInput.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+  const tenant = c.get("tenant") as Tenant;
+  const db = createDbClient(c.env);
+  const merged: Record<string, unknown> = {
+    ...((tenant.features ?? {}) as Record<string, unknown>),
+    ...parsed.data,
+  };
+  await db
+    .update(tenants)
+    .set({ features: merged })
+    .where(eq(tenants.id, tenant.id));
+  return c.json({ ok: true, features: merged });
+});
+
+app.use("/v1/tenants/me/*", requireTenant);
+
 // ── Phase H3 — Stripe top-up checkout session ────────────────────────────
 
 const CheckoutInput = z.object({
@@ -1934,7 +1971,8 @@ app.post("/v1/assets/:id/reject", async (c) => {
 });
 
 // GET /v1/inbox — review queue. Lists runs with status='hitl_blocked'
-// for visible tenants, with a count of assets needing review per run.
+// for visible tenants. Phase C · Iter 06 — joins products so the
+// dashboard can show friendly names instead of hash IDs.
 app.get("/v1/inbox", async (c) => {
   const db = createDbClient(c.env);
   const tenant = c.get("tenant") as Tenant;
@@ -1949,8 +1987,12 @@ app.get("/v1/inbox", async (c) => {
       createdAt: launchRuns.createdAt,
       durationMs: launchRuns.durationMs,
       totalCostCents: launchRuns.totalCostCents,
+      productSku: products.sku,
+      productNameEn: products.nameEn,
+      productNameZh: products.nameZh,
     })
     .from(launchRuns)
+    .leftJoin(products, eq(launchRuns.productId, products.id))
     .where(
       and(
         inArray(launchRuns.tenantId, visibleIds),
@@ -1961,6 +2003,107 @@ app.get("/v1/inbox", async (c) => {
     .limit(50);
 
   return c.json({ runs });
+});
+
+// Phase C · Iter 06 — bulk approve. Cap 50 per request to keep webhook
+// fan-out sane. Each asset still gets its own asset.approved event.
+const BulkApproveInput = z.object({
+  asset_ids: z.array(z.string().uuid()).min(1).max(50),
+});
+
+app.post("/v1/inbox/bulk-approve", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const actor = c.get("actor") as string | undefined;
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = BulkApproveInput.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+  const db = createDbClient(c.env);
+  const visibleIds = visibleTenantIds(tenant);
+  const results: Array<{ id: string; ok: boolean; error?: string }> = [];
+  for (const id of parsed.data.asset_ids) {
+    try {
+      const [asset] = await db
+        .select({
+          id: platformAssets.id,
+          tenantId: platformAssets.tenantId,
+          variantId: platformAssets.variantId,
+          platform: platformAssets.platform,
+          slot: platformAssets.slot,
+          r2Url: platformAssets.r2Url,
+        })
+        .from(platformAssets)
+        .where(eq(platformAssets.id, id))
+        .limit(1);
+      if (!asset || !visibleIds.includes(asset.tenantId)) {
+        results.push({ id, ok: false, error: "not_found" });
+        continue;
+      }
+      const now = new Date();
+      await db
+        .update(platformAssets)
+        .set({ status: "approved", approvedAt: now })
+        .where(eq(platformAssets.id, id));
+
+      // Same product-JOIN dance as the single-asset approve so webhook
+      // payloads carry external_id/external_source for customer admins.
+      const [variantRow] = await db
+        .select({ productId: productVariants.productId })
+        .from(productVariants)
+        .where(eq(productVariants.id, asset.variantId))
+        .limit(1);
+      let externalId: string | null = null;
+      let externalSource: string | null = null;
+      let productSku: string | null = null;
+      if (variantRow) {
+        const [productRow] = await db
+          .select({
+            externalId: products.externalId,
+            externalSource: products.externalSource,
+            sku: products.sku,
+          })
+          .from(products)
+          .where(eq(products.id, variantRow.productId))
+          .limit(1);
+        if (productRow) {
+          externalId = productRow.externalId ?? null;
+          externalSource = productRow.externalSource ?? null;
+          productSku = productRow.sku;
+        }
+      }
+      await auditEvent(db, {
+        tenantId: asset.tenantId,
+        actor: actor ?? null,
+        action: "asset.approved",
+        targetType: "platform_asset",
+        targetId: id,
+        metadata: {
+          platform: asset.platform,
+          slot: asset.slot,
+          r2_url: asset.r2Url,
+          external_id: externalId,
+          external_source: externalSource,
+          sku: productSku,
+          approved_at: now.toISOString(),
+          bulk: true,
+        },
+      });
+      results.push({ id, ok: true });
+    } catch (err) {
+      results.push({
+        id,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  const succeeded = results.filter((r) => r.ok).length;
+  return c.json({
+    approved: succeeded,
+    failed: results.length - succeeded,
+    results,
+  });
 });
 
 app.post("/v1/skus/:productId/approve", async (c) => {
