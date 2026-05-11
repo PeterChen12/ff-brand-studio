@@ -113,28 +113,109 @@ export async function runProductionPipeline(
     };
   }
 
+  // ── Phase F · Iter 03 — Best-of-input passthrough gate ─────────────
+  // First real consumer of runQualityGate (F1's abstraction). Pure
+  // judge-only mode (no fix function) — if the reference scores
+  // publish-ready, skip cleanup for the studio shot (and the downstream
+  // refine flows from the same passthrough source). Saves ~$0.50 per
+  // launch on clean inputs.
+  //
+  // Tenant-gated: tenant.features.passthrough_enabled (defaults true
+  // unless explicitly false). Audit-logged so we can monitor rate over
+  // time. Any failure falls through to the normal pipeline — never
+  // poison the run on a passthrough check error.
+  const passthroughEnabled =
+    (ctx.features as { passthrough_enabled?: boolean }).passthrough_enabled !==
+    false;
+  let passthroughHit = false;
+  if (passthroughEnabled) {
+    try {
+      const { runQualityGate } = await import("../lib/quality-gate.js");
+      const { scoreReference, isPublishReadyReference, failureReasons } =
+        await import("../lib/best-of-input.js");
+      const refObj = await env.R2.get(sourceR2Key);
+      if (refObj) {
+        const refBuffer = Buffer.from(await refObj.arrayBuffer());
+        const gateResult = await runQualityGate({
+          initial: refBuffer,
+          judge: async (buf) => {
+            const metrics = await scoreReference(buf);
+            return {
+              pass: isPublishReadyReference(metrics),
+              reasons: failureReasons(metrics),
+              cost_cents: 0,
+              metadata: { metrics },
+            };
+          },
+          // Pure judge-only mode (no fix). Either passthrough or fall
+          // through to the full pipeline.
+        });
+        if (gateResult.passed) {
+          passthroughHit = true;
+          outputs.refine_studio = sourceR2Key;
+          outputs.cleanup_studio = sourceR2Key;
+          await auditEvent(db, {
+            tenantId: ctx.tenantId,
+            actor: null,
+            action: "launch.start",
+            targetType: "pipeline_step",
+            targetId: ctx.runId,
+            metadata: {
+              step: "passthrough_publish_ready",
+              source_key: sourceR2Key,
+              metrics: gateResult.history[0]?.judge.metadata?.metrics,
+              saved_cents: 50,
+            },
+          });
+        }
+      }
+    } catch (passthroughErr) {
+      // Opportunistic — falls through to normal pipeline.
+      console.warn("[pipeline] passthrough check skipped:", passthroughErr);
+    }
+  }
+
   // ── Step 2: cleanup ────────────────────────────────────────────────
-  await setPhase("cleanup");
-  const cleanupRes = await cleanupStep(env, ctx, sourceR2Key);
-  if (cleanupRes.status !== "ok") {
-    errors.push(`cleanup failed: ${stepError(cleanupRes)}`);
+  // Skipped entirely when passthrough hit — the reference IS the cleanup
+  // output. Derive still runs because we need crop_A/B/C for the close-
+  // up + detail slots regardless. After this block, outputs.cleanup_studio
+  // is set in both paths.
+  let cleanupCostCents = 0;
+  if (!passthroughHit) {
+    await setPhase("cleanup");
+    const cleanupRes = await cleanupStep(env, ctx, sourceR2Key);
+    if (cleanupRes.status !== "ok") {
+      errors.push(`cleanup failed: ${stepError(cleanupRes)}`);
+      return finalize(false);
+    }
+    if (!chargeAndAccount("cleanup", cleanupRes.costCents)) return finalize(false);
+    outputs.cleanup_studio = cleanupRes.outputR2Key;
+    cleanupCostCents = cleanupRes.costCents;
+
+    await auditEvent(db, {
+      tenantId: ctx.tenantId,
+      actor: null,
+      action: "launch.start",
+      targetType: "pipeline_step",
+      targetId: ctx.runId,
+      metadata: {
+        step: "cleanup",
+        costCents: cleanupRes.costCents,
+        outputR2Key: cleanupRes.outputR2Key,
+      },
+    });
+  }
+  // Invariant: outputs.cleanup_studio is now set (either by passthrough
+  // earlier or by the cleanup step above). Used as the source for derive.
+  const cleanupStudioKey = outputs.cleanup_studio;
+  if (!cleanupStudioKey) {
+    errors.push("internal: cleanup_studio not set after step 2");
     return finalize(false);
   }
-  if (!chargeAndAccount("cleanup", cleanupRes.costCents)) return finalize(false);
-  outputs.cleanup_studio = cleanupRes.outputR2Key;
-
-  await auditEvent(db, {
-    tenantId: ctx.tenantId,
-    actor: null,
-    action: "launch.start",
-    targetType: "pipeline_step",
-    targetId: ctx.runId,
-    metadata: { step: "cleanup", costCents: cleanupRes.costCents, outputR2Key: cleanupRes.outputR2Key },
-  });
 
   // ── Step 3: derive (sidecar) ──────────────────────────────────────
   await setPhase("derive");
-  const deriveRes = await deriveStep(env, ctx, cleanupRes.outputR2Key);
+  const deriveRes = await deriveStep(env, ctx, cleanupStudioKey);
   if (deriveRes.result.status !== "ok" || !deriveRes.outputs) {
     errors.push(`derive failed: ${stepError(deriveRes.result)}`);
     return finalize(false);
@@ -145,12 +226,18 @@ export async function runProductionPipeline(
   outputs.derive_crop_C = deriveRes.outputs.cropCKey;
 
   // ── Step 4 + 5 + 6: refine each crop with iter loop ──────────────
-  const cropTargets: Array<{ tag: "studio" | "A" | "B" | "C"; cropKey: string }> = [
+  // Phase F · Iter 03 — skip the studio refine when passthrough hit;
+  // outputs.refine_studio is already set to the reference and we'd
+  // pay $0.30 to overwrite it with a near-duplicate.
+  const allCropTargets: Array<{ tag: "studio" | "A" | "B" | "C"; cropKey: string }> = [
     { tag: "studio", cropKey: deriveRes.outputs.studioR2Key }, // self-paired refine for the canonical
     { tag: "A", cropKey: deriveRes.outputs.cropAKey },
     { tag: "B", cropKey: deriveRes.outputs.cropBKey },
     { tag: "C", cropKey: deriveRes.outputs.cropCKey },
   ];
+  const cropTargets = passthroughHit
+    ? allCropTargets.filter((t) => t.tag !== "studio")
+    : allCropTargets;
 
   await setPhase("refine_all_crops");
   // Refine all 4 crops in parallel — sequential was ~95s each × 4 = 6+ min
@@ -161,7 +248,7 @@ export async function runProductionPipeline(
   // Subrequest count is the same as sequential (Workers counts the total,
   // not concurrency), so we don't hit a different limit.
   const studioKey = deriveRes.outputs.studioR2Key;
-  const cleanupKey = cleanupRes.outputR2Key;
+  const cleanupKey = cleanupStudioKey;
   type CropResult =
     | { tag: typeof cropTargets[number]["tag"]; capped: true }
     | { tag: typeof cropTargets[number]["tag"]; out: Awaited<ReturnType<typeof refineWithIteration>> };
