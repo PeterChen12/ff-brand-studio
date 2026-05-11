@@ -37,6 +37,40 @@ export interface ClaimsGroundingResult {
   costCents: number;
 }
 
+/**
+ * Phase F · Iter 06 — skeptical judge prompt for regulated tenants.
+ *
+ * The permissive judge below accepts reasonable inferences from source
+ * facts ("100% cotton" → "soft hand feel" is GROUNDED). The skeptical
+ * judge requires every claim to be EXPLICITLY stated in the source —
+ * no inference allowed. Used in dual-judge mode (checkClaimsGroundingDual)
+ * for tenants with regulated_category=true.
+ */
+const SKEPTICAL_SYSTEM_PROMPT = `You audit AI-generated e-commerce listing copy for false or unsubstantiated claims, with strict standards required by regulated product categories (medical, supplements, electrical, safety equipment).
+
+Given source product data and generated listing copy, list every factual claim in the copy that is NOT explicitly stated in the source. Inferred claims, even if commonly true, must be flagged.
+
+REJECT if the copy contains:
+  - Health, safety, or regulatory claims not in the source (e.g. "FDA approved", "clinically proven", "supports healthy joints")
+  - Performance specs not in the source (e.g. battery life, water resistance, weight capacity)
+  - Origin claims not in the source ("Made in USA", "Sourced from...")
+  - Certification claims not in the source ("UL listed", "FCC certified")
+  - Comparative claims ("better than", "longer-lasting than")
+  - Common inferences a permissive judge would accept (e.g. "soft hand feel" from "cotton") — at the skeptical level these need explicit source backing
+
+APPROVE only if every factual claim has direct support in the source text.
+
+Return ONLY this JSON shape, no prose:
+{
+  "rating": "GROUNDED" | "PARTIALLY_GROUNDED" | "UNGROUNDED",
+  "ungrounded_claims": ["claim 1", "claim 2"],
+  "confidence": 0.0-1.0
+}
+
+Use GROUNDED when ungrounded_claims is empty.
+Use PARTIALLY_GROUNDED for 1 minor unsupported claim.
+Use UNGROUNDED for 2+ claims or any regulated-category claim (health/safety/performance/origin/certification).`;
+
 const SYSTEM_PROMPT = `You audit AI-generated e-commerce listing copy for false claims.
 
 Given source product data and generated listing copy, list every factual claim in the copy that is NOT supported by, or directly contradicts, the source.
@@ -71,6 +105,146 @@ const FALLBACK_RESULT: Omit<ClaimsGroundingResult, "costCents"> = {
 };
 
 const JUDGE_COST_CENTS = 1;
+
+/**
+ * Phase F · Iter 06 — Dual-judge consensus result.
+ *
+ * - unanimous_pass: both judges said GROUNDED → accept
+ * - unanimous_fail: both said UNGROUNDED → use combined reasons
+ * - disagreement: one passed, one didn't → force HITL regardless of which
+ *
+ * On disagreement, the consumer (launch_pipeline.ts) must NOT auto-rewrite
+ * — disagreement means "I'm not confident", needs a human.
+ */
+export type DualGroundingOutcome =
+  | "unanimous_pass"
+  | "unanimous_fail"
+  | "disagreement";
+
+export interface DualGroundingResult {
+  outcome: DualGroundingOutcome;
+  /** The permissive judge's verdict (the default Haiku call). */
+  permissive: ClaimsGroundingResult;
+  /** The skeptical judge's verdict. */
+  skeptical: ClaimsGroundingResult;
+  /** Combined ungrounded_claims for downstream display + audit. Empty when
+   *  unanimous_pass; union of both judges' claims otherwise. */
+  combinedUngroundedClaims: string[];
+  /** Sum of both judges' cost cents. */
+  costCents: number;
+}
+
+/**
+ * Run permissive and skeptical grounding judges in parallel. Returns
+ * the consensus outcome plus both per-judge results. Used by launch_
+ * pipeline when tenant.features.regulated_category === true.
+ */
+export async function checkClaimsGroundingDual(args: {
+  source: {
+    name: string;
+    description?: string | null;
+    category?: string | null;
+  };
+  generated: {
+    surface: string;
+    language: string;
+    copy: Record<string, unknown> | null;
+  };
+  anthropicKey?: string;
+}): Promise<DualGroundingResult> {
+  // Parallel: both judges read the same source + copy, independent prompts.
+  const [permissive, skeptical] = await Promise.all([
+    checkClaimsGrounding(args),
+    checkClaimsGroundingWithPrompt(args, SKEPTICAL_SYSTEM_PROMPT),
+  ]);
+  const permPass = permissive.rating === "GROUNDED";
+  const skepPass = skeptical.rating === "GROUNDED";
+  const outcome: DualGroundingOutcome =
+    permPass && skepPass
+      ? "unanimous_pass"
+      : !permPass && !skepPass
+        ? "unanimous_fail"
+        : "disagreement";
+  const combinedSet = new Set<string>([
+    ...permissive.ungroundedClaims,
+    ...skeptical.ungroundedClaims,
+  ]);
+  return {
+    outcome,
+    permissive,
+    skeptical,
+    combinedUngroundedClaims: Array.from(combinedSet),
+    costCents: permissive.costCents + skeptical.costCents,
+  };
+}
+
+/** Internal helper — same as checkClaimsGrounding but with an overridable
+ *  system prompt. Used by the dual judge to swap in the skeptical prompt. */
+async function checkClaimsGroundingWithPrompt(
+  args: {
+    source: { name: string; description?: string | null; category?: string | null };
+    generated: { surface: string; language: string; copy: Record<string, unknown> | null };
+    anthropicKey?: string;
+  },
+  systemPrompt: string
+): Promise<ClaimsGroundingResult> {
+  if (!args.anthropicKey || !args.generated.copy) {
+    return { ...FALLBACK_RESULT, costCents: 0 };
+  }
+  const client = new Anthropic({ apiKey: args.anthropicKey });
+  const sourceText = [
+    `Product name: ${args.source.name}`,
+    args.source.description ? `Description: ${args.source.description}` : null,
+    args.source.category ? `Category: ${args.source.category}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const generatedText = JSON.stringify(args.generated.copy, null, 2);
+  const userMsg = `=== SOURCE ===\n${sourceText}\n\n=== GENERATED COPY (${args.generated.surface} · ${args.generated.language}) ===\n${generatedText}`;
+  let raw = "";
+  try {
+    const resp = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 500,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMsg }],
+    });
+    raw = resp.content[0]?.type === "text" ? resp.content[0].text.trim() : "";
+  } catch {
+    return { ...FALLBACK_RESULT, costCents: 0 };
+  }
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return { ...FALLBACK_RESULT, costCents: JUDGE_COST_CENTS };
+  let parsed: { rating?: string; ungrounded_claims?: unknown; confidence?: number };
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return { ...FALLBACK_RESULT, costCents: JUDGE_COST_CENTS };
+  }
+  const ratingValid =
+    parsed.rating === "GROUNDED" ||
+    parsed.rating === "PARTIALLY_GROUNDED" ||
+    parsed.rating === "UNGROUNDED";
+  if (!ratingValid) {
+    return { ...FALLBACK_RESULT, costCents: JUDGE_COST_CENTS };
+  }
+  const claimsArr = Array.isArray(parsed.ungrounded_claims)
+    ? (parsed.ungrounded_claims as unknown[])
+        .filter((c): c is string => typeof c === "string")
+        .slice(0, 20)
+    : [];
+  const confidence =
+    typeof parsed.confidence === "number" && parsed.confidence >= 0 && parsed.confidence <= 1
+      ? parsed.confidence
+      : 0.5;
+  return {
+    rating: parsed.rating as ClaimsGroundingRating,
+    ungroundedClaims: claimsArr,
+    confidence,
+    source: "ai",
+    costCents: JUDGE_COST_CENTS,
+  };
+}
 
 export async function checkClaimsGrounding(args: {
   source: {

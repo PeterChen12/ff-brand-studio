@@ -36,6 +36,7 @@ import {
 import { checkBatchConsistency } from "../compliance/batch_consistency.js";
 import {
   checkClaimsGrounding,
+  checkClaimsGroundingDual,
   combineRating,
   rewriteUngroundedCopy,
   type ClaimsGroundingResult,
@@ -696,11 +697,34 @@ export async function runLaunchPipeline(
       // grounding-snapshot.test.ts golden-master suite.
       const useQualityGate =
         (input.env as Record<string, unknown> | undefined)?.USE_QUALITY_GATE_LIB === "true";
+      // Phase F · Iter 06 — regulated-category dual-judge gate.
+      // Tenants with regulated_category=true get permissive + skeptical
+      // judges in parallel. Disagreement forces HITL without auto-rewrite.
+      // Phase F · Iter 06 — re-fetch tenant features here. The earlier
+      // features lookup at line ~449 is scoped to the production-pipeline
+      // branch and out of scope at this point. One additional select is
+      // cheap (single row, single column).
+      let useDualJudge = false;
+      try {
+        const [t] = await db
+          .select({ features: tenants.features })
+          .from(tenants)
+          .where(eq(tenants.id, tenantId))
+          .limit(1);
+        const tfeat = (t?.features ?? {}) as Record<string, unknown>;
+        useDualJudge = tfeat.regulated_category === true;
+      } catch {
+        // Couldn't read features — fall through to single judge.
+      }
+
       // Parallel pass (Opportunity E in plan E5).
       const groundingResults = await Promise.all(
         seoResult.surfaces.map(async (surface) => {
           if (!input.anthropic_api_key || !surface.copy) return null;
           try {
+            if (useDualJudge) {
+              return await groundingViaDualJudge(surface);
+            }
             if (useQualityGate) {
               return await groundingViaQualityGate(surface);
             }
@@ -775,6 +799,53 @@ export async function runLaunchPipeline(
           }
         })
       );
+
+      // Phase F · Iter 06 — dual-judge path for regulated-category tenants.
+      // Disagreement = HITL with no auto-rewrite (we don't trust an LLM to
+      // auto-fix a copy where two judges disagreed on whether it's grounded).
+      async function groundingViaDualJudge(
+        surface: SeoSurfaceResult
+      ): Promise<{
+        surface: SeoSurfaceResult;
+        grounding: ClaimsGroundingResult;
+        rewroteCopy: Record<string, unknown> | null;
+      }> {
+        const initialCopy = surface.copy as Record<string, unknown>;
+        const dual = await checkClaimsGroundingDual({
+          source,
+          generated: {
+            surface: surface.surface,
+            language: surface.language,
+            copy: initialCopy,
+          },
+          anthropicKey: input.anthropic_api_key,
+        });
+        groundingCostCents += dual.costCents;
+        // Map dual outcome onto the single-judge ClaimsGroundingResult
+        // shape the persistence loop expects. Use the permissive judge's
+        // shape as the carrier, but force UNGROUNDED rating on
+        // disagreement so the run lands in HITL.
+        const grounding: ClaimsGroundingResult = {
+          rating:
+            dual.outcome === "unanimous_pass"
+              ? "GROUNDED"
+              : dual.outcome === "unanimous_fail"
+                ? "UNGROUNDED"
+                : "PARTIALLY_GROUNDED",
+          ungroundedClaims: dual.combinedUngroundedClaims,
+          confidence: Math.min(
+            dual.permissive.confidence,
+            dual.skeptical.confidence
+          ),
+          source: dual.permissive.source,
+          costCents: dual.costCents,
+        };
+        notes.push(
+          `multi_judge ${surface.surface}:${surface.language} → ${dual.outcome} (perm=${dual.permissive.rating}, skep=${dual.skeptical.rating})`
+        );
+        // Disagreement forces HITL — do NOT attempt auto-rewrite.
+        return { surface, grounding, rewroteCopy: null };
+      }
 
       // Phase F · Iter 01 — quality-gate-backed equivalent of the inline
       // grounding chain above. Defined inline as a closure so it shares
