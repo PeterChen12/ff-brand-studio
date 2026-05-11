@@ -37,6 +37,7 @@ import { checkBatchConsistency } from "../compliance/batch_consistency.js";
 import {
   checkClaimsGrounding,
   combineRating,
+  rewriteUngroundedCopy,
   type ClaimsGroundingResult,
 } from "../lib/claims-grounding.js";
 import { getLangfuse } from "../lib/langfuse.js";
@@ -675,21 +676,25 @@ export async function runLaunchPipeline(
       // hitl_blocked (the dashboard then shows "X of Y listings saved" so
       // the operator triages instead of seeing silently-missing rows).
       //
-      // Phase C · Iteration 01 — claims-grounding pass. After SEO copy is
-      // generated but before persistence, ask Haiku 4.5 whether each surface
-      // contains factual claims not supported by the source product. If
-      // UNGROUNDED, downgrade the rating so the run lands in HITL inbox.
+      // Phase C · Iteration 01 + Phase E · Iter 05 — claims-grounding pass
+      // with auto-rewrite. After SEO copy lands, run grounding in parallel
+      // for every surface. If a surface is UNGROUNDED/PARTIALLY_GROUNDED,
+      // call Sonnet to rewrite the flagged claims and re-grade. If the
+      // rewrite lands GROUNDED, persist it; otherwise keep the original
+      // and let HITL handle it.
       let groundingCostCents = 0;
-      for (const surface of seoResult.surfaces) {
-        let grounding: ClaimsGroundingResult | null = null;
-        if (input.anthropic_api_key && surface.copy) {
+      const source = {
+        name: product.nameEn ?? product.nameZh ?? "",
+        description: product.description ?? null,
+        category: product.category ?? null,
+      };
+      // Parallel pass (Opportunity E in plan E5).
+      const groundingResults = await Promise.all(
+        seoResult.surfaces.map(async (surface) => {
+          if (!input.anthropic_api_key || !surface.copy) return null;
           try {
-            grounding = await checkClaimsGrounding({
-              source: {
-                name: product.nameEn ?? product.nameZh ?? "",
-                description: product.description ?? null,
-                category: product.category ?? null,
-              },
+            let grounding = await checkClaimsGrounding({
+              source,
               generated: {
                 surface: surface.surface,
                 language: surface.language,
@@ -697,6 +702,45 @@ export async function runLaunchPipeline(
               },
               anthropicKey: input.anthropic_api_key,
             });
+            let rewroteCopy: Record<string, unknown> | null = null;
+            // Auto-rewrite chain (Opportunity A in plan E5). Cap 1 attempt.
+            if (
+              grounding.rating !== "GROUNDED" &&
+              grounding.ungroundedClaims.length > 0
+            ) {
+              const rewrite = await rewriteUngroundedCopy({
+                source,
+                surface: surface.surface,
+                language: surface.language,
+                currentCopy: surface.copy as Record<string, unknown>,
+                ungroundedClaims: grounding.ungroundedClaims,
+                anthropicKey: input.anthropic_api_key,
+              });
+              if (rewrite.copy) {
+                // Re-grade the rewrite.
+                const regraded = await checkClaimsGrounding({
+                  source,
+                  generated: {
+                    surface: surface.surface,
+                    language: surface.language,
+                    copy: rewrite.copy,
+                  },
+                  anthropicKey: input.anthropic_api_key,
+                });
+                groundingCostCents += rewrite.costCents + regraded.costCents;
+                if (regraded.rating === "GROUNDED") {
+                  rewroteCopy = rewrite.copy;
+                  grounding = regraded;
+                  notes.push(
+                    `auto_rewrite ${surface.surface}:${surface.language} → GROUNDED (saved from HITL)`
+                  );
+                } else {
+                  notes.push(
+                    `auto_rewrite ${surface.surface}:${surface.language} → ${regraded.rating} (kept original, HITL needed)`
+                  );
+                }
+              }
+            }
             groundingCostCents += grounding.costCents;
             if (
               grounding.rating === "UNGROUNDED" ||
@@ -706,29 +750,51 @@ export async function runLaunchPipeline(
                 `claims_grounding ${surface.surface}:${surface.language} → ${grounding.rating} (${grounding.ungroundedClaims.length} flagged)`
               );
             }
+            return { surface, grounding, rewroteCopy };
           } catch (groundErr) {
             notes.push(
               `claims_grounding failed for ${surface.surface}:${surface.language} — ${
                 groundErr instanceof Error ? groundErr.message : String(groundErr)
               }`
             );
+            return null;
           }
+        })
+      );
+      // Apply results back onto surfaces (mutation kept inside this loop
+      // so the rest of the legacy code below reads the updated surface).
+      for (const result of groundingResults) {
+        if (!result) continue;
+        const { surface, grounding, rewroteCopy } = result;
+        if (rewroteCopy) {
+          (surface as SeoSurfaceResult).copy = rewroteCopy;
         }
+        const finalRating = combineRating(surface.rating ?? null, grounding.rating);
+        (surface as SeoSurfaceResult).rating =
+          finalRating as SeoSurfaceResult["rating"];
+        (surface as SeoSurfaceResult).grounding = {
+          rating: grounding.rating,
+          ungrounded_claims: grounding.ungroundedClaims,
+          confidence: grounding.confidence,
+          source: grounding.source,
+        };
+      }
+      // The persistence loop below reads surface.copy/.rating/.grounding
+      // from the (possibly rewritten) surfaces.
+      for (const surface of seoResult.surfaces) {
+        const grounding: ClaimsGroundingResult | null =
+          (surface as SeoSurfaceResult).grounding
+            ? {
+                rating: ((surface as SeoSurfaceResult).grounding as NonNullable<SeoSurfaceResult["grounding"]>).rating,
+                ungroundedClaims: ((surface as SeoSurfaceResult).grounding as NonNullable<SeoSurfaceResult["grounding"]>).ungrounded_claims,
+                confidence: ((surface as SeoSurfaceResult).grounding as NonNullable<SeoSurfaceResult["grounding"]>).confidence,
+                source: ((surface as SeoSurfaceResult).grounding as NonNullable<SeoSurfaceResult["grounding"]>).source,
+                costCents: 0,
+              }
+            : null;
         const finalRating = grounding
           ? combineRating(surface.rating ?? null, grounding.rating)
           : surface.rating ?? null;
-        // Mutate the surface object so the response carries grounding back
-        // to the dashboard, where ListingCopy renders the callout.
-        if (grounding) {
-          (surface as SeoSurfaceResult).rating =
-            finalRating as SeoSurfaceResult["rating"];
-          (surface as SeoSurfaceResult).grounding = {
-            rating: grounding.rating,
-            ungrounded_claims: grounding.ungroundedClaims,
-            confidence: grounding.confidence,
-            source: grounding.source,
-          };
-        }
         try {
           await db
             .insert(platformListings)

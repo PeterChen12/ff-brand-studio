@@ -159,6 +159,91 @@ export async function checkClaimsGrounding(args: {
 }
 
 /**
+ * Phase E · Iter 05 — auto-rewrite ungrounded copy.
+ *
+ * After the grounding judge returns UNGROUNDED or PARTIALLY_GROUNDED,
+ * call Sonnet with the source + flagged claims and ask for a rewrite
+ * that preserves tone but drops/replaces every ungrounded claim with
+ * something the source supports. The caller re-runs the grounding
+ * judge on the rewrite; if it lands GROUNDED, we persist the rewrite
+ * and skip HITL. If it's still ungrounded, fall back to HITL.
+ *
+ * Cap: 1 rewrite attempt per surface to bound cost. Cost: one Sonnet
+ * call (~$0.01).
+ */
+const REWRITE_COST_CENTS = 2;
+
+const REWRITE_SYSTEM_PROMPT = `You revise AI-generated e-commerce listing copy so every factual claim is grounded in the source product data.
+
+Given the source product, the current copy, and a list of claims the grounding judge flagged as unsupported, rewrite the copy so:
+  - No flagged claim remains
+  - The replaced claims use only facts present in the source (or remove the claim entirely if the source has nothing to substitute)
+  - Tone, headline structure, and bullet count are preserved
+  - Persuasive phrasing is kept where possible — drop the substance of an ungrounded claim, not the rhythm
+
+Return ONLY this JSON shape, no prose, no markdown:
+{
+  "copy": <same shape as the input copy>
+}
+
+The copy keys depend on the surface — preserve every key from the input. Only modify the VALUES of keys that contained ungrounded claims.`;
+
+export interface RewriteResult {
+  copy: Record<string, unknown> | null;
+  source: "ai" | "fallback";
+  costCents: number;
+}
+
+export async function rewriteUngroundedCopy(args: {
+  source: { name: string; description?: string | null; category?: string | null };
+  surface: string;
+  language: string;
+  currentCopy: Record<string, unknown>;
+  ungroundedClaims: string[];
+  anthropicKey?: string;
+}): Promise<RewriteResult> {
+  if (!args.anthropicKey || args.ungroundedClaims.length === 0) {
+    return { copy: null, source: "fallback", costCents: 0 };
+  }
+  const client = new Anthropic({ apiKey: args.anthropicKey });
+  const sourceText = [
+    `Product name: ${args.source.name}`,
+    args.source.description ? `Description: ${args.source.description}` : null,
+    args.source.category ? `Category: ${args.source.category}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const userMsg = `=== SOURCE ===\n${sourceText}\n\n=== SURFACE === ${args.surface} (${args.language})\n\n=== CURRENT COPY ===\n${JSON.stringify(args.currentCopy, null, 2)}\n\n=== UNGROUNDED CLAIMS TO REPLACE OR REMOVE ===\n${args.ungroundedClaims.map((c) => `- ${c}`).join("\n")}`;
+
+  let raw = "";
+  try {
+    const resp = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1500,
+      system: REWRITE_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userMsg }],
+    });
+    raw = resp.content[0]?.type === "text" ? resp.content[0].text.trim() : "";
+  } catch {
+    return { copy: null, source: "fallback", costCents: 0 };
+  }
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return { copy: null, source: "fallback", costCents: REWRITE_COST_CENTS };
+  }
+  let parsed: { copy?: Record<string, unknown> };
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return { copy: null, source: "fallback", costCents: REWRITE_COST_CENTS };
+  }
+  if (!parsed.copy || typeof parsed.copy !== "object") {
+    return { copy: null, source: "fallback", costCents: REWRITE_COST_CENTS };
+  }
+  return { copy: parsed.copy, source: "ai", costCents: REWRITE_COST_CENTS };
+}
+
+/**
  * Determines the final listing rating after both image-quality and
  * claims-grounding checks. Claims-grounding is the safety floor:
  * UNGROUNDED forces FAIR (HITL review), regardless of image quality.
