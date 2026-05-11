@@ -27,3 +27,7 @@ apps/dashboard/.env.local
 
 # Per-user Claude Code permission overrides (do not commit)
 .claude/settings.local.json
+
+# Vitest coverage reports (regenerated locally)
+coverage/
+**/coverage/
