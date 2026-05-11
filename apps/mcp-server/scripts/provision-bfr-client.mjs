@@ -34,6 +34,11 @@ const FEATURES = {
   amazon_a_plus_grid: true,
   rate_limit_per_min: 240,
   publish_destinations: ["buyfishingrod-admin"],
+  // Phase E · Iter 01 — enable per-asset regenerate for enterprise.
+  // Gated at index.ts: regenerate returns 403 feature_disabled unless
+  // this flag is true. Enterprise tier always gets it; lower tiers
+  // require explicit per-tenant opt-in.
+  feedback_regen: true,
 };
 // Synthetic clerkOrgId so the unique-not-null constraint is satisfied
 // without requiring a real Clerk org. Stable so re-runs are idempotent.
