@@ -30,6 +30,7 @@ import {
   putToR2,
   extractExt,
 } from "@/lib/uploader";
+import { unpackZip } from "@/lib/zip-unpacker";
 import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
 import { UploadModeTabs } from "@/components/products/upload-mode-tabs";
@@ -237,6 +238,23 @@ export default function BulkUploadPageInner() {
       setParsing(true);
       setCompleted(false);
       try {
+        // Phase E · Iter 06 — accept a single .zip and unpack it into
+        // synthetic Files with webkitRelativePath set, so parseFolders
+        // sees the same shape as a webkitdirectory folder pick.
+        const onlyFile = fileList.length === 1 ? fileList[0] : null;
+        if (onlyFile && /\.zip$/i.test(onlyFile.name)) {
+          const unpacked = await unpackZip(onlyFile);
+          // FileList isn't constructible — use DataTransfer to forge one.
+          const dt = new DataTransfer();
+          for (const u of unpacked.files) dt.items.add(u.file);
+          const result = await parseFolders(dt.files);
+          if (unpacked.errors.length > 0) {
+            result.errors.push(...unpacked.errors);
+          }
+          setParsed(result);
+          setProducts(result.products);
+          return;
+        }
         const result = await parseFolders(fileList);
         setParsed(result);
         setProducts(result.products);
@@ -363,6 +381,17 @@ export default function BulkUploadPageInner() {
               className="hidden"
               id="bulk-folder-input"
             />
+            {/* Phase E · Iter 06 — alternative .zip input. Same handler;
+                the handler sniffs the file extension and routes to the
+                zip-unpacker. Vendors often ship batches as a single
+                zip (Google Drive auto-zips multi-file downloads). */}
+            <input
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              onChange={onPick}
+              className="hidden"
+              id="bulk-zip-input"
+            />
             <label
               htmlFor="bulk-folder-input"
               className={cn(
@@ -382,6 +411,21 @@ export default function BulkUploadPageInner() {
               <span className="md-typescale-body-small text-on-surface-variant/70 font-mono">
                 JPG · PNG · WEBP · ≤5 MB each · ≤100 MB total · ≤
                 {MAX_PRODUCTS} products
+              </span>
+            </label>
+            <div className="flex items-center gap-3 md-typescale-body-small text-on-surface-variant">
+              <span className="flex-1 h-px bg-outline-variant" />
+              <span>or</span>
+              <span className="flex-1 h-px bg-outline-variant" />
+            </div>
+            <label
+              htmlFor="bulk-zip-input"
+              className="flex items-center justify-center gap-2 px-4 py-3 rounded-m3-md border ff-hairline cursor-pointer hover:bg-surface-container-high transition-colors md-typescale-label-medium"
+            >
+              <span aria-hidden="true">📦</span>
+              <span>Upload a .zip file</span>
+              <span className="md-typescale-body-small text-on-surface-variant/70 font-mono">
+                · nested zips OK up to 2 levels
               </span>
             </label>
 

@@ -20,7 +20,7 @@ Six plan files consolidate issues that share surface area:
 | 03 | [Context-aware backgrounds + variation seeding](phase-e/03-backgrounds-variation.md) | #3, #5 | ✅ shipped | 🟠 high (quality) | medium |
 | 04 | [Sharp-based text overlay (kill diffusion text artifacts)](phase-e/04-text-overlay-sharp.md) | #7 | ✅ shipped (judge-strengthened path; full sharp overlay deferred) | 🟠 high (quality) | medium |
 | 05 | [Chaining / routing / parallel quality audit + targeted fixes](phase-e/05-chaining-routing-audit.md) | #4 + cross-cutting | ✅ shipped (A + E; B/C/D plan-stubbed for follow-up) | 🟡 medium (quality) | medium |
-| 06 | [Bulk upload zip + agentic folder walk](phase-e/06-bulk-upload-zip-agent.md) | #6 | drafted | 🟡 medium | medium |
+| 06 | [Bulk upload zip + agentic folder walk](phase-e/06-bulk-upload-zip-agent.md) | #6 | ✅ shipped (zip unwrap; agentic LLM walk deferred to E6.1) | 🟡 medium | medium |
 
 ## Suggested execution order
 
