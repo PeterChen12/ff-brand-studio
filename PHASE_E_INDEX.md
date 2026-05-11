@@ -17,7 +17,7 @@ Six plan files consolidate issues that share surface area:
 |---|---|---|---|---|---|
 | 01 | [Enable feedback_regen for enterprise tenants](phase-e/01-feedback-regen-flag.md) | #1 | ✅ shipped | 🔴 critical (blocker) | small |
 | 02 | [Stage Product workflow + best-of-input filter](phase-e/02-stage-product-best-of-input.md) | #2, #8 | drafted | 🟠 high | medium |
-| 03 | [Context-aware backgrounds + variation seeding](phase-e/03-backgrounds-variation.md) | #3, #5 | drafted | 🟠 high (quality) | medium |
+| 03 | [Context-aware backgrounds + variation seeding](phase-e/03-backgrounds-variation.md) | #3, #5 | ✅ shipped | 🟠 high (quality) | medium |
 | 04 | [Sharp-based text overlay (kill diffusion text artifacts)](phase-e/04-text-overlay-sharp.md) | #7 | drafted | 🟠 high (quality) | medium |
 | 05 | [Chaining / routing / parallel quality audit + targeted fixes](phase-e/05-chaining-routing-audit.md) | #4 + cross-cutting | drafted | 🟡 medium (quality) | medium |
 | 06 | [Bulk upload zip + agentic folder walk](phase-e/06-bulk-upload-zip-agent.md) | #6 | drafted | 🟡 medium | medium |

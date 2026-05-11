@@ -464,6 +464,10 @@ export async function runLaunchPipeline(
         productName: product.nameEn,
         productNameZh: product.nameZh,
         category: product.category,
+        // Phase E · Iter 03 — description flows through so category-router
+        // can fall back to keyword matching on free-form descriptions when
+        // the category is "other".
+        description: product.description ?? null,
         kind: (product.kind ?? "compact_square") as KindType,
         referenceR2Keys,
         features,

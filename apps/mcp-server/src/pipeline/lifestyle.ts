@@ -7,8 +7,10 @@
  */
 
 import type { PipelineCtx, StepResult } from "./types.js";
-import { getDeriver } from "./derivers/index.js";
 import { publicUrl } from "./cache.js";
+import { pickScene } from "./scene-library.js";
+import { routeToSceneGroup } from "../lib/category-router.js";
+import { composeLifestylePrompt, pickVariation } from "./prompt-variation.js";
 
 export const LIFESTYLE_COST_CENTS = 30;
 
@@ -20,11 +22,17 @@ export async function lifestyleRender(
   if (!env.FAL_KEY) {
     return { status: "error", error: { kind: "config_missing", field: "FAL_KEY" } };
   }
-  const deriver = getDeriver(ctx.kind);
-  const prompt = deriver.lifestylePrompt({
+
+  // Phase E · Iter 03 — category-aware scene + per-product variation.
+  // The seed is the productId so different products in the same kind
+  // get different scenes; regenerating the same product is stable.
+  const sceneGroup = routeToSceneGroup(ctx.category, ctx.description);
+  const scene = pickScene(sceneGroup, ctx.kind, ctx.productId);
+  const variation = pickVariation(ctx.productId);
+  const prompt = composeLifestylePrompt({
     productName: ctx.productName,
-    productNameZh: ctx.productNameZh,
-    category: ctx.category,
+    scene,
+    variation,
   });
   const studioUrl = publicUrl(env, studioR2Key);
 
@@ -88,6 +96,12 @@ export async function lifestyleRender(
     status: "ok",
     outputR2Key,
     costCents: LIFESTYLE_COST_CENTS,
-    metadata: { model: "fal:gemini-3-pro-image-preview", lifestyle: true },
+    metadata: {
+      model: "fal:gemini-3-pro-image-preview",
+      lifestyle: true,
+      scene_group: sceneGroup,
+      scene,
+      variation,
+    },
   };
 }

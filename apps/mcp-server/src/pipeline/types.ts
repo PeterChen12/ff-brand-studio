@@ -18,6 +18,10 @@ export interface PipelineCtx {
   productNameZh: string | null;
   category: string;
   kind: KindType;
+  /** Phase E · Iter 03 — passed to category-router for scene routing
+   *  on free-form / "other" categories. Optional; falls back to
+   *  category-only matching when absent. */
+  description?: string | null;
   /** Raw supplier image R2 keys, attached at product creation. */
   referenceR2Keys: string[];
   /** Bound at the orchestrator level so steps don't refetch the row. */
