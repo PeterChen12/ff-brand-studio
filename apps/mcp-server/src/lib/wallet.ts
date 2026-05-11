@@ -36,7 +36,8 @@ type Reason =
   | "refund"
   | "admin_grant"
   | "promo"
-  | "tenant_created";
+  | "tenant_created"
+  | "agentic_classify";
 
 export interface WalletChangeInput {
   tenantId: string;

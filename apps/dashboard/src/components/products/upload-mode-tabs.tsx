@@ -16,6 +16,7 @@ import { cn } from "@/lib/cn";
 const TABS: { href: string; label: string; sub: string }[] = [
   { href: "/products/new", label: "Single product", sub: "添加单个产品" },
   { href: "/products/bulk", label: "Bulk upload", sub: "批量上传" },
+  { href: "/products/agentic", label: "Agentic upload", sub: "AI 整理" },
 ];
 
 export function UploadModeTabs() {

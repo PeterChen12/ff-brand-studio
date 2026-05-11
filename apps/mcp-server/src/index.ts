@@ -268,6 +268,79 @@ const UploadIntentInput = z.object({
     .max(10),
 });
 
+// ── Phase F · Iter 08.1 — agentic folder classify endpoint ────────────
+//
+// The dashboard's Agentic upload tab uploads a flat list of files
+// (images + docx/pdf/text) to R2 staging, then POSTs the list of
+// {path, kind, r2_key} entries here. We hand the list to Sonnet
+// (via lib/agentic-folder-classifier.ts) and return a proposed
+// manifest the operator reviews + edits before confirming.
+//
+// Confirm step (creating actual products) goes through the existing
+// POST /v1/products endpoint per manifest entry. F8.2 (the dashboard
+// UI) drives this flow.
+
+const AgenticClassifyInput = z.object({
+  files: z
+    .array(
+      z.object({
+        path: z.string().min(1).max(500),
+        kind: z.enum(["image", "docx", "pdf", "text", "unknown"]),
+        r2_key: z.string().min(1).max(500),
+      })
+    )
+    .min(1)
+    .max(500), // 500-file cap per batch
+});
+
+app.post("/v1/products/agentic-classify", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = AgenticClassifyInput.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+  if (!c.env.ANTHROPIC_API_KEY) {
+    return c.json(
+      {
+        error: "anthropic_unavailable",
+        hint: "ANTHROPIC_API_KEY not set on the worker",
+      },
+      503
+    );
+  }
+
+  const { classifyFolderContents } = await import(
+    "./lib/agentic-folder-classifier.js"
+  );
+  const manifest = await classifyFolderContents({
+    files: parsed.data.files,
+    anthropicKey: c.env.ANTHROPIC_API_KEY,
+  });
+
+  // Debit the classifier cost. Best-effort; don't fail the call if
+  // ledger insert fails.
+  if (manifest.cost_cents > 0) {
+    try {
+      const db = createDbClient(c.env);
+      const { chargeWallet } = await import("./lib/wallet.js");
+      await chargeWallet(db, {
+        tenantId: tenant.id,
+        cents: manifest.cost_cents,
+        reason: "agentic_classify",
+      });
+    } catch (chargeErr) {
+      console.warn("[agentic-classify] wallet debit failed", chargeErr);
+    }
+  }
+
+  return c.json({
+    products: manifest.products,
+    unassigned: manifest.unassigned,
+    cost_cents: manifest.cost_cents,
+  });
+});
+
 app.post("/v1/products/upload-intent", async (c) => {
   const body = await c.req.json();
   const parsed = UploadIntentInput.safeParse(body);
