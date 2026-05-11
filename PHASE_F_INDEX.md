@@ -8,7 +8,7 @@ under the safety practices in `PHASE_F_SAFETY_RESEARCH.md`.
 
 | # | Iteration | Depends on | Risk | Status | Est |
 |---|---|---|---|---|---|
-| 01 | [Quality-gate abstraction (R1)](phase-f/01-quality-gate-abstraction.md) | none | 🔴 high | drafted | medium |
+| 01 | [Quality-gate abstraction (R1)](phase-f/01-quality-gate-abstraction.md) | none | 🔴 high | ✅ shipped (env-var off; grounding migrated; iterate.ts deferred — shape mismatch) | medium |
 | 02 | [BFR adapter `stage(ctx)` completion (R5)](phase-f/02-bfr-adapter-stage.md) | none | 🟠 medium | drafted | medium-large |
 | 03 | [E2.1 — Best-of-input passthrough](phase-f/03-best-of-input.md) | F1, optionally F2 | 🟡 low | drafted | small |
 | 04 | [E5.B — Compliance defect router](phase-f/04-defect-router.md) | F1 | 🟡 low | drafted | medium |

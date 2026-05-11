@@ -80,28 +80,31 @@ describe("DERIVERS registry", () => {
       category: "bag",
     });
     expect(prompt).toMatchInlineSnapshot(`
-"Studio product photograph of Marlow Crossbody Bag (bag).
-Match the framing of the second reference (the crop oracle).
-Match the identity of the first reference (the studio source).
-Key features to preserve exactly:
-  - hardware metal color and shape
-  - stitch pattern visible on the seams
-  - leather or fabric grain texture
-  - strap or handle attachment hardware
-  - logo or monogram pattern only as shown in the reference
-Pure white seamless background (#FFFFFF). Product centered, even fill of the frame.
-ABSOLUTELY NO:
-  - no text
-  - no logos
-  - no watermarks
-  - no dimension labels
-  - no shadows on background
-  - no gradients on background
-  - no AI artifacts
-  - no halo around the product
-  - do not re-shape the silhouette
-  - do not invent logos, monograms, or charms not present in the reference
-  - do not re-color the leather or fabric"
-`);
+      "Studio product photograph of Marlow Crossbody Bag (bag).
+      Match the framing of the second reference (the crop oracle).
+      Match the identity of the first reference (the studio source).
+      Key features to preserve exactly:
+        - hardware metal color and shape
+        - stitch pattern visible on the seams
+        - leather or fabric grain texture
+        - strap or handle attachment hardware
+        - logo or monogram pattern only as shown in the reference
+      Pure white seamless background (#FFFFFF). Product centered, even fill of the frame.
+      ABSOLUTELY NO:
+        - no text, no letters, no numbers anywhere in the image
+        - no logos that aren't physically printed on the actual product
+        - no watermarks
+        - no floating captions, callouts, or speech bubbles
+        - no dimension labels or spec tags
+        - no garbled or partially-rendered text characters
+        - no horizontal line/scanline artifacts crossing through text
+        - no shadows on background
+        - no gradients on background
+        - no AI artifacts
+        - no halo around the product
+        - do not re-shape the silhouette
+        - do not invent logos, monograms, or charms not present in the reference
+        - do not re-color the leather or fabric"
+    `);
   });
 });

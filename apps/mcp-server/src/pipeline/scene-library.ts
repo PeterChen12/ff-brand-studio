@@ -149,18 +149,7 @@ const SCENE_GROUPS: Record<SceneGroup, SceneMatrix> = {
   },
 };
 
-/**
- * Deterministic 32-bit hash from a string. Same input → same output.
- * Used to seed scene + variation choices off (productId, slotIndex) so
- * regenerate runs are stable but slots within a launch differ.
- */
-function hashSeed(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
+import { hashSeed } from "../lib/hash-seed.js";
 
 /**
  * Return one scene string for (group, kind), picked deterministically

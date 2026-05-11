@@ -31,13 +31,7 @@ const DEPTH = [
   "subtle background blur",
 ];
 
-function hashSeed(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
+import { hashSeed } from "../lib/hash-seed.js";
 
 export interface VariationModifiers {
   lighting: string;

@@ -40,6 +40,7 @@ import {
   rewriteUngroundedCopy,
   type ClaimsGroundingResult,
 } from "../lib/claims-grounding.js";
+import { runQualityGate } from "../lib/quality-gate.js";
 import { getLangfuse } from "../lib/langfuse.js";
 import type Langfuse from "langfuse";
 import { planSkuLaunch, type LaunchPlatform, type PlannedWork } from "./planner.js";
@@ -688,11 +689,24 @@ export async function runLaunchPipeline(
         description: product.description ?? null,
         category: product.category ?? null,
       };
+      // Phase F · Iter 01 — gated migration to runQualityGate.
+      // Old inline path remains the DEFAULT. New path activates only when
+      // USE_QUALITY_GATE_LIB env var is set (env binding or worker secret).
+      // Both paths produce byte-identical results — verified by the
+      // grounding-snapshot.test.ts golden-master suite.
+      const useQualityGate =
+        (input.env as Record<string, unknown> | undefined)?.USE_QUALITY_GATE_LIB === "true";
       // Parallel pass (Opportunity E in plan E5).
       const groundingResults = await Promise.all(
         seoResult.surfaces.map(async (surface) => {
           if (!input.anthropic_api_key || !surface.copy) return null;
           try {
+            if (useQualityGate) {
+              return await groundingViaQualityGate(surface);
+            }
+            // Original inline path — preserved for safety. The quality-gate
+            // path above is a behavior-equivalent rewrite; the two diverge
+            // only by which code structure runs.
             let grounding = await checkClaimsGrounding({
               source,
               generated: {
@@ -761,6 +775,95 @@ export async function runLaunchPipeline(
           }
         })
       );
+
+      // Phase F · Iter 01 — quality-gate-backed equivalent of the inline
+      // grounding chain above. Defined inline as a closure so it shares
+      // the `source`, `notes`, and `input.anthropic_api_key` captures.
+      // Behavior MUST stay identical to the inline path; cost accounting,
+      // notes strings, and the rewroteCopy carry-forward are all preserved.
+      async function groundingViaQualityGate(
+        surface: SeoSurfaceResult
+      ): Promise<{
+        surface: SeoSurfaceResult;
+        grounding: ClaimsGroundingResult;
+        rewroteCopy: Record<string, unknown> | null;
+      }> {
+        const initialCopy = surface.copy as Record<string, unknown>;
+        type Candidate = { copy: Record<string, unknown> };
+        const gateResult = await runQualityGate<Candidate>({
+          initial: { copy: initialCopy },
+          judge: async (cand) => {
+            const g = await checkClaimsGrounding({
+              source,
+              generated: {
+                surface: surface.surface,
+                language: surface.language,
+                copy: cand.copy,
+              },
+              anthropicKey: input.anthropic_api_key,
+            });
+            return {
+              pass: g.rating === "GROUNDED",
+              reasons: g.ungroundedClaims,
+              cost_cents: g.costCents,
+              metadata: { grounding: g },
+            };
+          },
+          fix: async (cand, reasons) => {
+            if (reasons.length === 0) return null;
+            const rewrite = await rewriteUngroundedCopy({
+              source,
+              surface: surface.surface,
+              language: surface.language,
+              currentCopy: cand.copy,
+              ungroundedClaims: reasons,
+              anthropicKey: input.anthropic_api_key,
+            });
+            if (rewrite.costCents > 0) {
+              // The rewrite cost isn't part of judge cost; accumulate it
+              // into the orchestrator's running total directly.
+              groundingCostCents += rewrite.costCents;
+            }
+            return rewrite.copy ? { copy: rewrite.copy } : null;
+          },
+          maxAttempts: 1,
+        });
+        groundingCostCents += gateResult.total_cost_cents;
+        const lastHistory = gateResult.history[gateResult.history.length - 1];
+        const grounding = lastHistory?.judge.metadata?.grounding as
+          | ClaimsGroundingResult
+          | undefined;
+        const rewroteCopy =
+          gateResult.history.length > 1 && gateResult.passed
+            ? gateResult.final.copy
+            : null;
+        if (gateResult.history.length > 1) {
+          notes.push(
+            gateResult.passed
+              ? `auto_rewrite ${surface.surface}:${surface.language} → GROUNDED (saved from HITL)`
+              : `auto_rewrite ${surface.surface}:${surface.language} → ${grounding?.rating ?? "UNKNOWN"} (kept original, HITL needed)`
+          );
+        }
+        if (
+          grounding &&
+          (grounding.rating === "UNGROUNDED" ||
+            grounding.rating === "PARTIALLY_GROUNDED")
+        ) {
+          notes.push(
+            `claims_grounding ${surface.surface}:${surface.language} → ${grounding.rating} (${grounding.ungroundedClaims.length} flagged)`
+          );
+        }
+        // Fallback: if the gate didn't even run (no judge call returned
+        // metadata, shouldn't happen), use a safe PARTIALLY_GROUNDED.
+        const safeGrounding: ClaimsGroundingResult = grounding ?? {
+          rating: "PARTIALLY_GROUNDED",
+          ungroundedClaims: [],
+          confidence: 0,
+          source: "fallback",
+          costCents: 0,
+        };
+        return { surface, grounding: safeGrounding, rewroteCopy };
+      }
       // Apply results back onto surfaces (mutation kept inside this loop
       // so the rest of the legacy code below reads the updated surface).
       for (const result of groundingResults) {
