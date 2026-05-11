@@ -33,6 +33,11 @@ export interface TenantFeatures {
   // Phase C · Iteration 05 — folds API keys + Webhooks into one
   // Advanced tab that's always visible; no gating yet.
   developer_mode?: boolean;
+  // Phase E · Iter 02 — adapter keys this tenant has configured for
+  // one-click "Stage Product" pushes (e.g. ["buyfishingrod-admin"]).
+  // Absent or empty array → the Stage Product button routes the
+  // operator to /settings?tab=channels instead of POSTing.
+  publish_destinations?: string[];
   // Any additional flags surfaced server-side land in this Record bag.
   [key: string]: unknown;
 }

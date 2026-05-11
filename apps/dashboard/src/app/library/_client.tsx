@@ -25,6 +25,7 @@ import {
   DownloadAssetButton,
   RegenAssetButton,
 } from "@/components/library/asset-actions";
+import { StageProductButton } from "@/components/library/stage-product-button";
 import {
   FilterBar,
   applyFilters,
@@ -584,6 +585,10 @@ function SkuGroup({
               📝 View listings →
             </button>
           )}
+          <StageProductButton
+            assets={group.items}
+            productLabel={group.nameEn || group.sku}
+          />
           <BundleSkuButton group={group} />
         </div>
       </CardHeader>

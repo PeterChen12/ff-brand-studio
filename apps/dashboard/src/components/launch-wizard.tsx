@@ -27,6 +27,7 @@ import {
   BundleSkuButton,
   DownloadAssetButton,
 } from "@/components/library/asset-actions";
+import { StageProductButton } from "@/components/library/stage-product-button";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -1503,6 +1504,10 @@ function ResultPanelImpl({
           <div className="flex flex-wrap items-center gap-3">
             {isFullRunSucceeded && hasAssets ? (
               <>
+                <StageProductButton
+                  assets={assets ?? []}
+                  productLabel={productNameEn || result.product_sku}
+                />
                 <BundleSkuButton
                   group={{
                     sku: result.product_sku,
