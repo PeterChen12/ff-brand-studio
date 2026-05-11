@@ -38,10 +38,16 @@ export interface Deriver {
 }
 
 const COMMON_NEGATIVES = [
-  "no text",
-  "no logos",
+  // Phase E · Iter 04 — text artifacts are the most-reported failure mode.
+  // Restated with multiple synonyms so the model can't squeak by on a
+  // narrow interpretation of "no text".
+  "no text, no letters, no numbers anywhere in the image",
+  "no logos that aren't physically printed on the actual product",
   "no watermarks",
-  "no dimension labels",
+  "no floating captions, callouts, or speech bubbles",
+  "no dimension labels or spec tags",
+  "no garbled or partially-rendered text characters",
+  "no horizontal line/scanline artifacts crossing through text",
   "no shadows on background",
   "no gradients on background",
   "no AI artifacts",

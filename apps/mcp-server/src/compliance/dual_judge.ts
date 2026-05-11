@@ -69,12 +69,23 @@ CRITERIA:
 3. Background integrity — for white-background slots: pure white at all four corners, no visible color banding, no gradient seams, no halo around the subject, no obvious photoshop edges. For lifestyle slots: scene is coherent, no warped horizon, no impossible shadows.
 4. AI artifacts — no extra fingers, no melted geometry, no duplicated parts, no impossible reflections, no "uncanny" rendering of fine details (text, fasteners, threads).
 5. Detail integrity — fine features (text on the product, threading, hardware) render cleanly, not as smudges.
+6. UNINTENDED TEXT — Phase E · Iter 04. This is a HARD reject criterion. The model frequently hallucinates text/watermarks/logos/labels even when told not to. REJECT if ANY of these appear in the image and were NOT printed on the actual product itself:
+   - Floating text, captions, or callouts overlaid on the image
+   - Brand names or logos hallucinated by the model (a logo invented out of thin air on a plain product)
+   - Watermarks (any "FF", "AI", or stock-photo-style marks)
+   - Number labels, dimension callouts, spec tags
+   - Lines of garbled or partially-rendered characters (a common diffusion artifact)
+   - Any text rendered with line/scanline artifacts crossing through it
+   The ONLY text allowed is text that's physically printed on the product itself as shown in the references — and even that must render cleanly without character-warping artifacts.
 
 REJECT if any criterion fails clearly. Examples:
 - "rod tip cropped — only the lower half visible"
 - "white background has visible vertical color banding behind the subject"
 - "halo of pixels around the handle suggests poor masking"
 - "grip texture rendered as a smudged blob, not woven leather as expected"
+- "unintended text overlay 'PREMIUM QUALITY' appears in the bottom-right corner"
+- "hallucinated brand logo on the product body — not present in references"
+- "garbled text characters with a horizontal line artifact across the watermark"
 
 APPROVE if the image is publish-ready as-is.
 

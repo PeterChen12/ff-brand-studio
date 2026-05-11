@@ -173,7 +173,16 @@ export async function refineWithIteration(
     const geometryBlock = iter >= 2
       ? "\nThis is a geometry-correction iteration. Hold the identity of the studio reference exactly; only adjust framing to match the second reference."
       : "";
-    prompt = basePrompt + reasonBlock + geometryBlock;
+    // Phase E · Iter 04 — when the framing judge flagged unintended
+    // text/watermarks/logos, prepend an emphatic anti-text directive.
+    // The base prompt's banned block already says "no text" but the
+    // model has just demonstrated it ignores that; this prefix is
+    // calibrated for the "previous attempt added a watermark" case.
+    const textRelated = /\b(text|watermark|logo|label|caption|character|tag|scanline)\b/i;
+    const textBlock = reasons.some((r) => textRelated.test(r))
+      ? "\n\nABSOLUTE PRIORITY: The previous attempt added text/watermarks/logos that DO NOT belong in this image. This is a CRITICAL failure. Generate the image with ZERO text, ZERO letters, ZERO numbers, ZERO logos, ZERO watermarks, ZERO captions, ZERO labels. The ONLY text that may appear is text physically printed on the actual product as shown in the reference image — and only if it renders cleanly without character-warping artifacts. Treat any other text as a banned element.\n"
+      : "";
+    prompt = basePrompt + textBlock + reasonBlock + geometryBlock;
   }
 
   // Hit the ceiling — ship the best we have but mark FAIR.
