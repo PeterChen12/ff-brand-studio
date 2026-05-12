@@ -690,13 +690,11 @@ export async function runLaunchPipeline(
         description: product.description ?? null,
         category: product.category ?? null,
       };
-      // Phase F · Iter 01 — gated migration to runQualityGate.
-      // Old inline path remains the DEFAULT. New path activates only when
-      // USE_QUALITY_GATE_LIB env var is set (env binding or worker secret).
-      // Both paths produce byte-identical results — verified by the
-      // grounding-snapshot.test.ts golden-master suite.
-      const useQualityGate =
-        (input.env as Record<string, unknown> | undefined)?.USE_QUALITY_GATE_LIB === "true";
+      // Phase F · Iter 01.1 — quality-gate is now the only path for
+      // grounding. The previous USE_QUALITY_GATE_LIB env-var gate has
+      // been retired; the inline duplicate is gone. Golden-master tests
+      // in test/orchestrator/grounding-snapshot.test.ts pin the contract.
+      //
       // Phase F · Iter 06 — regulated-category dual-judge gate.
       // Tenants with regulated_category=true get permissive + skeptical
       // judges in parallel. Disagreement forces HITL without auto-rewrite.
@@ -717,7 +715,8 @@ export async function runLaunchPipeline(
         // Couldn't read features — fall through to single judge.
       }
 
-      // Parallel pass (Opportunity E in plan E5).
+      // Parallel pass (Opportunity E in plan E5). Quality-gate-backed
+      // for normal tenants; dual-judge consensus for regulated tenants.
       const groundingResults = await Promise.all(
         seoResult.surfaces.map(async (surface) => {
           if (!input.anthropic_api_key || !surface.copy) return null;
@@ -725,70 +724,7 @@ export async function runLaunchPipeline(
             if (useDualJudge) {
               return await groundingViaDualJudge(surface);
             }
-            if (useQualityGate) {
-              return await groundingViaQualityGate(surface);
-            }
-            // Original inline path — preserved for safety. The quality-gate
-            // path above is a behavior-equivalent rewrite; the two diverge
-            // only by which code structure runs.
-            let grounding = await checkClaimsGrounding({
-              source,
-              generated: {
-                surface: surface.surface,
-                language: surface.language,
-                copy: surface.copy as Record<string, unknown>,
-              },
-              anthropicKey: input.anthropic_api_key,
-            });
-            let rewroteCopy: Record<string, unknown> | null = null;
-            // Auto-rewrite chain (Opportunity A in plan E5). Cap 1 attempt.
-            if (
-              grounding.rating !== "GROUNDED" &&
-              grounding.ungroundedClaims.length > 0
-            ) {
-              const rewrite = await rewriteUngroundedCopy({
-                source,
-                surface: surface.surface,
-                language: surface.language,
-                currentCopy: surface.copy as Record<string, unknown>,
-                ungroundedClaims: grounding.ungroundedClaims,
-                anthropicKey: input.anthropic_api_key,
-              });
-              if (rewrite.copy) {
-                // Re-grade the rewrite.
-                const regraded = await checkClaimsGrounding({
-                  source,
-                  generated: {
-                    surface: surface.surface,
-                    language: surface.language,
-                    copy: rewrite.copy,
-                  },
-                  anthropicKey: input.anthropic_api_key,
-                });
-                groundingCostCents += rewrite.costCents + regraded.costCents;
-                if (regraded.rating === "GROUNDED") {
-                  rewroteCopy = rewrite.copy;
-                  grounding = regraded;
-                  notes.push(
-                    `auto_rewrite ${surface.surface}:${surface.language} → GROUNDED (saved from HITL)`
-                  );
-                } else {
-                  notes.push(
-                    `auto_rewrite ${surface.surface}:${surface.language} → ${regraded.rating} (kept original, HITL needed)`
-                  );
-                }
-              }
-            }
-            groundingCostCents += grounding.costCents;
-            if (
-              grounding.rating === "UNGROUNDED" ||
-              grounding.rating === "PARTIALLY_GROUNDED"
-            ) {
-              notes.push(
-                `claims_grounding ${surface.surface}:${surface.language} → ${grounding.rating} (${grounding.ungroundedClaims.length} flagged)`
-              );
-            }
-            return { surface, grounding, rewroteCopy };
+            return await groundingViaQualityGate(surface);
           } catch (groundErr) {
             notes.push(
               `claims_grounding failed for ${surface.surface}:${surface.language} — ${
