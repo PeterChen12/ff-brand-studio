@@ -11,12 +11,23 @@
  * needs ~5ms per image via sharp resize+raw. pHash requires DCT which
  * isn't natively in sharp without a wasm port.
  */
-import sharp from "sharp";
+// sharp is loaded lazily — a static `import sharp from "sharp"` runs
+// sharp/lib/libvips.js at module init, which calls detect-libc, which
+// calls process.report.getReport — not implemented in CF Workers' unenv
+// polyfill and crashes deploy bundle validation (10021). The dynamic
+// import keeps sharp out of the top-level worker chunk; the import only
+// fires when dhash() is actually called (in Node tests or the sidecar,
+// never in the live Worker).
+async function getSharp() {
+  const mod = await import("sharp");
+  return mod.default;
+}
 
 const DHASH_WIDTH = 9;
 const DHASH_HEIGHT = 8;
 
 export async function dhash(imageBuffer: Buffer): Promise<string> {
+  const sharp = await getSharp();
   const { data } = await sharp(imageBuffer)
     .removeAlpha()
     .greyscale()

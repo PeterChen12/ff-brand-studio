@@ -3,6 +3,16 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# sharp is a native libvips binding — it can't run inside Workers, but its
+# transitive imports (`detect-libc.familySync` -> `process.report.getReport`)
+# crash deploy bundle validation (error 10021). Alias the bare `sharp`
+# specifier to a throwing stub so the bundle compiles; tests + the sidecar
+# still resolve the real package because the alias only applies to the
+# worker bundle. Code that actually needs sharp at runtime must route
+# through the image-sidecar (pipeline/sidecar.ts).
+[alias]
+"sharp" = "./src/shims/sharp-worker-stub.ts"
+
 [[r2_buckets]]
 binding = "R2"
 bucket_name = "ff-brand-studio-assets"

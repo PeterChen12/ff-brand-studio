@@ -16,7 +16,17 @@
  * Threshold tuning is one-line constant change; no architecture
  * impact if a tenant reports false-passthroughs.
  */
-import sharp from "sharp";
+// sharp is loaded lazily — a static `import sharp from "sharp"` runs
+// sharp/lib/libvips.js at module init, which calls detect-libc, which
+// calls process.report.getReport — not implemented in CF Workers' unenv
+// polyfill and crashes deploy bundle validation (10021). Pulling the
+// dynamic import into the function keeps sharp out of the worker's
+// top-level chunk; it only loads when scoreReference is invoked from
+// Node tests or the sidecar, never in the live Worker.
+async function getSharp() {
+  const mod = await import("sharp");
+  return mod.default;
+}
 
 /** Pin-#3 strict typing — everything the threshold check needs. */
 export interface ReferenceQualityMetrics {
@@ -124,6 +134,7 @@ export async function scoreReference(
   imageBuffer: Buffer,
   cornerSizePct: number = 5
 ): Promise<ReferenceQualityMetrics> {
+  const sharp = await getSharp();
   const meta = await sharp(imageBuffer).metadata();
   const W = meta.width ?? 0;
   const H = meta.height ?? 0;
