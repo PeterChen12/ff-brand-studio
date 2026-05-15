@@ -100,7 +100,11 @@ export async function refineWithIteration(
       bestScore = score;
     }
 
-    if (score !== null && score >= deriver.clipThreshold) {
+    // Phase G · G09 — tenant-level per-kind threshold override beats the
+    // deriver default. Lets brands tighten/loosen by product class.
+    const threshold =
+      ctx.features.clip_threshold_overrides?.[ctx.kind] ?? deriver.clipThreshold;
+    if (score !== null && score >= threshold) {
       // Pass — ship.
       return {
         asset: {

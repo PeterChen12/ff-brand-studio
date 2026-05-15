@@ -6,7 +6,12 @@
  * step, writes audit_events, and capped iter loops with FAIR fallback.
  */
 
-import type { KindType } from "@ff/types";
+import type { KindType, TenantFeatures } from "@ff/types";
+
+// Phase G · G01 — single source of truth lives in @ff/types now. Local
+// re-export preserves all `import { TenantFeatures } from "./types.js"`
+// call sites in the pipeline so this is a non-breaking move.
+export type { TenantFeatures } from "@ff/types";
 
 export interface PipelineCtx {
   tenantId: string;
@@ -30,11 +35,6 @@ export interface PipelineCtx {
   perLaunchCapCents: number;
 }
 
-export interface TenantFeatures {
-  production_pipeline?: boolean;
-  amazon_a_plus_grid?: boolean;
-  has_sample_access?: boolean;
-}
 
 /** Discriminated step outcome. status='ok' → outputR2Key is the canonical asset. */
 export type StepResult =

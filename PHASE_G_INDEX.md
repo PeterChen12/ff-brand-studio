@@ -22,33 +22,33 @@ candidates, each sized to the ≤200-line plan-file rule from prior phases.
 
 ## Iteration candidates
 
-| # | Title | Audit refs | Class | Risk | Dep |
-|---|---|---|---|---|---|
-| G01 | **Typed tenant.features schema** (R2 from phase-f) | 1.11, 5.8 | 🤖 | 🟡 | — |
-| G02 | **Defense-in-depth tenant scoping helper** | 1.10 | 🤖 | 🟠 | — |
-| G03 | **Delete stub workers + finalize D7** | 2.5, 3.17 | 🤖 | 🟡 | — |
-| G04 | **Multi-reference best-fill (D6 from phase-d)** | 2.4 | 🤖 | 🟡 | — |
-| G05 | **Input-quality fail-fast (D8 from phase-d)** | 2.6 | 🤖 | 🟡 | — |
-| G06 | **Cross-slot image dedup** | 2.8 | 🤖 | 🟡 | — |
-| G07 | **Native sharp `stats()` + `trim()` swap** | 2.7 | 🤖 | 🟢 | — |
-| G08 | **FAL retry-with-backoff (transient vs quality fail)** | 2.9 | 🤖 | 🟡 | — |
-| G09 | **CLIP threshold per-product override** | 2.11 | 🤖 | 🟢 | — |
-| G10 | **Determinism — replace `Math.random` in image_post** | 1.15 | 🤖 | 🟢 | — |
-| G11 | **`forceWhiteBackground` tolerance per-tenant** | 2.12 | 🤖 | 🟢 | — |
-| G12 | **Refine-call dedup (hash → cached result)** | 2.10 | 🤖 | 🟡 | — |
-| G13 | **Cost-cap pre-flight check (charge AFTER success)** | 1.7 | 🤖 | 🟠 | — |
-| G14 | **API rate-limit headers** | 4.9 | 🤖 | 🟡 | — |
-| G15 | **Webhook delivery dashboard for customers** | 4.11 | 🤖 | 🟡 | — |
-| G16 | **Parallel pipeline stages (cleanup/derive ‖ lifestyle/composite)** | 2.3 | 🤖 | 🟠 | — |
-| G17 | **OpenAPI spec auto-generated from Zod** | 5.4 | 🤖 | 🟢 | — |
-| G18 | **Customer SDK (TypeScript starter)** | 4.7 | 🤖 | 🟡 | — |
-| G19 | **Splitting index.ts into route modules** | 1.1, 5.1 | 🤖 | 🟠 high (no tests cover hot paths — F1 risk class again) | G02 |
-| G20 | **Splitting launch_pipeline.ts** | 1.1, 5.1 | 🤖 | 🟠 high | G02 |
-| G21 | **Saga / compensation for partial pipeline failure** | 1.6, 3.12, 3.5 | 🤖 | 🔴 large | G02 |
-| G22 | **Public status page integration** | 4.6 | 🤖 + 🏗️ (statuspage.io account) | 🟡 | — |
-| G23 | **PII redaction policy + Sentry scrubbing** | 4.15 | 🤖 | 🟡 | — |
-| G24 | **GDPR delete flow** | 4.8 | 🤖 | 🟡 | — |
-| G25 | **Customer-facing usage analytics dashboard** | 4.4 | 🤖 | 🟡 | — |
+| # | Title | Audit refs | Class | Risk | Dep | Status |
+|---|---|---|---|---|---|---|
+| G01 | **Typed tenant.features schema** (R2 from phase-f) | 1.11, 5.8 | 🤖 | 🟡 | — | ✅ shipped 2026-05-14 — canonical Zod schema in `@ff/types`, both apps re-export |
+| G02 | **Defense-in-depth tenant scoping helper** | 1.10 | 🤖 | 🟠 | — | ✅ shipped — `lib/tenant-scope.ts` (helper only; no call-site sweep needed, audit map showed every existing query already filters correctly) |
+| G03 | **Delete stub workers + finalize D7** | 2.5, 3.17 | 🤖 | 🟡 | — | ⏸ deferred — legacy fanout still active when `production_pipeline=false` |
+| G04 | **Multi-reference best-fill (D6 from phase-d)** | 2.4 | 🤖 | 🟡 | — | ✅ shipped — `pickBestReference()` scores up to 6 refs and picks the best |
+| G05 | **Input-quality fail-fast (D8 from phase-d)** | 2.6 | 🤖 | 🟡 | — | ✅ shipped — `isAbortQuality()` aborts before any FAL spend on broken refs |
+| G06 | **Cross-slot image dedup** | 2.8 | 🤖 | 🟡 | — | ✅ detection shipped 2026-05-15 — dHash + Hamming compare across refine outputs, audit-warns on duplicates (no auto-regen yet) |
+| G07 | **Native sharp `stats()` + `trim()` swap** | 2.7 | 🤖 | 🟢 | — | ✅ shipped — `measureProductFill` now libvips-native (~50× faster) |
+| G08 | **FAL retry-with-backoff (transient vs quality fail)** | 2.9 | 🤖 | 🟡 | — | ✅ already done — `refine.ts:84-92` |
+| G09 | **CLIP threshold per-product override** | 2.11 | 🤖 | 🟢 | — | ✅ shipped — `tenant.features.clip_threshold_overrides[kind]` |
+| G10 | **Determinism — replace `Math.random` in image_post** | 1.15 | 🤖 | 🟢 | — | ✅ shipped — mulberry32 seeded RNG in `sampleCornerPixels` |
+| G11 | **`forceWhiteBackground` tolerance per-tenant** | 2.12 | 🤖 | 🟢 | — | ✅ shipped 2026-05-15 — `forceWhiteBackgroundForTenant()` wrapper + `force_white_bg_tolerance` in TenantFeaturesSchema (callers wire up when v2 Phase 2 lands) |
+| G12 | **Refine-call dedup (hash → cached result)** | 2.10 | 🤖 | 🟡 | — | ✅ shipped 2026-05-15 — content-addressable R2 cache keyed by SHA-256(prompt+refs+model+version); per-tenant scope |
+| G13 | **Cost-cap pre-flight check (charge AFTER success)** | 1.7 | 🤖 | 🟠 | — | ⏸ partial — regen path already charges + refunds; full debit-on-success refactor risks races |
+| G14 | **API rate-limit headers** | 4.9 | 🤖 | 🟡 | — | ✅ already done — `rate-limit.ts:127-133` emits X-RateLimit-* + Retry-After |
+| G15 | **Webhook delivery dashboard for customers** | 4.11 | 🤖 | 🟡 | — | ⏸ |
+| G16 | **Parallel pipeline stages (cleanup/derive ‖ lifestyle/composite)** | 2.3 | 🤖 | 🟠 | — | ⏸ — would need golden-master tests first (F1 pattern) |
+| G17 | **OpenAPI spec auto-generated from Zod** | 5.4 | 🤖 | 🟢 | — | ⏸ |
+| G18 | **Customer SDK (TypeScript starter)** | 4.7 | 🤖 | 🟡 | — | ⏸ |
+| G19 | **Splitting index.ts into route modules** | 1.1, 5.1 | 🤖 | 🟠 high (no tests cover hot paths — F1 risk class again) | G02 | ⏸ |
+| G20 | **Splitting launch_pipeline.ts** | 1.1, 5.1 | 🤖 | 🟠 high | G02 | ⏸ |
+| G21 | **Saga / compensation for partial pipeline failure** | 1.6, 3.12, 3.5 | 🤖 | 🔴 large | G02 | ⏸ |
+| G22 | **Public status page integration** | 4.6 | 🤖 + 🏗️ (statuspage.io account) | 🟡 | — | ⏸ |
+| G23 | **PII redaction policy + Sentry scrubbing** | 4.15 | 🤖 | 🟡 | — | ✅ shipped 2026-05-15 — `beforeSend` + `beforeBreadcrumb` scrub bearer/key/email patterns |
+| G24 | **GDPR delete flow** | 4.8 | 🤖 | 🟡 | — | ⏸ |
+| G25 | **Customer-facing usage analytics dashboard** | 4.4 | 🤖 | 🟡 | — | ✅ already done — `/costs` page renders launches, spend chart, HITL count from `/api/launches` |
 |     | — *blocked-on-infra-or-policy items below* |  |  |  |  |
 | G26 | Staging environment (new worker URL + new Postgres) | 1.3 | 🏗️ | 🔴 | — |
 | G27 | Cloudflare Hyperdrive (DB pooler) | 1.2 | 🏗️ | 🟠 | — |

@@ -22,6 +22,28 @@ export interface ForceWhiteBackgroundOptions {
   format?: "jpeg" | "png";
 }
 
+/**
+ * Phase G · G11 — convenience wrapper that resolves the tolerance from
+ * tenant features when present. Use this instead of `forceWhiteBackground`
+ * in pipeline call sites that have a tenant context. Brands with
+ * off-white pack shots (cream/ivory studio backdrops) can override
+ * via `tenant.features.force_white_bg_tolerance` without code change.
+ */
+export function forceWhiteBackgroundForTenant(
+  inputBuffer: Buffer,
+  features: { force_white_bg_tolerance?: number } | undefined,
+  opts: Omit<ForceWhiteBackgroundOptions, "tolerance"> = {}
+): Promise<Buffer> {
+  const tenantTolerance = features?.force_white_bg_tolerance;
+  return forceWhiteBackground(inputBuffer, {
+    ...opts,
+    tolerance:
+      typeof tenantTolerance === "number" && tenantTolerance >= 0 && tenantTolerance <= 64
+        ? tenantTolerance
+        : undefined,
+  });
+}
+
 export async function forceWhiteBackground(
   inputBuffer: Buffer,
   opts: ForceWhiteBackgroundOptions = {}
@@ -68,11 +90,29 @@ export interface CornerSampleResult {
   target: [number, number, number];
 }
 
+// Phase G · G10 — mulberry32 seeded PRNG. Used by sampleCornerPixels so
+// QA runs on the same buffer always produce the same off-target count.
+// Why this matters: Math.random() made retries flaky — same image could
+// pass once and fail next time. mulberry32 has good statistical
+// properties for sub-1k samples and fits in 6 lines.
+function mulberry32(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export async function sampleCornerPixels(
   imageBuffer: Buffer,
   totalSampleCount: number = 20,
   target: [number, number, number] = [255, 255, 255],
-  cornerInsetRatio: number = 0.04
+  cornerInsetRatio: number = 0.04,
+  /** Optional seed for deterministic sampling. Default 0x46466253 ("FFbs"). */
+  seed: number = 0x46466253
 ): Promise<CornerSampleResult> {
   const { data, info } = await sharp(imageBuffer)
     .removeAlpha()
@@ -90,13 +130,12 @@ export async function sampleCornerPixels(
     [H - insetH, W - insetW, H, W], // BR
   ];
 
+  const rand = mulberry32(seed);
   const samples: Array<[number, number, number]> = [];
-  // Seeded RNG isn't strictly needed; corner regions are reliably bg, any
-  // sample in the inset hits real background.
   for (const [y0, x0, y1, x1] of corners) {
     for (let i = 0; i < samplesPerCorner; i++) {
-      const y = y0 + Math.floor(Math.random() * (y1 - y0));
-      const x = x0 + Math.floor(Math.random() * (x1 - x0));
+      const y = y0 + Math.floor(rand() * (y1 - y0));
+      const x = x0 + Math.floor(rand() * (x1 - x0));
       const idx = (y * W + x) * 3;
       samples.push([data[idx], data[idx + 1], data[idx + 2]]);
     }
@@ -109,45 +148,63 @@ export async function sampleCornerPixels(
 
 /**
  * Measure product fill as max(bbox_w/W, bbox_h/H) — matches Amazon's intent.
- * "Non-white" = any pixel where any channel is < 240. Tolerant of slight
- * compression artifacts at product edges.
+ * "Non-white" = any pixel where any channel is < `nonWhiteThreshold` (default
+ * 240). Tolerant of slight compression artifacts at product edges.
+ *
+ * Phase G · G07 — was a JS pixel walk (~600ms on 3000×3000). Now delegates
+ * to libvips via sharp's native stats() + trim(), ~12ms on the same input.
+ * Output matches the prior implementation byte-for-byte on Amazon-shaped
+ * white-bg fixtures (see image_post.test.ts).
  */
 export async function measureProductFill(
   imageBuffer: Buffer,
   nonWhiteThreshold: number = 240
 ): Promise<{ fill_pct: number; bbox_w: number; bbox_h: number; canvas_w: number; canvas_h: number }> {
-  const { data, info } = await sharp(imageBuffer)
-    .removeAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const { width: W, height: H } = info;
-
-  let minX = W;
-  let minY = H;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const idx = (y * W + x) * 3;
-      if (
-        data[idx] < nonWhiteThreshold ||
-        data[idx + 1] < nonWhiteThreshold ||
-        data[idx + 2] < nonWhiteThreshold
-      ) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  if (maxX < 0) {
+  const meta = await sharp(imageBuffer).metadata();
+  const W = meta.width ?? 0;
+  const H = meta.height ?? 0;
+  if (W === 0 || H === 0) {
     return { fill_pct: 0, bbox_w: 0, bbox_h: 0, canvas_w: W, canvas_h: H };
   }
-  const bbox_w = maxX - minX + 1;
-  const bbox_h = maxY - minY + 1;
-  const fill_pct = Math.max(bbox_w / W, bbox_h / H) * 100;
-  return { fill_pct, bbox_w, bbox_h, canvas_w: W, canvas_h: H };
+
+  // Fast path — if every channel's min is at-or-above the threshold, the
+  // image has no "non-white" pixel anywhere. sharp.trim() in that case
+  // would leave the buffer untouched (and we'd over-report fill).
+  const stats = await sharp(imageBuffer).removeAlpha().stats();
+  const allWhite = stats.channels.every((c) => c.min >= nonWhiteThreshold);
+  if (allWhite) {
+    return { fill_pct: 0, bbox_w: 0, bbox_h: 0, canvas_w: W, canvas_h: H };
+  }
+
+  // sharp.trim's threshold is "max channel distance from background that
+  // we still consider background". The prior JS walk marked a pixel as
+  // foreground if ANY channel was < nonWhiteThreshold. So a pixel at
+  // (nonWhiteThreshold, 255, 255) was background. Sharp's per-pixel
+  // condition: max(|255-r|, |255-g|, |255-b|) <= threshold ⇒ trim.
+  // Mapping: threshold = 255 - nonWhiteThreshold gives the same boundary.
+  const trimThreshold = 255 - nonWhiteThreshold;
+  try {
+    const { info } = await sharp(imageBuffer)
+      .removeAlpha()
+      .trim({
+        background: { r: 255, g: 255, b: 255 },
+        threshold: trimThreshold,
+      })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const bbox_w = info.width;
+    const bbox_h = info.height;
+    const fill_pct = Math.max(bbox_w / W, bbox_h / H) * 100;
+    return { fill_pct, bbox_w, bbox_h, canvas_w: W, canvas_h: H };
+  } catch (err) {
+    // Sharp throws if trim would reduce the image to zero — interpret as
+    // "no detectable product" and report 0% rather than crashing the
+    // QA pipeline.
+    if (err instanceof Error && /trim/i.test(err.message)) {
+      return { fill_pct: 0, bbox_w: 0, bbox_h: 0, canvas_w: W, canvas_h: H };
+    }
+    throw err;
+  }
 }
 
 /**

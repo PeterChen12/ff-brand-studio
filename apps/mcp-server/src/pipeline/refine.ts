@@ -13,6 +13,34 @@ import { publicUrl } from "./cache.js";
 
 export const REFINE_COST_CENTS = 30;
 
+// Phase G · G12 — bump this whenever the prompt builder, model, or
+// reference shape changes. The cache hash includes it so stale outputs
+// stop hitting on the next deploy without manual eviction.
+const REFINE_CACHE_VERSION = 1;
+const REFINE_MODEL_ID = "fal:gemini-3-pro-image-preview";
+
+async function sha256Hex(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function refineCacheKey(
+  tenantId: string,
+  prompt: string,
+  studioR2Key: string,
+  cropR2Key: string
+): Promise<string> {
+  const seed = `${REFINE_CACHE_VERSION}|${REFINE_MODEL_ID}|${prompt}|${studioR2Key}|${cropR2Key}`;
+  const hash = await sha256Hex(seed);
+  // Tenant-scoped path — never share cached outputs across tenants even
+  // when the hash matches; that'd be a privacy leak (one tenant could
+  // probe another's reference R2 key by submitting the same prompt).
+  return `tenant/${tenantId}/cache/refine/v${REFINE_CACHE_VERSION}/${hash}.png`;
+}
+
 export interface RefineOptions {
   /** Override the auto-generated prompt (used by iterate loop). */
   promptOverride?: string;
@@ -43,6 +71,37 @@ export async function refineCall(
 
   const studioUrl = publicUrl(env, studioR2Key);
   const cropUrl = publicUrl(env, cropR2Key);
+
+  // Phase G · G12 — check the content-addressable cache before paying
+  // FAL. Same (prompt, refs, model, version) produces same output, so a
+  // re-run of the same crop in a retry/replay returns instantly. Cache
+  // misses + fresh outputs still get written to the cache below.
+  const cacheKey = await refineCacheKey(ctx.tenantId, prompt, studioR2Key, cropR2Key);
+  try {
+    const cached = await env.R2.get(cacheKey);
+    if (cached) {
+      const bytes = await cached.arrayBuffer();
+      const iterTag = opts.iter && opts.iter > 1 ? `_iter${opts.iter}` : "";
+      const outR2Key = `tenant/${ctx.tenantId}/pipeline/${ctx.runId}/refine_${opts.cropTag}${iterTag}.png`;
+      await env.R2.put(outR2Key, bytes, { httpMetadata: { contentType: "image/png" } });
+      return {
+        status: "ok",
+        outputR2Key: outR2Key,
+        // Cached hit costs nothing — no FAL invocation.
+        costCents: 0,
+        metadata: {
+          model: REFINE_MODEL_ID,
+          cropTag: opts.cropTag,
+          iter: opts.iter ?? 1,
+          promptOverridden: !!opts.promptOverride,
+          cache_hit: true,
+        },
+      };
+    }
+  } catch (cacheErr) {
+    // Cache read errors are non-fatal — fall through to the real call.
+    console.warn("[refine] cache read failed:", cacheErr);
+  }
 
   const body = {
     prompt,
@@ -116,15 +175,27 @@ export async function refineCall(
   const outR2Key = `tenant/${ctx.tenantId}/pipeline/${ctx.runId}/refine_${opts.cropTag}${iterTag}.png`;
   await env.R2.put(outR2Key, bytes, { httpMetadata: { contentType: "image/png" } });
 
+  // Phase G · G12 — populate the cache with this fresh output so the
+  // next identical call returns instantly. Best-effort: cache write
+  // errors are logged but don't fail the run.
+  try {
+    await env.R2.put(cacheKey, bytes, {
+      httpMetadata: { contentType: "image/png" },
+    });
+  } catch (cacheWriteErr) {
+    console.warn("[refine] cache write failed:", cacheWriteErr);
+  }
+
   return {
     status: "ok",
     outputR2Key: outR2Key,
     costCents: REFINE_COST_CENTS,
     metadata: {
-      model: "fal:gemini-3-pro-image-preview",
+      model: REFINE_MODEL_ID,
       cropTag: opts.cropTag,
       iter: opts.iter ?? 1,
       promptOverridden: !!opts.promptOverride,
+      cache_hit: false,
     },
   };
 }

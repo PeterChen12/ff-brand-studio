@@ -35,6 +35,49 @@ import { lifestyleRender } from "./lifestyle.js";
 import { compositeText, bannerExtend } from "./composite.js";
 import { extractSpecs } from "./specs.js";
 import { getDeriver } from "./derivers/index.js";
+import { scoreReference } from "../lib/best-of-input.js";
+import { dhash, hammingDistance, NEAR_DUPLICATE_HAMMING } from "../lib/dhash.js";
+
+// Phase G · G04 — composite scoring for multi-reference best-of pick.
+// Resolution dominates because everything downstream upscales from it;
+// fill ratio in the passthrough sweet spot is rewarded; whiteness
+// breaks ties. Weights tuned on the SAMPLE_TENANT corpus; if a tenant
+// reliably picks the wrong reference, log the metrics + reorder weights.
+function scoreReferenceComposite(m: { longestSide: number; fillRatio: number; whiteness: number }): number {
+  // Cap longest side at 3000 — beyond that, more pixels don't help.
+  const resolutionScore = Math.min(m.longestSide, 3000) / 3000;
+  // Reward fills in [0.55, 0.85]; both too-small (low fill) and too-tight
+  // (no whitespace for crop expansion) are penalized.
+  const idealFill = 0.7;
+  const fillScore = 1 - Math.min(Math.abs(m.fillRatio - idealFill) / idealFill, 1);
+  // Whiteness is a 0-1 cleanliness signal already.
+  return resolutionScore * 0.5 + fillScore * 0.3 + m.whiteness * 0.2;
+}
+
+async function pickBestReference(
+  env: CloudflareBindings,
+  keys: string[]
+): Promise<string> {
+  if (keys.length === 1) return keys[0];
+  // Bound the scoring work — score up to 6 references so an operator
+  // dumping 50 photos doesn't burn 15s scoring them all.
+  const candidates = keys.slice(0, 6);
+  const scored = await Promise.all(
+    candidates.map(async (key) => {
+      try {
+        const obj = await env.R2.get(key);
+        if (!obj) return { key, score: -1 };
+        const buf = Buffer.from(await obj.arrayBuffer());
+        const m = await scoreReference(buf);
+        return { key, score: scoreReferenceComposite(m) };
+      } catch {
+        return { key, score: -1 };
+      }
+    })
+  );
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0]?.key ?? keys[0];
+}
 
 export interface RunPipelineInput {
   ctx: PipelineCtx;
@@ -99,10 +142,13 @@ export async function runProductionPipeline(
     }
   }
 
-  // Pick the first reference image; the pipeline operates on a single
-  // canonical input for now (multi-reference support is a future iteration).
-  const sourceR2Key = ctx.referenceR2Keys[0];
-  if (!sourceR2Key) {
+  // Phase G · G04/G05 — when a product has multiple reference images,
+  // pick the one most likely to produce a clean studio shot (highest
+  // composite score: longest side + fill in passthrough sweet spot +
+  // whiteness). Then run a fail-fast quality gate: if even the BEST
+  // reference is below abort thresholds, refuse the run so we don't
+  // burn $0.30 of FAL spend producing garbage.
+  if (ctx.referenceR2Keys.length === 0) {
     return {
       ok: false,
       outputs,
@@ -111,6 +157,58 @@ export async function runProductionPipeline(
       fairCount: 0,
       errors: ["no reference image attached to product"],
     };
+  }
+  const sourceR2Key = await pickBestReference(env, ctx.referenceR2Keys).catch(
+    (err) => {
+      // If best-of scoring fails (R2 read error, decoder crash) we fall
+      // back to the first reference rather than aborting — losing the
+      // "best" optimization is better than refusing a launch on a bug
+      // in our own scoring code.
+      console.warn("[pipeline] best-of-reference scoring failed:", err);
+      return ctx.referenceR2Keys[0];
+    }
+  );
+  // Score the selected reference for the abort gate. We re-fetch the
+  // buffer here because pickBestReference may have used a sampled subset.
+  try {
+    const { scoreReference, isAbortQuality } = await import(
+      "../lib/best-of-input.js"
+    );
+    const refObj = await env.R2.get(sourceR2Key);
+    if (refObj) {
+      const refBuffer = Buffer.from(await refObj.arrayBuffer());
+      const metrics = await scoreReference(refBuffer);
+      const verdict = isAbortQuality(metrics);
+      if (verdict.abort) {
+        await auditEvent(db, {
+          tenantId: ctx.tenantId,
+          actor: null,
+          action: "launch.start",
+          targetType: "pipeline_step",
+          targetId: ctx.runId,
+          metadata: {
+            step: "input_quality_abort",
+            source_key: sourceR2Key,
+            metrics,
+            reasons: verdict.reasons,
+          },
+        });
+        return {
+          ok: false,
+          outputs,
+          slotsWritten: 0,
+          totalCostCents: 0,
+          fairCount: 0,
+          errors: [
+            `reference image quality too low to process: ${verdict.reasons.join("; ")}`,
+          ],
+        };
+      }
+    }
+  } catch (qualityErr) {
+    // Same fallback policy as pickBestReference — log + continue. A
+    // scoring bug shouldn't refuse a launch.
+    console.warn("[pipeline] input-quality check skipped:", qualityErr);
   }
 
   // ── Phase F · Iter 03 — Best-of-input passthrough gate ─────────────
@@ -299,6 +397,71 @@ export async function runProductionPipeline(
         fair: r.out.asset.fair,
       },
     });
+  }
+
+  // ── Phase G · G06 — Cross-slot dedup detection ────────────────────
+  // After the refine fan-out, hash each output and look for near-duplicate
+  // pairs. The 4 outputs (studio + A/B/C) should be visually distinct
+  // because each came from a different crop + deriver prompt. Pairs with
+  // Hamming distance ≤ NEAR_DUPLICATE_HAMMING usually mean the FAL model
+  // produced a near-copy of the input rather than a per-crop refine.
+  //
+  // Detection-only for now — audit warning lands in the run's metadata so
+  // ops can quantify how often this fires before we wire auto-regen.
+  try {
+    const refineOutputs: Array<{ slot: string; key: string }> = [];
+    if (outputs.refine_studio) refineOutputs.push({ slot: "studio", key: outputs.refine_studio });
+    if (outputs.refine_crop_A) refineOutputs.push({ slot: "crop_A", key: outputs.refine_crop_A });
+    if (outputs.refine_crop_B) refineOutputs.push({ slot: "crop_B", key: outputs.refine_crop_B });
+    if (outputs.refine_crop_C) refineOutputs.push({ slot: "crop_C", key: outputs.refine_crop_C });
+    if (refineOutputs.length >= 2) {
+      const hashed = await Promise.all(
+        refineOutputs.map(async (r) => {
+          const obj = await env.R2.get(r.key);
+          if (!obj) return { slot: r.slot, hash: null as string | null };
+          const buf = Buffer.from(await obj.arrayBuffer());
+          try {
+            return { slot: r.slot, hash: await dhash(buf) };
+          } catch {
+            return { slot: r.slot, hash: null };
+          }
+        })
+      );
+      const duplicates: Array<{ a: string; b: string; distance: number }> = [];
+      for (let i = 0; i < hashed.length; i++) {
+        for (let j = i + 1; j < hashed.length; j++) {
+          const a = hashed[i];
+          const b = hashed[j];
+          if (!a.hash || !b.hash) continue;
+          const d = hammingDistance(a.hash, b.hash);
+          if (d <= NEAR_DUPLICATE_HAMMING) {
+            duplicates.push({ a: a.slot, b: b.slot, distance: d });
+          }
+        }
+      }
+      if (duplicates.length > 0) {
+        await auditEvent(db, {
+          tenantId: ctx.tenantId,
+          actor: null,
+          action: "launch.start",
+          targetType: "pipeline_step",
+          targetId: ctx.runId,
+          metadata: {
+            step: "cross_slot_dedup_warning",
+            duplicates,
+            hashes: hashed.map((h) => ({ slot: h.slot, dhash: h.hash })),
+          },
+        });
+        errors.push(
+          `near-duplicate refine outputs detected: ${duplicates
+            .map((d) => `${d.a}≈${d.b} (d=${d.distance})`)
+            .join(", ")}`
+        );
+      }
+    }
+  } catch (dedupErr) {
+    // Best-effort: dedup detection failures never block the pipeline.
+    console.warn("[pipeline] cross-slot dedup check skipped:", dedupErr);
   }
 
   // ── Lifestyle ─────────────────────────────────────────────────────

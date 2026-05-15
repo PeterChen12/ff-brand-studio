@@ -16,10 +16,14 @@ import {
   isPublishReadyReference,
   failureReasons,
   passthroughAllowedForSlot,
+  isAbortQuality,
   PASSTHROUGH_FILL_MIN,
   PASSTHROUGH_FILL_MAX,
   PASSTHROUGH_WHITENESS_MIN,
   PASSTHROUGH_LONGEST_SIDE_MIN,
+  ABORT_LONGEST_SIDE_MIN,
+  ABORT_FILL_MIN,
+  ABORT_WHITENESS_MIN,
 } from "../../src/lib/best-of-input.js";
 
 describe("isPublishReadyReference", () => {
@@ -88,6 +92,60 @@ describe("failureReasons", () => {
     const reasons = failureReasons({ longestSide: 3000, fillRatio: 0.90, whiteness: 0.97 });
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toMatch(/fill too high/);
+  });
+});
+
+describe("isAbortQuality (Phase G · G05)", () => {
+  it("does not abort on a clean reference", () => {
+    const v = isAbortQuality({ longestSide: 3000, fillRatio: 0.65, whiteness: 0.97 });
+    expect(v.abort).toBe(false);
+    expect(v.reasons).toHaveLength(0);
+  });
+
+  it("does not abort on a borderline-passthrough reference", () => {
+    // Below passthrough thresholds but still well above abort thresholds —
+    // pipeline should run, not refuse.
+    const v = isAbortQuality({ longestSide: 1200, fillRatio: 0.40, whiteness: 0.65 });
+    expect(v.abort).toBe(false);
+  });
+
+  it("aborts when resolution is below the floor", () => {
+    const v = isAbortQuality({
+      longestSide: ABORT_LONGEST_SIDE_MIN - 1,
+      fillRatio: 0.5,
+      whiteness: 0.9,
+    });
+    expect(v.abort).toBe(true);
+    expect(v.reasons[0]).toMatch(/too small/);
+  });
+
+  it("aborts when no product is detectable", () => {
+    const v = isAbortQuality({ longestSide: 3000, fillRatio: 0.01, whiteness: 0.95 });
+    expect(v.abort).toBe(true);
+    expect(v.reasons.some((r) => /no detectable product/.test(r))).toBe(true);
+  });
+
+  it("aborts when the background is heavily non-white", () => {
+    const v = isAbortQuality({
+      longestSide: 3000,
+      fillRatio: 0.5,
+      whiteness: ABORT_WHITENESS_MIN - 0.05,
+    });
+    expect(v.abort).toBe(true);
+    expect(v.reasons.some((r) => /background is heavily non-white/.test(r))).toBe(true);
+  });
+
+  it("accumulates multiple reasons for combined failures", () => {
+    const v = isAbortQuality({ longestSide: 200, fillRatio: 0.0, whiteness: 0.1 });
+    expect(v.abort).toBe(true);
+    expect(v.reasons.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("ABORT_FILL_MIN is strictly below PASSTHROUGH_FILL_MIN", () => {
+    // Invariant: the abort threshold MUST be below the passthrough threshold,
+    // otherwise we'd abort runs that should have passthrough'd. Cheap guard
+    // against accidentally reordering the constants.
+    expect(ABORT_FILL_MIN).toBeLessThan(PASSTHROUGH_FILL_MIN);
   });
 });
 

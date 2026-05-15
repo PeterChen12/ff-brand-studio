@@ -94,3 +94,56 @@ export const ApiCostsResponseSchema = z.object({
   totalKling: z.number().int(),
 });
 export type ApiCostsResponse = z.infer<typeof ApiCostsResponseSchema>;
+
+// ── Phase G · G01 — canonical TenantFeatures schema ─────────────────────────
+//
+// The `tenants.features` column is jsonb. Before this schema, the worker
+// (`pipeline/types.ts`) and dashboard (`lib/tenant-context.tsx`) each
+// defined their own free-form TenantFeatures interface and diverged.
+// One source of truth here. Unknown keys pass through via `.passthrough()`
+// so operator-side experiments don't fail the parse for older clients;
+// known keys are still validated.
+//
+// Key buckets:
+//   - Operator-managed gates: shipped/closed-flippable features
+//   - User-managed preferences: surfaced in Settings → Brand profile
+//   - Operational caps: per-tenant limits beyond plan defaults
+//   - Pipeline tuning: knobs that override the deriver registry defaults
+//   - Adapter destinations: which channels this tenant publishes to
+export const TenantFeaturesSchema = z
+  .object({
+    // Operator-managed gates
+    production_pipeline: z.boolean().optional(),
+    feedback_regen: z.boolean().optional(),
+    has_sample_access: z.boolean().optional(),
+    amazon_a_plus_grid: z.boolean().optional(),
+    passthrough_enabled: z.boolean().optional(),
+    regulated_category: z.boolean().optional(),
+    adapter_stage_enabled: z.boolean().optional(),
+    developer_mode: z.boolean().optional(),
+    skipped_onboarding: z.boolean().optional(),
+    // User-managed preferences
+    default_platforms: z.array(z.enum(["amazon", "shopify"])).optional(),
+    default_output_langs: z.array(z.enum(["en", "zh"])).optional(),
+    default_quality_preset: z.enum(["budget", "balanced", "premium"]).optional(),
+    language_display: z.enum(["en", "zh", "both"]).optional(),
+    brand_hex: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/, "must be a 6-digit hex like #1C3FAA")
+      .optional(),
+    // Operational caps
+    max_regens_per_month: z.number().int().min(0).max(1000).optional(),
+    rate_limit_per_min: z.number().int().min(10).max(6000).optional(),
+    rate_limit_disabled: z.boolean().optional(),
+    // Pipeline tuning (Phase G · G09 + G11)
+    clip_threshold_overrides: z.record(z.string(), z.number().min(0).max(1)).optional(),
+    /** Phase G · G11 — RGB channel tolerance for forceWhiteBackground's
+     *  near-white snap. Default 8 matches the v2 Python prototype. Brands
+     *  with cream/ivory studio backdrops can raise to ~16 so the snap
+     *  catches the off-white pack shot. Capped at 64. */
+    force_white_bg_tolerance: z.number().int().min(0).max(64).optional(),
+    // Adapter destinations
+    publish_destinations: z.array(z.string()).optional(),
+  })
+  .passthrough();
+export type TenantFeatures = z.infer<typeof TenantFeaturesSchema>;

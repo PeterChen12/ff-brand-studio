@@ -36,6 +36,15 @@ export const PASSTHROUGH_FILL_MAX = 0.78;
 export const PASSTHROUGH_WHITENESS_MIN = 0.92;
 export const PASSTHROUGH_LONGEST_SIDE_MIN = 2000;
 
+// Phase G · G05 — fail-fast thresholds. References worse than this can't
+// produce a usable launch even after refine, so we abort the pipeline
+// upfront instead of spending $0.30 to confirm it. Distinct from the
+// passthrough thresholds above — those say "good enough to skip cleanup",
+// these say "too broken to even try".
+export const ABORT_LONGEST_SIDE_MIN = 600;
+export const ABORT_FILL_MIN = 0.05;
+export const ABORT_WHITENESS_MIN = 0.25;
+
 export function isPublishReadyReference(m: ReferenceQualityMetrics): boolean {
   return (
     m.longestSide >= PASSTHROUGH_LONGEST_SIDE_MIN &&
@@ -43,6 +52,34 @@ export function isPublishReadyReference(m: ReferenceQualityMetrics): boolean {
     m.fillRatio <= PASSTHROUGH_FILL_MAX &&
     m.whiteness >= PASSTHROUGH_WHITENESS_MIN
   );
+}
+
+/**
+ * Phase G · G05 — true when the reference is so degraded that running
+ * the pipeline would burn wallet for nothing. Returns the human-readable
+ * reasons alongside so the audit row + error payload can explain.
+ */
+export function isAbortQuality(m: ReferenceQualityMetrics): {
+  abort: boolean;
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  if (m.longestSide < ABORT_LONGEST_SIDE_MIN) {
+    reasons.push(
+      `image too small (${m.longestSide}px < ${ABORT_LONGEST_SIDE_MIN}px). Re-upload at higher resolution.`
+    );
+  }
+  if (m.fillRatio < ABORT_FILL_MIN) {
+    reasons.push(
+      `no detectable product (fill ${m.fillRatio.toFixed(2)} < ${ABORT_FILL_MIN}). Make sure the photo actually shows the product.`
+    );
+  }
+  if (m.whiteness < ABORT_WHITENESS_MIN) {
+    reasons.push(
+      `background is heavily non-white (whiteness ${m.whiteness.toFixed(2)} < ${ABORT_WHITENESS_MIN}). Cleanup model can't recover this — provide a cleaner studio shot.`
+    );
+  }
+  return { abort: reasons.length > 0, reasons };
 }
 
 /** Human-readable failure reasons; format matches the iterate.ts /

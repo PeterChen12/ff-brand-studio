@@ -16,31 +16,12 @@
  */
 
 import { createContext, useContext } from "react";
+import type { TenantFeatures } from "@ff/types";
 
-export interface TenantFeatures {
-  brand_hex?: string;
-  default_platforms?: string[];
-  amazon_a_plus_grid?: boolean;
-  rate_limit_per_min?: number;
-  production_pipeline?: boolean;
-  feedback_regen?: boolean;
-  has_sample_access?: boolean;
-  max_regens_per_month?: number;
-  // Phase C · Iteration 03 — tenant defaults read by the launch wizard
-  // so per-launch radios can hide behind a "Tweak this run" disclosure.
-  default_output_langs?: ("en" | "zh")[];
-  default_quality_preset?: "budget" | "balanced" | "premium";
-  // Phase C · Iteration 05 — folds API keys + Webhooks into one
-  // Advanced tab that's always visible; no gating yet.
-  developer_mode?: boolean;
-  // Phase E · Iter 02 — adapter keys this tenant has configured for
-  // one-click "Stage Product" pushes (e.g. ["buyfishingrod-admin"]).
-  // Absent or empty array → the Stage Product button routes the
-  // operator to /settings?tab=channels instead of POSTing.
-  publish_destinations?: string[];
-  // Any additional flags surfaced server-side land in this Record bag.
-  [key: string]: unknown;
-}
+// Phase G · G01 — single source of truth lives in @ff/types now.
+// Re-export so existing `import { TenantFeatures } from "@/lib/tenant-context"`
+// call sites keep working without a sweep.
+export type { TenantFeatures } from "@ff/types";
 
 export interface TenantSnapshot {
   id: string;

@@ -59,6 +59,7 @@ export {
   ApiAssetsResponseSchema,
   ApiRunsResponseSchema,
   ApiCostsResponseSchema,
+  TenantFeaturesSchema,
 } from "./api.js";
 export type {
   AssetRow,
@@ -67,4 +68,5 @@ export type {
   ApiAssetsResponse,
   ApiRunsResponse,
   ApiCostsResponse,
+  TenantFeatures,
 } from "./api.js";
