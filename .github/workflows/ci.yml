@@ -27,6 +27,13 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # @ff/types resolves via dist/index.js (see packages/types/package.json#main).
+      # The dashboard + worker import from it at runtime/test time, so the package
+      # must be built BEFORE type-check or vitest run; otherwise the tests fail
+      # with `Cannot find module './api.js'` (see CI run 25904309709 for proof).
+      - name: Build @ff/types
+        run: pnpm --filter @ff/types build
+
       - name: Type-check
         run: pnpm type-check
 
@@ -56,6 +63,9 @@ jobs:
 
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      - name: Build @ff/types
+        run: pnpm --filter @ff/types build
 
       - name: Integration tests
         env:
