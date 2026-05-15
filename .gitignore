@@ -31,3 +31,10 @@ apps/dashboard/.env.local
 # Vitest coverage reports (regenerated locally)
 coverage/
 **/coverage/
+
+# TS incremental-build manifests — when checked in with composite: true,
+# tsc reads them on CI checkout, decides "build is up to date", and emits
+# NOTHING, leaving consumers unable to resolve dist/*.js (see CI run
+# 25905098106 — phase-h/phase-g undeploy incident 2026-05-15).
+*.tsbuildinfo
+**/tsconfig.tsbuildinfo
