@@ -76,11 +76,13 @@ export function StorefrontDrawer({
   // Image gallery — Amazon main slot first (operator's strongest
   // candidate), then lifestyle, infographics, banner; reference last.
   const galleryAssets = useMemo(() => {
-    const isImage = (row: PlatformAssetRow) =>
-      row.format === "png" ||
-      row.format === "jpg" ||
-      row.format === "jpeg" ||
-      row.format === "webp";
+    // v2 Phase 3 writes uppercase "JPEG"; legacy worker writes "jpg".
+    // Normalize before comparing or this filter silently strips every row.
+    const isImage = (row: PlatformAssetRow) => {
+      if (!row.format) return false;
+      const f = row.format.toLowerCase();
+      return f === "png" || f === "jpg" || f === "jpeg" || f === "webp";
+    };
     const slotPriority = (slot: string): number => {
       if (slot.includes("main") || slot === "amazon-main") return 0;
       if (slot.includes("lifestyle")) return 1;

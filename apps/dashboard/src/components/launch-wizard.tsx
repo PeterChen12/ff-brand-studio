@@ -1557,11 +1557,11 @@ function AssetThumbnail({
   item: PlatformAssetRow;
   sku: string;
 }) {
-  const isImage =
-    item.format === "jpg" ||
-    item.format === "jpeg" ||
-    item.format === "png" ||
-    item.format === "webp";
+  const isImage = (() => {
+    if (!item.format) return false;
+    const f = item.format.toLowerCase();
+    return f === "jpg" || f === "jpeg" || f === "png" || f === "webp";
+  })();
   return (
     <div className="md-surface-container-low border ff-hairline rounded-m3-sm overflow-hidden flex flex-col group">
       <div className="relative aspect-square bg-surface-container">
