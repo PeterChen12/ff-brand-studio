@@ -335,6 +335,18 @@ h1, h2, h3, h4, h5, h6 {
   animation: md-fade-in var(--md-sys-motion-duration-long1) var(--md-sys-motion-easing-emphasized-decelerate) both;
 }
 
+/* Phase H launch-progress button — moving highlight that sweeps left→right
+   across the progress fill so the button doesn't feel stuck during the
+   slow phases (refine_all_crops can sit at 55% for ~30s). */
+@keyframes ff-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(1600%); }
+}
+.ff-shimmer {
+  animation: ff-shimmer 2.4s linear infinite;
+  will-change: transform;
+}
+
 /* P2-3 — honor prefers-reduced-motion. Users with motion sensitivity
    (vestibular disorders, post-concussion, low-end hardware) opt out via
    OS settings; the dashboard should respect that. We disable animations

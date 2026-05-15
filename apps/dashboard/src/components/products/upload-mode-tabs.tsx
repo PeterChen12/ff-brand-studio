@@ -9,21 +9,27 @@
  * the active tab matches the current pathname.
  */
 
+import { cn } from "@/lib/cn";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { cn } from "@/lib/cn";
 
+// Phase H · 2026-05-14 — consolidated to two surfaces. The bulk page
+// now smart-routes between deterministic folder parse and agentic
+// classification, so the old "Agentic upload" tab is gone and the
+// route 301s to /products/bulk.
 const TABS: { href: string; label: string; sub: string }[] = [
   { href: "/products/new", label: "Single product", sub: "添加单个产品" },
   { href: "/products/bulk", label: "Bulk upload", sub: "批量上传" },
-  { href: "/products/agentic", label: "Agentic upload", sub: "AI 整理" },
 ];
 
 export function UploadModeTabs() {
   const pathname = usePathname() ?? "/products/new";
   return (
     <section className="px-6 md:px-12 pt-6 max-w-7xl mx-auto">
-      <div role="tablist" className="flex items-center gap-1 border-b ff-hairline">
+      <div
+        role="tablist"
+        className="flex items-center gap-1 border-b ff-hairline"
+      >
         {TABS.map((t) => {
           const active = pathname.startsWith(t.href);
           return (
@@ -37,7 +43,7 @@ export function UploadModeTabs() {
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-m3-sm",
                 active
                   ? "border-primary text-on-surface"
-                  : "border-transparent text-on-surface-variant hover:text-on-surface"
+                  : "border-transparent text-on-surface-variant hover:text-on-surface",
               )}
             >
               <span>{t.label}</span>

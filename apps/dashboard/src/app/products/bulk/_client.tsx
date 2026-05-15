@@ -1,39 +1,35 @@
 "use client";
 
 /**
- * Issue 4 — bulk folder upload.
+ * Phase H · 2026-05-14 — unified bulk-upload page with smart routing.
  *
- * Each top-level subfolder in the picked directory becomes one product.
- * Per folder:
- *   - 1-10 image files (jpg/png/webp) → reference images
- *   - optional `meta.json`        → { "name": "...", "description": "..." }
- *   - optional `description.txt`  → product description (raw text)
- *   - optional `name.txt`         → product name (raw text)
+ * Before: three surfaces (single / bulk / agentic) confused operators
+ * because each had different rules about file layout.
  *
- * Caps (validated client-side before any upload):
- *   - 50 products per batch
- *   - 10 images per product (matches single-onboard limit)
- *   - 100 MB total raw bundle (post-compression typically smaller)
- *   - 5 MB per image (matches existing upload-intent server check)
+ * Now: one bulk surface that accepts a folder, a zip, OR a loose pile
+ * of files. A router inspects the input:
  *
- * The submit phase loops the existing /v1/products/upload-intent +
- * /v1/products endpoints once per product. Each row charges $0.50
- * separately so the wallet ledger stays accurate; we don't need a
- * batch-create endpoint for MVP.
+ *   - >= 2 distinct subfolders + >= 70% of images live in a subfolder
+ *     ⇒ STRUCTURED: parse client-side, name = meta.json > name.txt > folder
+ *
+ *   - otherwise (loose images, ambiguous layout, single-folder dump)
+ *     ⇒ AGENTIC: upload everything to R2, ask Sonnet to group into
+ *     product manifests via /v1/products/agentic-classify, normalize
+ *     into the same row shape as structured.
+ *
+ * Both paths feed the same review panel. Each row carries:
+ *   • blocking errors (no images, missing name) → Submit disabled
+ *   • soft warnings (no description, name looks like a slug) → yellow
+ *
+ * Operators can edit name + description inline to clear warnings
+ * before submit, so we don't burn tokens on a launch that's missing
+ * the inputs that drive listing quality.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
-import Link from "next/link";
-import { useApiFetch } from "@/lib/api";
-import {
-  compressImage,
-  putToR2,
-  extractExt,
-} from "@/lib/uploader";
-import { unpackZip } from "@/lib/zip-unpacker";
-import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
 import { UploadModeTabs } from "@/components/products/upload-mode-tabs";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -42,38 +38,54 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { useApiFetch } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { formatCents } from "@/lib/format";
+import { compressImage, extractExt, putToR2 } from "@/lib/uploader";
+import { unpackZip } from "@/lib/zip-unpacker";
+import Link from "next/link";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 const MAX_PRODUCTS = 50;
 const MAX_IMAGES_PER_PRODUCT = 10;
-const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // 100 MB
-const MAX_PER_IMAGE_BYTES = 5 * 1024 * 1024; // matches server intent check
+const MAX_TOTAL_BYTES = 100 * 1024 * 1024;
+const MAX_PER_IMAGE_BYTES = 5 * 1024 * 1024;
 const ONBOARD_FEE_CENTS = 50;
 
-type ProductStatus =
-  | "queued"
-  | "uploading"
-  | "creating"
-  | "created"
-  | "failed";
+type ProductStatus = "queued" | "uploading" | "creating" | "created" | "failed";
+
+type RoutingMode = "structured" | "agentic";
 
 interface BulkProduct {
-  folder: string;             // top-level folder name
-  name: string;               // resolved name (meta.json > name.txt > folder)
-  description: string | null; // resolved description (meta.json > description.txt > null)
-  images: File[];             // image files for this product
-  warnings: string[];         // validation warnings (image-count, etc.)
+  id: string;
+  folder: string;
+  name: string;
+  description: string | null;
+  // Discriminator: structured rows hold raw Files awaiting upload;
+  // agentic rows hold R2 keys we already uploaded during classify.
+  pendingImages: File[];
+  uploadedKeys: string[];
+  // Computed by annotate() — kept on the row so the UI can re-render
+  // without a separate memo per product.
+  warnings: string[];
+  blocking: string | null;
   status: ProductStatus;
   productId?: string;
   error?: string;
+  // Only used by agentic rows so operators can spot low-confidence
+  // groupings the classifier made.
+  classifierConfidence?: number;
+  classifierReason?: string;
 }
 
 interface ParseResult {
+  mode: RoutingMode;
   products: BulkProduct[];
   totalBytes: number;
-  errors: string[]; // batch-level errors (over caps, no folders, etc.)
+  errors: string[];
+  classifierCostCents: number;
+  unassigned: Array<{ path: string; reason: string }>;
 }
 
 function isImageFile(file: File): boolean {
@@ -82,14 +94,11 @@ function isImageFile(file: File): boolean {
 }
 
 function topFolderOf(file: File): string | null {
-  // webkitRelativePath looks like: "BulkBatch/sku-001/hero.jpg"
-  // We want the IMMEDIATE child of the picked directory — index [1].
-  // If only one path segment, treat the file as a stray (skip).
   const path = (file as File & { webkitRelativePath?: string })
     .webkitRelativePath;
   if (!path) return null;
   const parts = path.split("/");
-  if (parts.length < 3) return null; // root-level file in picked dir, skip
+  if (parts.length < 3) return null;
   return parts[1];
 }
 
@@ -110,49 +119,89 @@ async function readTextFile(file: File): Promise<string> {
   });
 }
 
-async function parseFolders(fileList: FileList): Promise<ParseResult> {
+function detectMode(files: File[]): RoutingMode {
+  const images = files.filter(isImageFile);
+  if (images.length === 0) return "agentic";
+  const folders = new Set<string>();
+  let withFolder = 0;
+  for (const f of images) {
+    const folder = topFolderOf(f);
+    if (folder) {
+      folders.add(folder);
+      withFolder++;
+    }
+  }
+  // Heuristic: at least 2 distinct subfolders AND most images live in
+  // one. Anything less and Sonnet does a better job inferring groups.
+  if (folders.size >= 2 && withFolder / images.length >= 0.7) {
+    return "structured";
+  }
+  return "agentic";
+}
+
+function annotate(p: BulkProduct): BulkProduct {
+  const warnings: string[] = [];
+  let blocking: string | null = null;
+  const imageCount = p.pendingImages.length + p.uploadedKeys.length;
+  if (imageCount === 0) {
+    blocking = "No images attached — required to generate listings.";
+  }
+  if (imageCount > MAX_IMAGES_PER_PRODUCT) {
+    warnings.push(
+      `Only the first ${MAX_IMAGES_PER_PRODUCT} of ${imageCount} images will be used.`,
+    );
+  }
+  const trimmedDesc = (p.description ?? "").trim();
+  if (!trimmedDesc) {
+    warnings.push(
+      "No description — listing copy and grounding will be weak. Add one before launching.",
+    );
+  } else if (trimmedDesc.length < 40) {
+    warnings.push("Description is very short — SEO copy will be thin.");
+  }
+  const trimmedName = p.name.trim();
+  if (trimmedName.length < 2) {
+    blocking = blocking ?? "Name is missing or too short.";
+  } else if (
+    /^(folder|sku[-_]?\d+|product[-_]?\d+|group[-_]?\d+)$/i.test(
+      trimmedName.replace(/\s+/g, ""),
+    )
+  ) {
+    warnings.push(
+      "Name looks like a folder slug — consider editing to a real product name.",
+    );
+  }
+  if (p.classifierConfidence !== undefined && p.classifierConfidence < 0.7) {
+    warnings.push(
+      `Classifier is unsure (${p.classifierConfidence.toFixed(2)})${
+        p.classifierReason ? ` — ${p.classifierReason}` : ""
+      }`,
+    );
+  }
+  return { ...p, warnings, blocking };
+}
+
+async function parseStructured(files: File[]): Promise<ParseResult> {
   const buckets = new Map<string, File[]>();
-  let totalBytes = 0;
-  const errors: string[] = [];
-  for (let i = 0; i < fileList.length; i++) {
-    const f = fileList[i];
+  for (const f of files) {
     const folder = topFolderOf(f);
     if (!folder) continue;
-    if (f.size > MAX_PER_IMAGE_BYTES && isImageFile(f)) {
-      errors.push(
-        `${folder}/${f.name}: ${(f.size / 1_048_576).toFixed(1)} MB exceeds 5 MB per-image cap`
-      );
-      continue;
-    }
-    totalBytes += f.size;
     const arr = buckets.get(folder) ?? [];
     arr.push(f);
     buckets.set(folder, arr);
   }
-  if (totalBytes > MAX_TOTAL_BYTES) {
-    errors.push(
-      `Total ${(totalBytes / 1_048_576).toFixed(
-        1
-      )} MB exceeds the 100 MB batch cap. Split into smaller batches or remove larger files.`
-    );
-  }
-  if (buckets.size === 0) {
-    errors.push(
-      "No subfolders found. Place each product in its own folder, e.g. /BulkBatch/sku-001/hero.jpg"
-    );
-  }
+  const errors: string[] = [];
   if (buckets.size > MAX_PRODUCTS) {
     errors.push(
-      `Found ${buckets.size} folders; limit per batch is ${MAX_PRODUCTS}.`
+      `Found ${buckets.size} folders; limit per batch is ${MAX_PRODUCTS}.`,
     );
   }
-
   const products: BulkProduct[] = [];
-  for (const [folder, files] of buckets) {
-    const images = files.filter(isImageFile).slice(0, MAX_IMAGES_PER_PRODUCT);
-    const meta = files.find((f) => basenameOf(f) === "meta.json");
-    const descTxt = files.find((f) => basenameOf(f) === "description.txt");
-    const nameTxt = files.find((f) => basenameOf(f) === "name.txt");
+  for (const [folder, group] of buckets) {
+    const images = group.filter(isImageFile).slice(0, MAX_IMAGES_PER_PRODUCT);
+    const meta = group.find((f) => basenameOf(f) === "meta.json");
+    const descTxt = group.find((f) => basenameOf(f) === "description.txt");
+    const nameTxt = group.find((f) => basenameOf(f) === "name.txt");
 
     let resolvedName = folder.replace(/[-_]+/g, " ");
     let resolvedDesc: string | null = null;
@@ -172,7 +221,7 @@ async function parseFolders(fileList: FileList): Promise<ParseResult> {
           resolvedDesc = parsed.description.trim();
         }
       } catch {
-        // Bad JSON falls back to other sources
+        // ignore — fall through to txt files
       }
     }
     if (!resolvedDesc && descTxt) {
@@ -183,52 +232,145 @@ async function parseFolders(fileList: FileList): Promise<ParseResult> {
       if (t) resolvedName = t;
     }
 
-    const warnings: string[] = [];
-    if (images.length === 0) {
-      warnings.push("No image files — folder will be skipped.");
-    } else if (files.filter(isImageFile).length > MAX_IMAGES_PER_PRODUCT) {
-      warnings.push(
-        `Trimmed to first ${MAX_IMAGES_PER_PRODUCT} of ${
-          files.filter(isImageFile).length
-        } images.`
-      );
-    }
-    if (resolvedName.length < 2) {
-      warnings.push("Name too short; using folder name.");
-      resolvedName = folder;
-    }
-
     products.push({
+      id: `s:${folder}`,
       folder,
       name: resolvedName,
       description: resolvedDesc,
-      images,
-      warnings,
+      pendingImages: images,
+      uploadedKeys: [],
+      warnings: [],
+      blocking: null,
       status: "queued",
     });
   }
-
-  // Sort folders alphabetically for predictable display
   products.sort((a, b) => a.folder.localeCompare(b.folder));
+  return {
+    mode: "structured",
+    products,
+    totalBytes: 0,
+    errors,
+    classifierCostCents: 0,
+    unassigned: [],
+  };
+}
 
-  return { products, totalBytes, errors };
+type ApiFetch = <T>(input: string, init?: RequestInit) => Promise<T>;
+
+async function classifyAgentic(
+  files: File[],
+  apiFetch: ApiFetch,
+): Promise<ParseResult> {
+  const imageFiles = files.filter(isImageFile);
+  const errors: string[] = [];
+  if (imageFiles.length === 0) {
+    errors.push("No supported image files found.");
+    return {
+      mode: "agentic",
+      products: [],
+      totalBytes: 0,
+      errors,
+      classifierCostCents: 0,
+      unassigned: [],
+    };
+  }
+
+  const exts = imageFiles
+    .map((f) => extractExt(f))
+    .filter((x): x is "jpg" | "jpeg" | "png" | "webp" => !!x);
+  const intent = await apiFetch<{
+    intent_id: string;
+    urls: { key: string; putUrl: string; publicUrl: string }[];
+  }>("/v1/products/upload-intent", {
+    method: "POST",
+    body: JSON.stringify({ extensions: exts }),
+  });
+
+  const entries: Array<{ path: string; kind: "image"; r2_key: string }> = [];
+  for (let i = 0; i < imageFiles.length; i++) {
+    const f = imageFiles[i];
+    const url = intent.urls[i];
+    const compressed = await compressImage(f);
+    await putToR2(url.putUrl, compressed);
+    const path =
+      (f as File & { webkitRelativePath?: string }).webkitRelativePath ||
+      f.name;
+    entries.push({ path, kind: "image", r2_key: url.key });
+  }
+
+  const resp = await apiFetch<{
+    products: Array<{
+      name: string;
+      description?: string;
+      references: string[];
+      confidence: number;
+      reason?: string;
+    }>;
+    unassigned: Array<{ path: string; r2_key: string; reason: string }>;
+    cost_cents: number;
+  }>("/v1/products/agentic-classify", {
+    method: "POST",
+    body: JSON.stringify({ files: entries }),
+  });
+
+  const products: BulkProduct[] = resp.products
+    .slice(0, MAX_PRODUCTS)
+    .map((p, i) => ({
+      id: `a:${i}:${p.name}`,
+      folder: `Group ${i + 1}`,
+      name: p.name,
+      description: p.description ?? null,
+      pendingImages: [],
+      uploadedKeys: p.references,
+      warnings: [],
+      blocking: null,
+      status: "queued",
+      classifierConfidence: p.confidence,
+      classifierReason: p.reason,
+    }));
+
+  if (resp.products.length > MAX_PRODUCTS) {
+    errors.push(
+      `Classifier produced ${resp.products.length} groups; only the first ${MAX_PRODUCTS} are kept.`,
+    );
+  }
+
+  return {
+    mode: "agentic",
+    products,
+    totalBytes: 0,
+    errors,
+    classifierCostCents: resp.cost_cents,
+    unassigned: resp.unassigned.map((u) => ({
+      path: u.path,
+      reason: u.reason,
+    })),
+  };
 }
 
 export default function BulkUploadPageInner() {
   const apiFetch = useApiFetch();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+  const looseInputRef = useRef<HTMLInputElement>(null);
 
   const [parsed, setParsed] = useState<ParseResult | null>(null);
   const [parsing, setParsing] = useState(false);
+  const [parsingNote, setParsingNote] = useState<string>("");
   const [products, setProducts] = useState<BulkProduct[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
-  const eligibleCount = useMemo(
-    () => products.filter((p) => p.images.length > 0).length,
-    [products]
+  const blockingCount = useMemo(
+    () => products.filter((p) => p.blocking).length,
+    [products],
   );
-  const skippedCount = products.length - eligibleCount;
+  const warningCount = useMemo(
+    () => products.reduce((n, p) => n + p.warnings.length, 0),
+    [products],
+  );
+  const eligibleCount = products.length - blockingCount;
   const estimatedFeeCents = eligibleCount * ONBOARD_FEE_CENTS;
 
   const onPick = useCallback(
@@ -237,53 +379,143 @@ export default function BulkUploadPageInner() {
       if (!fileList || fileList.length === 0) return;
       setParsing(true);
       setCompleted(false);
+      setParsingNote("Reading files…");
       try {
-        // Phase E · Iter 06 — accept a single .zip and unpack it into
-        // synthetic Files with webkitRelativePath set, so parseFolders
-        // sees the same shape as a webkitdirectory folder pick.
+        // Step 1 — unpack zip if a single .zip is dropped
+        let files: File[];
         const onlyFile = fileList.length === 1 ? fileList[0] : null;
         if (onlyFile && /\.zip$/i.test(onlyFile.name)) {
+          setParsingNote("Unpacking zip…");
           const unpacked = await unpackZip(onlyFile);
-          // FileList isn't constructible — use DataTransfer to forge one.
-          const dt = new DataTransfer();
-          for (const u of unpacked.files) dt.items.add(u.file);
-          const result = await parseFolders(dt.files);
-          if (unpacked.errors.length > 0) {
-            result.errors.push(...unpacked.errors);
+          files = unpacked.files.map((u) => u.file);
+        } else {
+          files = Array.from(fileList);
+        }
+
+        // Step 2 — batch-level validation
+        let totalBytes = 0;
+        const errors: string[] = [];
+        for (const f of files) {
+          totalBytes += f.size;
+          if (isImageFile(f) && f.size > MAX_PER_IMAGE_BYTES) {
+            errors.push(
+              `${f.name}: ${(f.size / 1_048_576).toFixed(1)} MB exceeds 5 MB cap`,
+            );
           }
-          setParsed(result);
-          setProducts(result.products);
+        }
+        if (totalBytes > MAX_TOTAL_BYTES) {
+          errors.push(
+            `Total ${(totalBytes / 1_048_576).toFixed(1)} MB exceeds the 100 MB batch cap.`,
+          );
+        }
+        const imageFiles = files.filter(isImageFile);
+        if (imageFiles.length === 0) {
+          errors.push(
+            "No image files found. Bulk upload needs at least one .jpg / .png / .webp.",
+          );
+        }
+        if (errors.length > 0) {
+          setParsed({
+            mode: "structured",
+            products: [],
+            totalBytes,
+            errors,
+            classifierCostCents: 0,
+            unassigned: [],
+          });
+          setProducts([]);
           return;
         }
-        const result = await parseFolders(fileList);
+
+        // Step 3 — route to the right parser
+        const mode = detectMode(files);
+        let result: ParseResult;
+        if (mode === "structured") {
+          setParsingNote(
+            `Parsing folder layout (${imageFiles.length} images)…`,
+          );
+          result = await parseStructured(files);
+        } else {
+          setParsingNote(
+            `Uploading ${imageFiles.length} images for AI organization…`,
+          );
+          result = await classifyAgentic(files, apiFetch);
+        }
+        result.totalBytes = totalBytes;
+        // Apply warnings + blocking annotations
+        result.products = result.products.map(annotate);
         setParsed(result);
         setProducts(result.products);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(msg);
+        setParsed({
+          mode: "structured",
+          products: [],
+          totalBytes: 0,
+          errors: [msg],
+          classifierCostCents: 0,
+          unassigned: [],
+        });
+        setProducts([]);
       } finally {
         setParsing(false);
+        setParsingNote("");
       }
     },
-    []
+    [apiFetch],
   );
 
   function reset() {
     setParsed(null);
     setProducts([]);
     setCompleted(false);
-    if (inputRef.current) inputRef.current.value = "";
+    setEditingId(null);
+    if (folderInputRef.current) folderInputRef.current.value = "";
+    if (zipInputRef.current) zipInputRef.current.value = "";
+    if (looseInputRef.current) looseInputRef.current.value = "";
   }
 
-  function setProductStatus(
-    folder: string,
-    patch: Partial<BulkProduct>
-  ): void {
+  function setProductStatus(id: string, patch: Partial<BulkProduct>) {
     setProducts((prev) =>
-      prev.map((p) => (p.folder === folder ? { ...p, ...patch } : p))
+      prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
     );
   }
 
-  async function uploadOne(product: BulkProduct): Promise<void> {
-    setProductStatus(product.folder, { status: "uploading", error: undefined });
-    const exts = product.images
+  function setProductField(id: string, patch: Partial<BulkProduct>) {
+    setProducts((prev) =>
+      prev.map((p) => (p.id === id ? annotate({ ...p, ...patch }) : p)),
+    );
+  }
+
+  async function uploadOne(p: BulkProduct): Promise<void> {
+    setProductStatus(p.id, { status: "uploading", error: undefined });
+    const isCjk = /[一-鿿㐀-䶿]/.test(p.name);
+
+    // Agentic path — images already in R2; create the product directly.
+    if (p.uploadedKeys.length > 0) {
+      setProductStatus(p.id, { status: "creating" });
+      const created = await apiFetch<{ product_id: string; sku: string }>(
+        "/v1/products",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name_en: p.name,
+            name_zh: isCjk ? p.name : undefined,
+            description: p.description ?? undefined,
+            uploaded_keys: p.uploadedKeys,
+          }),
+        },
+      );
+      setProductStatus(p.id, {
+        status: "created",
+        productId: created.product_id,
+      });
+      return;
+    }
+
+    // Structured path — upload via fresh intent + presigned PUTs.
+    const exts = p.pendingImages
       .map(extractExt)
       .filter((x): x is "jpg" | "jpeg" | "png" | "webp" => !!x);
     const intent = await apiFetch<{
@@ -293,32 +525,28 @@ export default function BulkUploadPageInner() {
       method: "POST",
       body: JSON.stringify({ extensions: exts }),
     });
-
     const uploadedKeys: string[] = [];
-    for (let i = 0; i < product.images.length; i++) {
+    for (let i = 0; i < p.pendingImages.length; i++) {
       const url = intent.urls[i];
-      const compressed = await compressImage(product.images[i]);
+      const compressed = await compressImage(p.pendingImages[i]);
       await putToR2(url.putUrl, compressed);
       uploadedKeys[i] = url.key;
     }
-
-    setProductStatus(product.folder, { status: "creating" });
-    const isCjk = /[一-鿿㐀-䶿]/.test(product.name);
-    const created = await apiFetch<{
-      product_id: string;
-      sku: string;
-    }>("/v1/products", {
-      method: "POST",
-      body: JSON.stringify({
-        intent_id: intent.intent_id,
-        name_en: product.name,
-        name_zh: isCjk ? product.name : undefined,
-        description: product.description ?? undefined,
-        // Server derives category + kind via Sonnet (Issue 3)
-        uploaded_keys: uploadedKeys,
-      }),
-    });
-    setProductStatus(product.folder, {
+    setProductStatus(p.id, { status: "creating" });
+    const created = await apiFetch<{ product_id: string; sku: string }>(
+      "/v1/products",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          intent_id: intent.intent_id,
+          name_en: p.name,
+          name_zh: isCjk ? p.name : undefined,
+          description: p.description ?? undefined,
+          uploaded_keys: uploadedKeys,
+        }),
+      },
+    );
+    setProductStatus(p.id, {
       status: "created",
       productId: created.product_id,
     });
@@ -327,18 +555,13 @@ export default function BulkUploadPageInner() {
   async function submitAll() {
     setSubmitting(true);
     setCompleted(false);
-    for (const product of products) {
-      if (product.images.length === 0) continue;
+    for (const p of products) {
+      if (p.blocking) continue;
       try {
-        // Re-read latest snapshot in case state changed; we use folder
-        // as the stable key.
-        await uploadOne(product);
+        await uploadOne(p);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        setProductStatus(product.folder, {
-          status: "failed",
-          error: msg,
-        });
+        setProductStatus(p.id, { status: "failed", error: msg });
       }
     }
     setSubmitting(false);
@@ -350,30 +573,51 @@ export default function BulkUploadPageInner() {
       <PageHeader
         eyebrow="Bulk upload · 批量添加"
         title="Onboard a batch of products"
-        description={`Drop a folder where each subfolder is one product. We charge $${(
+        description={`Drop a folder where each subfolder is one product, a zip of the same, or just a pile of images and let AI group them. We charge $${(
           ONBOARD_FEE_CENTS / 100
         ).toFixed(
-          2
-        )} per onboarded product. Cap: ${MAX_PRODUCTS} products and 100 MB total per batch.`}
+          2,
+        )} per onboarded product · cap ${MAX_PRODUCTS} products / 100 MB per batch.`}
       />
       <UploadModeTabs />
 
       <section className="px-6 md:px-12 py-12 max-w-7xl mx-auto space-y-6">
-        {/* Folder picker + format help */}
+        {/* Pickers */}
         <Card>
           <CardHeader>
             <div>
-              <CardEyebrow>Step 01 · 选择文件夹</CardEyebrow>
-              <CardTitle className="mt-1.5">Pick a folder</CardTitle>
+              <CardEyebrow>Step 01 · 选择文件</CardEyebrow>
+              <CardTitle className="mt-1.5">Pick your files</CardTitle>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <PickerCard
+                htmlFor="bulk-folder-input"
+                icon="🗂"
+                title="Folder"
+                subtitle="Subfolder = product"
+                disabled={parsing}
+              />
+              <PickerCard
+                htmlFor="bulk-zip-input"
+                icon="📦"
+                title=".zip"
+                subtitle="Same layout, zipped"
+                disabled={parsing}
+              />
+              <PickerCard
+                htmlFor="bulk-loose-input"
+                icon="✨"
+                title="Loose files"
+                subtitle="Let AI organize"
+                disabled={parsing}
+              />
+            </div>
             <input
-              ref={inputRef}
+              ref={folderInputRef}
               type="file"
-              // @ts-expect-error - webkitdirectory is a standard browser
-              // attribute that React's typed as non-standard; the cast
-              // keeps TS happy without `as any`.
+              /* @ts-expect-error webkitdirectory is non-standard but supported */
               webkitdirectory=""
               directory=""
               multiple
@@ -381,60 +625,37 @@ export default function BulkUploadPageInner() {
               className="hidden"
               id="bulk-folder-input"
             />
-            {/* Phase E · Iter 06 — alternative .zip input. Same handler;
-                the handler sniffs the file extension and routes to the
-                zip-unpacker. Vendors often ship batches as a single
-                zip (Google Drive auto-zips multi-file downloads). */}
             <input
+              ref={zipInputRef}
               type="file"
               accept=".zip,application/zip,application/x-zip-compressed"
               onChange={onPick}
               className="hidden"
               id="bulk-zip-input"
             />
-            <label
-              htmlFor="bulk-folder-input"
-              className={cn(
-                "flex flex-col items-center justify-center gap-2 px-6 py-12 rounded-m3-md border-2 border-dashed cursor-pointer transition-colors",
-                parsed
-                  ? "border-outline-variant md-surface-container-low"
-                  : "border-primary/40 hover:border-primary hover:bg-primary-container/20"
-              )}
-            >
-              <span className="md-typescale-label-large text-on-surface">
-                {parsing
-                  ? "Reading folder…"
-                  : parsed
-                    ? "Replace with another folder"
-                    : "Click to pick a folder"}
-              </span>
-              <span className="md-typescale-body-small text-on-surface-variant/70 font-mono">
-                JPG · PNG · WEBP · ≤5 MB each · ≤100 MB total · ≤
-                {MAX_PRODUCTS} products
-              </span>
-            </label>
-            <div className="flex items-center gap-3 md-typescale-body-small text-on-surface-variant">
-              <span className="flex-1 h-px bg-outline-variant" />
-              <span>or</span>
-              <span className="flex-1 h-px bg-outline-variant" />
-            </div>
-            <label
-              htmlFor="bulk-zip-input"
-              className="flex items-center justify-center gap-2 px-4 py-3 rounded-m3-md border ff-hairline cursor-pointer hover:bg-surface-container-high transition-colors md-typescale-label-medium"
-            >
-              <span aria-hidden="true">📦</span>
-              <span>Upload a .zip file</span>
-              <span className="md-typescale-body-small text-on-surface-variant/70 font-mono">
-                · nested zips OK up to 2 levels
-              </span>
-            </label>
+            <input
+              ref={looseInputRef}
+              type="file"
+              multiple
+              accept="image/jpeg,image/png,image/webp"
+              onChange={onPick}
+              className="hidden"
+              id="bulk-loose-input"
+            />
+
+            {parsing && (
+              <div className="rounded-m3-md md-surface-container-low border ff-hairline px-4 py-3 md-typescale-body-medium text-on-surface-variant">
+                <span className="ff-stamp-label mr-2">Working</span>
+                {parsingNote || "…"}
+              </div>
+            )}
 
             <details className="rounded-m3-sm md-surface-container-low border ff-hairline">
               <summary className="px-4 py-2 cursor-pointer md-typescale-label-medium">
-                Folder layout reference
+                Folder layout reference (for Folder + .zip modes)
               </summary>
               <pre className="px-4 pb-3 pt-1 font-mono text-[0.6875rem] text-on-surface-variant whitespace-pre overflow-x-auto">
-{`MyBatch/                 ← pick this folder
+                {`MyBatch/                 ← pick this folder
 ├─ sku-001/
 │  ├─ hero.jpg           ← image (required, ≤10/product)
 │  ├─ side.jpg
@@ -446,13 +667,15 @@ export default function BulkUploadPageInner() {
 └─ ...
 
 Resolution order for name: meta.json > name.txt > folder name
-Resolution order for description: meta.json > description.txt > none`}
+Resolution order for description: meta.json > description.txt > none
+
+Loose-files mode skips this — Sonnet groups files by filename + visual cues.`}
               </pre>
             </details>
           </CardContent>
         </Card>
 
-        {/* Validation errors */}
+        {/* Batch-level errors */}
         {parsed && parsed.errors.length > 0 && (
           <Card>
             <CardHeader>
@@ -478,7 +701,7 @@ Resolution order for description: meta.json > description.txt > none`}
                 onClick={reset}
                 className="mt-3 md-typescale-label-medium text-primary hover:underline"
               >
-                ← Pick a different folder
+                ← Pick different files
               </button>
             </CardContent>
           </Card>
@@ -490,34 +713,81 @@ Resolution order for description: meta.json > description.txt > none`}
             <Card>
               <CardHeader>
                 <div>
-                  <CardEyebrow>Step 02 · 预览</CardEyebrow>
+                  <CardEyebrow>
+                    Step 02 · 预览 ·{" "}
+                    {parsed.mode === "structured"
+                      ? "Structured parse"
+                      : "AI-organized"}
+                  </CardEyebrow>
                   <CardTitle className="mt-1.5">
-                    {eligibleCount} eligible products · {(
-                      parsed.totalBytes / 1_048_576
-                    ).toFixed(1)}
-                    {" MB"}
+                    {products.length} product{products.length === 1 ? "" : "s"}{" "}
+                    detected · {(parsed.totalBytes / 1_048_576).toFixed(1)} MB
                   </CardTitle>
-                  {skippedCount > 0 && (
-                    <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
-                      {skippedCount} folder{skippedCount === 1 ? "" : "s"} will
-                      be skipped (no images)
-                    </div>
-                  )}
+                  <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
+                    {blockingCount > 0 && (
+                      <span className="text-error mr-3">
+                        {blockingCount} blocking
+                      </span>
+                    )}
+                    {warningCount > 0 && (
+                      <span className="text-ff-amber mr-3">
+                        {warningCount} warning
+                        {warningCount === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {blockingCount === 0 && warningCount === 0 && (
+                      <span className="text-ff-jade-deep">
+                        ✓ All rows ready
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <Badge variant="neutral" size="sm">
-                  Estimated fee · {formatCents(estimatedFeeCents)}
+                  Onboard fee · {formatCents(estimatedFeeCents)}
                 </Badge>
               </CardHeader>
               <CardContent>
                 <div className="md-surface-container-low border ff-hairline rounded-m3-md overflow-hidden divide-y ff-hairline">
                   {products.map((p) => (
-                    <ProductRow key={p.folder} product={p} />
+                    <ProductRow
+                      key={p.id}
+                      product={p}
+                      editing={editingId === p.id}
+                      onEditStart={() => setEditingId(p.id)}
+                      onEditCancel={() => setEditingId(null)}
+                      onSave={(name, description) => {
+                        setProductField(p.id, {
+                          name,
+                          description: description.trim() || null,
+                        });
+                        setEditingId(null);
+                      }}
+                    />
                   ))}
                 </div>
+                {parsed.mode === "agentic" && parsed.unassigned.length > 0 && (
+                  <details className="mt-3 rounded-m3-sm md-surface-container-low border ff-hairline">
+                    <summary className="px-4 py-2 cursor-pointer md-typescale-label-medium">
+                      {parsed.unassigned.length} unassigned file
+                      {parsed.unassigned.length === 1 ? "" : "s"}
+                    </summary>
+                    <ul className="px-4 pb-3 pt-1 font-mono text-[0.6875rem] text-on-surface-variant space-y-1">
+                      {parsed.unassigned.slice(0, 20).map((u) => (
+                        <li key={u.path}>
+                          · {u.path} — {u.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               </CardContent>
               <CardFooter>
                 <span className="md-typescale-label-small">
-                  $0.50 × {eligibleCount} = {formatCents(estimatedFeeCents)}
+                  ${(ONBOARD_FEE_CENTS / 100).toFixed(2)} × {eligibleCount} ={" "}
+                  {formatCents(estimatedFeeCents)}
+                  {parsed.classifierCostCents > 0 && (
+                    <> · classifier {formatCents(parsed.classifierCostCents)}</>
+                  )}
                 </span>
                 <div className="flex items-center gap-3">
                   <button
@@ -526,7 +796,7 @@ Resolution order for description: meta.json > description.txt > none`}
                     className="md-typescale-label-medium text-on-surface-variant hover:underline"
                     disabled={submitting}
                   >
-                    Cancel
+                    Start over
                   </button>
                   <Button
                     type="button"
@@ -539,7 +809,9 @@ Resolution order for description: meta.json > description.txt > none`}
                       ? "Uploading…"
                       : completed
                         ? "Done"
-                        : `Onboard ${eligibleCount} →`}
+                        : blockingCount > 0
+                          ? `Onboard ${eligibleCount} (${blockingCount} skipped)`
+                          : `Onboard ${eligibleCount} →`}
                   </Button>
                 </div>
               </CardFooter>
@@ -577,27 +849,60 @@ Resolution order for description: meta.json > description.txt > none`}
             )}
           </>
         )}
-
-        {/* When parsed but every folder skipped */}
-        {parsed &&
-          parsed.errors.length === 0 &&
-          eligibleCount === 0 &&
-          products.length > 0 && (
-            <Card>
-              <CardContent>
-                <p className="md-typescale-body-medium text-error">
-                  No folders contain images. Make sure each subfolder has at
-                  least one .jpg / .png / .webp file.
-                </p>
-              </CardContent>
-            </Card>
-          )}
       </section>
     </>
   );
 }
 
-function ProductRow({ product }: { product: BulkProduct }) {
+function PickerCard({
+  htmlFor,
+  icon,
+  title,
+  subtitle,
+  disabled,
+}: {
+  htmlFor: string;
+  icon: string;
+  title: string;
+  subtitle: string;
+  disabled: boolean;
+}) {
+  return (
+    <label
+      htmlFor={htmlFor}
+      className={cn(
+        "flex flex-col items-center justify-center gap-1 px-4 py-6 rounded-m3-md border-2 border-dashed cursor-pointer transition-colors",
+        disabled
+          ? "border-outline-variant md-surface-container-low pointer-events-none opacity-50"
+          : "border-primary/40 hover:border-primary hover:bg-primary-container/20",
+      )}
+    >
+      <span className="text-2xl" aria-hidden>
+        {icon}
+      </span>
+      <span className="md-typescale-label-large text-on-surface">{title}</span>
+      <span className="md-typescale-body-small text-on-surface-variant/70 font-mono text-center">
+        {subtitle}
+      </span>
+    </label>
+  );
+}
+
+function ProductRow({
+  product,
+  editing,
+  onEditStart,
+  onEditCancel,
+  onSave,
+}: {
+  product: BulkProduct;
+  editing: boolean;
+  onEditStart: () => void;
+  onEditCancel: () => void;
+  onSave: (name: string, description: string) => void;
+}) {
+  const [draftName, setDraftName] = useState(product.name);
+  const [draftDesc, setDraftDesc] = useState(product.description ?? "");
   const tone =
     product.status === "created"
       ? "passed"
@@ -613,38 +918,107 @@ function ProductRow({ product }: { product: BulkProduct }) {
     created: "✓ created",
     failed: "✗ failed",
   };
+  const imageCount = product.pendingImages.length + product.uploadedKeys.length;
+
   return (
-    <div className="px-5 py-3 flex items-start gap-4">
+    <div
+      className={cn(
+        "px-5 py-3 flex items-start gap-4",
+        product.blocking && "bg-error-container/20",
+        !product.blocking && product.warnings.length > 0 && "bg-ff-amber/5",
+      )}
+    >
       <div className="flex-1 min-w-0">
-        <div className="flex items-baseline gap-2">
-          <span className="md-typescale-label-large text-on-surface">
-            {product.name}
-          </span>
-          <span className="md-typescale-body-small font-mono text-[0.6875rem] text-on-surface-variant">
-            {product.folder}
-          </span>
-        </div>
-        <div className="md-typescale-body-small text-on-surface-variant mt-0.5">
-          {product.images.length} image{product.images.length === 1 ? "" : "s"}
-          {product.description &&
-            ` · "${product.description.slice(0, 80)}${product.description.length > 80 ? "…" : ""}"`}
-        </div>
-        {product.warnings.length > 0 && (
-          <ul className="mt-1 md-typescale-body-small text-ff-amber font-mono">
-            {product.warnings.map((w) => (
-              <li key={w}>· {w}</li>
-            ))}
-          </ul>
-        )}
-        {product.error && (
-          <div className="mt-1 md-typescale-body-small text-error font-mono">
-            {product.error}
+        {editing ? (
+          <div className="space-y-2">
+            <input
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              className="w-full px-3 h-9 rounded-m3-sm bg-surface-container-low border ff-hairline focus:outline-none focus-visible:ring-2 focus-visible:ring-primary md-typescale-label-large"
+              placeholder="Product name"
+              maxLength={200}
+            />
+            <textarea
+              value={draftDesc}
+              onChange={(e) => setDraftDesc(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 rounded-m3-sm bg-surface-container-low border ff-hairline focus:outline-none focus-visible:ring-2 focus-visible:ring-primary md-typescale-body-medium resize-y"
+              placeholder="Description (highly recommended — drives SEO quality)"
+              maxLength={10000}
+            />
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => onSave(draftName, draftDesc)}>
+                Save
+              </Button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftName(product.name);
+                  setDraftDesc(product.description ?? "");
+                  onEditCancel();
+                }}
+                className="px-3 h-8 rounded-m3-full md-typescale-label-medium text-on-surface-variant hover:text-on-surface"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
+        ) : (
+          <>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="md-typescale-label-large text-on-surface">
+                {product.name || "(no name)"}
+              </span>
+              <span className="md-typescale-body-small font-mono text-[0.6875rem] text-on-surface-variant">
+                {product.folder}
+              </span>
+              {product.classifierConfidence !== undefined && (
+                <span className="md-typescale-body-small font-mono text-[0.6875rem] text-on-surface-variant">
+                  · conf {product.classifierConfidence.toFixed(2)}
+                </span>
+              )}
+            </div>
+            <div className="md-typescale-body-small text-on-surface-variant mt-0.5">
+              {imageCount} image{imageCount === 1 ? "" : "s"}
+              {product.description &&
+                ` · "${product.description.slice(0, 80)}${
+                  product.description.length > 80 ? "…" : ""
+                }"`}
+            </div>
+            {product.blocking && (
+              <div className="mt-1 md-typescale-body-small text-error font-mono">
+                ✗ {product.blocking}
+              </div>
+            )}
+            {product.warnings.length > 0 && (
+              <ul className="mt-1 md-typescale-body-small text-ff-amber font-mono space-y-0.5">
+                {product.warnings.map((w) => (
+                  <li key={w}>⚠ {w}</li>
+                ))}
+              </ul>
+            )}
+            {product.error && (
+              <div className="mt-1 md-typescale-body-small text-error font-mono">
+                {product.error}
+              </div>
+            )}
+          </>
         )}
       </div>
-      <Badge variant={tone} size="sm">
-        {statusLabel[product.status]}
-      </Badge>
+      <div className="flex flex-col items-end gap-2 shrink-0">
+        <Badge variant={tone} size="sm">
+          {statusLabel[product.status]}
+        </Badge>
+        {!editing && product.status === "queued" && (
+          <button
+            type="button"
+            onClick={onEditStart}
+            className="md-typescale-label-medium text-primary hover:underline"
+          >
+            ✎ Edit
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,42 +1,38 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useApiQuery } from "@/lib/api-query";
-import { formatCents } from "@/lib/format";
 import { PageHeader } from "@/components/layout/page-header";
-import { ErrorState } from "@/components/ui/error-state";
-import {
-  Card,
-  CardEyebrow,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
-import type { PlatformAssetRow } from "@/db/schema";
-import {
-  AssetLightbox,
-  type AssetSlide,
-} from "@/components/library/asset-lightbox";
-import { ZoomTile } from "@/components/library/zoom-tile";
-import { isImageFormat, type SkuGroupShape } from "@/components/library/types";
 import {
   BundleSkuButton,
   DownloadAssetButton,
   RegenAssetButton,
 } from "@/components/library/asset-actions";
-import { StageProductButton } from "@/components/library/stage-product-button";
 import {
-  FilterBar,
-  applyFilters,
+  AssetLightbox,
+  type AssetSlide,
+} from "@/components/library/asset-lightbox";
+import { AuditTab } from "@/components/library/audit-tab";
+import {
   DEFAULT_FILTERS,
+  type DateRangePreset,
+  FilterBar,
   type LibraryFilters,
   type PlatformFilter,
-  type DateRangePreset,
+  applyFilters,
 } from "@/components/library/filter-bar";
-import { AuditTab } from "@/components/library/audit-tab";
+import { StageProductButton } from "@/components/library/stage-product-button";
+import { StorefrontDrawer } from "@/components/library/storefront-drawer";
+import { type SkuGroupShape, isImageFormat } from "@/components/library/types";
 import { VirtualSkuList } from "@/components/library/virtual-sku-list";
+import { ZoomTile } from "@/components/library/zoom-tile";
 import { ListingCopy } from "@/components/listings/ListingCopy";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardEyebrow, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { PlatformAssetRow } from "@/db/schema";
+import { useApiQuery } from "@/lib/api-query";
+import { formatCents } from "@/lib/format";
+import { useEffect, useMemo, useState } from "react";
 
 interface LibraryResponse {
   platformAssets: PlatformAssetRow[];
@@ -103,7 +99,9 @@ function writeFiltersToUrl(tab: Tab, f: LibraryFilters) {
   if (f.status !== "all") sp.set("status", f.status);
   if (f.range !== "all") sp.set("range", f.range);
   const qs = sp.toString();
-  const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  const url = qs
+    ? `${window.location.pathname}?${qs}`
+    : window.location.pathname;
   window.history.replaceState({}, "", url);
 }
 
@@ -115,6 +113,9 @@ export default function LibraryPage() {
     slides: AssetSlide[];
     index: number;
   }>({ open: false, slides: [], index: 0 });
+  // Phase H — auto-open storefront drawer when the URL carries
+  // ?focus=<product_id> (e.g. right after a quick-launch in /products/new).
+  const [focusProductId, setFocusProductId] = useState<string | null>(null);
 
   // Assets fetch — always-on (cheap; user lands here by default).
   const assetsQ = useApiQuery<LibraryResponse>("/api/assets");
@@ -124,7 +125,7 @@ export default function LibraryPage() {
   // Issue C — lazy-load listings the first time the tab is opened by
   // passing `null` to useApiQuery as the SWR conditional-fetch pattern.
   const listingsQ = useApiQuery<{ listings: ListingRow[] }>(
-    tab === "listings" ? "/v1/listings" : null
+    tab === "listings" ? "/v1/listings" : null,
   );
   const listings = listingsQ.data?.listings ?? null;
   const listingsError = listingsQ.error;
@@ -133,7 +134,33 @@ export default function LibraryPage() {
     const init = readFiltersFromUrl();
     setTab(init.tab);
     setFilters(init.filters);
+    if (typeof window !== "undefined") {
+      const sp = new URLSearchParams(window.location.search);
+      const focus = sp.get("focus");
+      if (focus) setFocusProductId(focus);
+    }
   }, []);
+
+  // When the storefront drawer closes, strip ?focus= so a refresh
+  // doesn't reopen it. The other filters in the URL stay untouched.
+  function closeFocus() {
+    setFocusProductId(null);
+    if (typeof window !== "undefined") {
+      const sp = new URLSearchParams(window.location.search);
+      sp.delete("focus");
+      const qs = sp.toString();
+      const url = qs
+        ? `${window.location.pathname}?${qs}`
+        : window.location.pathname;
+      window.history.replaceState({}, "", url);
+    }
+  }
+
+  // Assets that belong to the focused product — fed into the drawer.
+  const focusedAssets = useMemo(() => {
+    if (!focusProductId || !items) return null;
+    return items.filter((row) => row.productId === focusProductId);
+  }, [focusProductId, items]);
 
   useEffect(() => {
     writeFiltersToUrl(tab, filters);
@@ -141,7 +168,7 @@ export default function LibraryPage() {
 
   const filteredItems = useMemo(
     () => (items ? applyFilters(items, filters) : null),
-    [items, filters]
+    [items, filters],
   );
 
   const skuGroups = useMemo<SkuGroupShape[] | null>(() => {
@@ -194,9 +221,10 @@ export default function LibraryPage() {
         title: `${group.sku} · ${it.platform} · ${it.slot}`,
         description: group.nameEn,
       }));
-    const visibleIndex = group.items
-      .slice(0, startIdx + 1)
-      .filter((it) => isImageFormat(it.format)).length - 1;
+    const visibleIndex =
+      group.items
+        .slice(0, startIdx + 1)
+        .filter((it) => isImageFormat(it.format)).length - 1;
     setLightbox({
       open: true,
       slides,
@@ -265,9 +293,7 @@ export default function LibraryPage() {
             <ListingsTab
               listings={listings}
               queryFilter={filters.q}
-              onQueryChange={(q) =>
-                setFilters((prev) => ({ ...prev, q }))
-              }
+              onQueryChange={(q) => setFilters((prev) => ({ ...prev, q }))}
             />
           )
         ) : (
@@ -281,13 +307,24 @@ export default function LibraryPage() {
         index={lightbox.index}
         onClose={() => setLightbox((l) => ({ ...l, open: false }))}
       />
+
+      {focusProductId && focusedAssets && (
+        <StorefrontDrawer
+          productId={focusProductId}
+          assets={focusedAssets}
+          onClose={closeFocus}
+        />
+      )}
     </>
   );
 }
 
 function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
   return (
-    <div role="tablist" className="flex items-center gap-1 mb-6 border-b ff-hairline">
+    <div
+      role="tablist"
+      className="flex items-center gap-1 mb-6 border-b ff-hairline"
+    >
       <TabButton active={tab === "assets"} onClick={() => setTab("assets")}>
         Assets
       </TabButton>
@@ -406,7 +443,8 @@ function ListingsTab({
           className="flex-1 max-w-md h-10 px-4 rounded-m3-md border ff-hairline bg-surface-container md-typescale-body-medium focus:outline-none focus:border-primary"
         />
         <span className="md-typescale-body-small text-on-surface-variant font-mono">
-          {filtered?.length ?? 0} listing{(filtered?.length ?? 0) === 1 ? "" : "s"}
+          {filtered?.length ?? 0} listing
+          {(filtered?.length ?? 0) === 1 ? "" : "s"}
         </span>
       </div>
       {groups && groups.length > 0 ? (
@@ -491,8 +529,8 @@ function ListingsEmptyState() {
         Run a launch to generate SEO copy
       </h3>
       <p className="md-typescale-body-medium text-on-surface-variant max-w-md mx-auto">
-        Each launch (dry-run or full) produces compliance-shaped listings
-        for Amazon US and Shopify DTC. They land here once the run finishes.
+        Each launch (dry-run or full) produces compliance-shaped listings for
+        Amazon US and Shopify DTC. They land here once the run finishes.
       </p>
     </div>
   );
@@ -557,9 +595,7 @@ function SkuGroup({
             {group.sellerName ? ` · ${group.sellerName}` : ""}
           </CardEyebrow>
           <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-            <CardTitle>
-              {group.nameEn || group.nameZh || "(unnamed)"}
-            </CardTitle>
+            <CardTitle>{group.nameEn || group.nameZh || "(unnamed)"}</CardTitle>
             {group.isSample && (
               <Badge variant="outline" size="sm">
                 展示样品 · demo
@@ -670,14 +706,14 @@ function PlatformAssetTile({
 }
 
 function scoreToVariant(
-  s: string | null
+  s: string | null,
 ): "passed" | "pending" | "flagged" | "neutral" {
   if (!s) return "neutral";
   const u = s.toUpperCase();
   if (u === "EXCELLENT" || u === "GOOD") return "passed";
   if (u === "FAIR") return "pending";
   if (u === "POOR") return "flagged";
-  const n = parseInt(s, 10);
+  const n = Number.parseInt(s, 10);
   if (Number.isFinite(n)) {
     if (n >= 85) return "passed";
     if (n >= 70) return "pending";
@@ -694,8 +730,8 @@ function EmptyState() {
         Launch your first SKU
       </h3>
       <p className="md-typescale-body-large text-on-surface-variant max-w-md mx-auto">
-        The library populates after a launch_product_sku run completes (full
-        or dry).
+        The library populates after a launch_product_sku run completes (full or
+        dry).
       </p>
       <a
         href="/launch"
