@@ -55,6 +55,12 @@ export const PlatformAssetRowSchema = z.object({
   // dashboard can badge demo SKUs without leaking the constant. Optional
   // for backwards compat with payloads served before the worker rolled out.
   isSample: z.boolean().optional(),
+  // Migration 0016 — bidirectional status sync with customer admins.
+  // Mirrors the BFR product state so the library can show a colored
+  // pill ('staged' / 'active' / 'archived'). Optional for backwards
+  // compat with payloads served before the worker rolled out.
+  bfrStatus: z.string().nullable().optional(),
+  bfrUrl: z.string().nullable().optional(),
 });
 export type PlatformAssetRow = z.infer<typeof PlatformAssetRowSchema>;
 

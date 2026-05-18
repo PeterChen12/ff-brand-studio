@@ -188,6 +188,8 @@ export default function LibraryPage() {
           sellerName: row.sellerNameEn,
           isSample: row.isSample === true,
           items: [row],
+          bfrStatus: row.bfrStatus ?? null,
+          bfrUrl: row.bfrUrl ?? null,
         });
       }
     }
@@ -604,6 +606,7 @@ function SkuGroup({
                 展示样品 · demo
               </Badge>
             )}
+            <BfrStatusPill bfrStatus={group.bfrStatus} bfrUrl={group.bfrUrl} />
           </div>
           {group.nameZh && group.nameZh !== group.nameEn && (
             <div className="md-typescale-body-medium text-on-surface-variant mt-0.5">
@@ -779,6 +782,57 @@ function SkuGroupSkeleton() {
         </Card>
       ))}
     </div>
+  );
+}
+
+// Migration 0016 — bidirectional status sync. Pill mirrors the BFR
+// admin product state on each SKU row. Colors track the storefront
+// lifecycle: amber = staged (awaiting operator review), green = live,
+// gray = archived. Hidden when bfrStatus is null (never staged).
+function BfrStatusPill({
+  bfrStatus,
+  bfrUrl,
+}: {
+  bfrStatus: string | null;
+  bfrUrl: string | null;
+}) {
+  if (!bfrStatus) return null;
+  const label =
+    bfrStatus === "staged"
+      ? "📦 Staged"
+      : bfrStatus === "active"
+        ? "🟢 Live"
+        : bfrStatus === "archived"
+          ? "🗄 Archived"
+          : bfrStatus === "draft"
+            ? "✏️ Draft"
+            : bfrStatus;
+  const tone =
+    bfrStatus === "active"
+      ? "bg-green-50 text-green-800 border-green-200"
+      : bfrStatus === "staged"
+        ? "bg-amber-50 text-amber-800 border-amber-200"
+        : bfrStatus === "archived"
+          ? "bg-zinc-100 text-zinc-700 border-zinc-200"
+          : "bg-zinc-50 text-zinc-700 border-zinc-200";
+  const className = `inline-flex items-center gap-1 px-2 h-6 rounded-full border md-typescale-label-small font-medium whitespace-nowrap ${tone}`;
+  if (bfrUrl) {
+    return (
+      <a
+        href={bfrUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${className} hover:opacity-80`}
+        title={`Open in BFR admin · ${bfrStatus}`}
+      >
+        {label} →
+      </a>
+    );
+  }
+  return (
+    <span className={className} title={`BFR status: ${bfrStatus}`}>
+      {label}
+    </span>
   );
 }
 

@@ -26,6 +26,12 @@ export const tenants = pgTable(
     plan: text("plan").notNull().default("free"),
     features: jsonb("features").notNull().default({}),
     createdAt: timestamp("created_at").defaultNow(),
+    // Phase G · G24 — GDPR right-to-erasure timestamps. NULL = no
+    // pending deletion; both set = request is in the 30-day grace
+    // window; scheduled handler hard-deletes once eligibleAt has passed.
+    deletionRequestedAt: timestamp("deletion_requested_at"),
+    deletionEligibleAt: timestamp("deletion_eligible_at"),
+    deletionReason: text("deletion_reason"),
   },
   (t) => ({
     clerkOrgIdx: index("idx_tenants_clerk_org_id").on(t.clerkOrgId),
@@ -113,6 +119,16 @@ export const products = pgTable(
     // source can quote the customer's id, not ours.
     externalId: text("external_id"),
     externalSource: text("external_source"),
+    // Migration 0016 — bidirectional status sync with customer admins.
+    // bfr_status reflects the lifecycle on the BFR side ('staged' →
+    // 'active' → 'archived'); bfr_url is a deep link the library UI
+    // surfaces so the operator can hop straight to the admin row.
+    // bfr_synced_at is the last time we received an update (or set
+    // 'staged' locally from bulk-approve). NULL on every column means
+    // "never staged".
+    bfrStatus: text("bfr_status"),
+    bfrUrl: text("bfr_url"),
+    bfrSyncedAt: timestamp("bfr_synced_at"),
     createdAt: timestamp("created_at").defaultNow(),
   },
   (t) => ({

@@ -8,6 +8,11 @@ export interface SkuGroupShape {
   sellerName: string | null;
   isSample: boolean;
   items: PlatformAssetRow[];
+  // Migration 0016 — bidirectional status sync. Pulled from any one of
+  // the group's items (all items in a group share the same product →
+  // same bfr status). Null on rows the BFR side has never staged.
+  bfrStatus: string | null;
+  bfrUrl: string | null;
 }
 
 // v2 Phase 3 adapter writes uppercase ("JPEG"); the legacy worker

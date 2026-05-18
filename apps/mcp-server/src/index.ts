@@ -20,13 +20,14 @@ import {
   walletLedger,
   auditEvents,
   tenants,
+  webhookSubscriptions,
   promoCodes,
   promoRedemptions,
   SAMPLE_TENANT_ID,
   type Product,
   type Tenant,
 } from "./db/schema.js";
-import { and, desc, sql, eq, inArray } from "drizzle-orm";
+import { and, desc, sql, eq, inArray, isNull } from "drizzle-orm";
 import { runSeoPipeline, type SeoSurfaceSpec } from "./orchestrator/seo_pipeline.js";
 import { runLaunchPipeline } from "./orchestrator/launch_pipeline.js";
 import type { LaunchPlatform } from "./orchestrator/planner.js";
@@ -197,6 +198,164 @@ app.post("/v1/stripe-webhook", async (c) => {
     );
   }
 });
+
+// Migration 0016 — bidirectional status sync inbound. Customer admin
+// (BFR) POSTs here whenever it transitions a product through
+// STAGING → ACTIVE → ARCHIVED so the FF Studio library can mirror the
+// state. HMAC-verified inline (no Bearer JWT), so it stays OUTSIDE
+// requireTenant. Body identifies the product via (external_source,
+// external_id); we use that to look up the matching tenant's
+// webhook_subscriptions row and verify the signature against that
+// row's secret. This keeps the cross-tenant model intact — no global
+// shared secret, each customer admin signs with the same per-tenant
+// secret it received at subscription creation.
+const BfrStatusUpdateInput = z.object({
+  external_source: z.string().min(1),
+  external_id: z.string().min(1),
+  status: z.enum(["staged", "active", "archived", "draft"]),
+  url: z.string().url().optional(),
+  ts: z.number().int().optional(),
+});
+
+app.post("/v1/external/bfr-status-update", async (c) => {
+  const sigHeader = c.req.header("x-ff-signature");
+  if (!sigHeader) return c.json({ error: "missing_signature" }, 401);
+
+  const rawBody = await c.req.text();
+  const parsed = BfrStatusUpdateInput.safeParse(
+    JSON.parse(rawBody || "{}")
+  );
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+  const data = parsed.data;
+  const db = createDbClient(c.env);
+
+  // Resolve product → tenant by the (external_source, external_id) pair.
+  // uniq index `uniq_products_tenant_external` from migration 0013
+  // makes this unambiguous within a tenant; without a tenant scope yet
+  // we accept the first match (in practice external_id is a per-tenant
+  // identifier so collisions across tenants would be a bug elsewhere).
+  const matches = await db
+    .select({
+      id: products.id,
+      tenantId: products.tenantId,
+    })
+    .from(products)
+    .where(
+      and(
+        eq(products.externalSource, data.external_source),
+        eq(products.externalId, data.external_id)
+      )
+    )
+    .limit(2);
+
+  if (matches.length === 0) {
+    return c.json({ error: "product_not_found" }, 404);
+  }
+  if (matches.length > 1) {
+    console.warn(
+      "[bfr-status-update] ambiguous external_id across tenants",
+      data.external_source,
+      data.external_id
+    );
+  }
+  const product = matches[0];
+
+  // Look up the subscription secret for this tenant. Same secret used
+  // for outbound webhook signing, so BFR admin signs with the same
+  // shared key it stores in FF_STUDIO_WEBHOOK_SECRET.
+  const [sub] = await db
+    .select({ secret: webhookSubscriptions.secret })
+    .from(webhookSubscriptions)
+    .where(
+      and(
+        eq(webhookSubscriptions.tenantId, product.tenantId),
+        isNull(webhookSubscriptions.disabledAt)
+      )
+    )
+    .limit(1);
+
+  if (!sub) {
+    return c.json({ error: "no_subscription_for_tenant" }, 401);
+  }
+
+  // Parse the x-ff-signature header: t=<ts>,v1=<hex>. Matches the
+  // pattern the buyfishingrod-admin adapter uses for the reverse
+  // direction (see integrations/buyfishingrod-admin.ts hmacHex). Use
+  // a 5-minute replay window to defeat trivially-replayed messages.
+  const parts = Object.fromEntries(
+    sigHeader.split(",").map((p) => {
+      const [k, v] = p.split("=");
+      return [k.trim(), (v ?? "").trim()];
+    })
+  );
+  const t = Number(parts.t);
+  const v1 = parts.v1;
+  if (!t || !v1) return c.json({ error: "bad_signature_format" }, 401);
+  const skewSec = Math.abs(Math.floor(Date.now() / 1000) - t);
+  if (skewSec > 300) {
+    return c.json({ error: "signature_expired", skew: skewSec }, 401);
+  }
+
+  const expected = await hmacHex(sub.secret, `${t}.${rawBody}`);
+  if (!constantTimeEquals(expected, v1)) {
+    return c.json({ error: "bad_signature" }, 401);
+  }
+
+  // Verified — apply the update. Idempotent: same status applied twice
+  // is a no-op (well, just bumps bfr_synced_at).
+  await db
+    .update(products)
+    .set({
+      bfrStatus: data.status,
+      bfrUrl: data.url ?? null,
+      bfrSyncedAt: new Date(),
+    })
+    .where(eq(products.id, product.id));
+
+  await auditEvent(db, {
+    tenantId: product.tenantId,
+    actor: null,
+    action: "product.bfr_status_updated",
+    targetType: "product",
+    targetId: product.id,
+    metadata: {
+      external_source: data.external_source,
+      external_id: data.external_id,
+      status: data.status,
+      url: data.url ?? null,
+    },
+  });
+
+  return c.json({ ok: true, product_id: product.id, status: data.status });
+});
+
+// HMAC helper for the inbound webhook above. Same algorithm as the
+// outbound adapter; small enough to duplicate rather than reach across
+// the integrations boundary.
+async function hmacHex(secret: string, message: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+  const bytes = new Uint8Array(sig);
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
+  return hex;
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 // Apply auth middleware to /api/* and /v1/* (except open routes already
 // declared above). /health, /sse, /messages, /demo/* stay open for now —
@@ -1796,6 +1955,54 @@ app.get("/v1/tenant/export", async (c) => {
     });
   } catch (err) {
     console.error("[/v1/tenant/export]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// Phase G · G24 — GDPR right-to-erasure. Three-endpoint flow:
+//   GET    /v1/tenant/delete-request → current status (pending? eligible date?)
+//   POST   /v1/tenant/delete-request → initiate 30-day grace window
+//   DELETE /v1/tenant/delete-request → cancel within the grace window
+// Hard-delete happens server-side via the scheduled handler once
+// eligibleAt passes (see scheduled() handler — sweepExpiredDeletions).
+app.get("/v1/tenant/delete-request", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const { getDeletionStatus, GDPR_GRACE_PERIOD_DAYS } = await import(
+      "./lib/tenant-deletion.js"
+    );
+    const status = await getDeletionStatus(db, tenant.id);
+    return c.json({ ...status, gracePeriodDays: GDPR_GRACE_PERIOD_DAYS });
+  } catch (err) {
+    console.error("[/v1/tenant/delete-request GET]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.post("/v1/tenant/delete-request", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const body = (await c.req.json().catch(() => ({}))) as { reason?: string };
+    const { requestDeletion } = await import("./lib/tenant-deletion.js");
+    const status = await requestDeletion(db, tenant.id, body.reason ?? null);
+    return c.json(status);
+  } catch (err) {
+    console.error("[/v1/tenant/delete-request POST]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.delete("/v1/tenant/delete-request", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const { cancelDeletion } = await import("./lib/tenant-deletion.js");
+    const result = await cancelDeletion(db, tenant.id);
+    return c.json(result, result.cancelled ? 200 : 404);
+  } catch (err) {
+    console.error("[/v1/tenant/delete-request DELETE]", err);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });

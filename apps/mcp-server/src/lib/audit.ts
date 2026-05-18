@@ -59,7 +59,10 @@ export type AuditAction =
   // action is rolled back via the dashboard's undo toast (within 30s).
   // Webhook subscribers should treat this as cancellation of the
   // corresponding asset.approved event (same target_id).
-  | "asset.unapproved";
+  | "asset.unapproved"
+  // Migration 0016 — inbound BFR status webhook applied. Local-only
+  // audit trail; not fanned out (the BFR side is the source of truth).
+  | "product.bfr_status_updated";
 
 export interface AuditEventInput {
   tenantId: string;
