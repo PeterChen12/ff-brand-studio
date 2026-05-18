@@ -371,7 +371,12 @@ export default function NewProductPageInner() {
           language: lang,
         })),
       );
-      const launch = await apiFetch<{ run_id: string }>("/v1/launches", {
+      // ?async=1 makes the worker queue the pipeline via waitUntil and
+      // return run_id immediately (status='pending'). Without this the
+      // request blocks for the full 90-120s pipeline duration, causing
+      // the progress bar to appear "stuck at 10%" / creating until the
+      // very end.
+      const launch = await apiFetch<{ run_id: string }>("/v1/launches?async=1", {
         method: "POST",
         body: JSON.stringify({
           product_id: created.product_id,
@@ -761,9 +766,21 @@ function LaunchProgressButton({
     );
   }
 
+  // Unknown server phase: interpolate from elapsed time rather than
+  // jumping to a default 50%. The pipeline takes ~90-120s end-to-end;
+  // mapping elapsed→percent gives the bar visible motion when the
+  // backend reports a phase the client doesn't recognize.
+  function interpolatePercent(elapsedMs: number): number {
+    const TYPICAL_DURATION_MS = 110_000;
+    const minPercent = PHASE_PERCENT.creating; // 10
+    const maxPercent = 95;
+    const frac = Math.min(1, elapsedMs / TYPICAL_DURATION_MS);
+    return Math.round(minPercent + frac * (maxPercent - minPercent));
+  }
+
   const percent =
     stage.kind === "launching"
-      ? (PHASE_PERCENT[stage.phase] ?? 50)
+      ? (PHASE_PERCENT[stage.phase] ?? interpolatePercent(stage.elapsedMs))
       : stage.kind === "creating"
         ? PHASE_PERCENT.creating
         : 5;

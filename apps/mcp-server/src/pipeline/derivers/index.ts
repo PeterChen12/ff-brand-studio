@@ -17,11 +17,18 @@
 
 import type { KindType } from "@ff/types";
 
+export type AngleVariant = "studio" | "three_quarter" | "detail" | "top";
+
 export interface RefinePromptArgs {
   productName: string;
   productNameZh?: string | null;
   category: string;
   brandHex?: string;
+  /** Optional angle hint. The deriver appends an angle-specific block
+   *  to the refine prompt so the orchestrator can render the same SKU
+   *  at multiple angles for a richer PDP gallery. Default behavior
+   *  (no angle / 'studio') renders the canonical hero crop. */
+  angle?: AngleVariant;
 }
 
 export interface LifestylePromptArgs extends RefinePromptArgs {}
@@ -41,9 +48,11 @@ const COMMON_NEGATIVES = [
   // Phase E · Iter 04 — text artifacts are the most-reported failure mode.
   // Restated with multiple synonyms so the model can't squeak by on a
   // narrow interpretation of "no text".
-  "no text, no letters, no numbers anywhere in the image",
+  "no text, no letters, no numbers, no characters, no glyphs anywhere in the image",
+  "no English words, no Chinese characters, no Japanese characters, no Korean characters",
+  "no signs, no posters, no banners, no labels overlaid on the scene",
   "no logos that aren't physically printed on the actual product",
-  "no watermarks",
+  "no watermarks, no signatures, no AI-generated text marks",
   "no floating captions, callouts, or speech bubbles",
   "no dimension labels or spec tags",
   "no garbled or partially-rendered text characters",
@@ -55,9 +64,37 @@ const COMMON_NEGATIVES = [
 ];
 
 function bannedBlock(extras: string[]): string {
-  return ["ABSOLUTELY NO:", ...COMMON_NEGATIVES, ...extras].map(s =>
-    s.startsWith("ABSOLUTELY") ? s : `  - ${s}`
-  ).join("\n");
+  // Banner-cap leading line so diffusion models attend to it strongly,
+  // and one-bullet-per-line so the negatives aren't merged into a run-on.
+  return [
+    "═══════════════════════════════════════",
+    "ABSOLUTELY FORBIDDEN — image must contain ZERO of these:",
+    "═══════════════════════════════════════",
+    ...COMMON_NEGATIVES,
+    ...extras,
+  ]
+    .map((s, i) => (i === 0 || s.startsWith("═") || s.startsWith("ABSOLUTELY") ? s : `  - ${s}`))
+    .join("\n");
+}
+
+// Angle-specific framing instructions appended to refine prompts. The
+// orchestrator can render the same SKU at multiple angles by invoking
+// the deriver once per AngleVariant. Each block describes a concrete
+// camera position so the model has something specific to anchor on.
+const ANGLE_BLOCKS: Record<AngleVariant, string> = {
+  studio:
+    "Framing: canonical front-facing studio crop, product square to camera, eye-level.",
+  three_quarter:
+    "Framing: 3/4 angle view — rotate the product ~30° to its right so both the front face and one side are visible. Keep the product centered. Same lighting and white background as the studio crop.",
+  detail:
+    "Framing: tight macro detail of the product's most identity-defining hardware (grip, reel seat, guide ring, handle, or label). Same lighting and white background. The detail must come from the same physical product visible in the reference.",
+  top:
+    "Framing: top-down view (90° overhead). Product laid flat on the same white background. Same lighting.",
+};
+
+function angleBlock(angle?: AngleVariant): string {
+  if (!angle) return "";
+  return `\n${ANGLE_BLOCKS[angle]}\n`;
 }
 
 const longThinVertical: Deriver = {
@@ -76,7 +113,7 @@ const longThinVertical: Deriver = {
     "do not add a fish or angler",
     "do not change rod color or pattern",
   ],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio product photograph of ${productName} (${category}).
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -86,7 +123,7 @@ Key features to preserve exactly:
   - reel seat hardware shape and color
   - grip material texture (cork or EVA pattern)
   - rod section count visible at the joints
-Pure white seamless background (#FFFFFF). Product centered, vertical orientation.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Product centered, vertical orientation.
 ${bannedBlock([
   "do not bend or curve the rod",
   "do not add a fish or an angler",
@@ -118,7 +155,7 @@ const longThinHorizontal: Deriver = {
     "surface finish and graphics unchanged",
   ],
   negativePrompts: ["do not foreshorten the length", "do not add accessory items"],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio product photograph of ${productName} (${category}).
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -126,7 +163,7 @@ Key features to preserve exactly:
   - complete length visible end to end
   - any tip or handle hardware
   - surface finish, graphics, and color exactly as in the reference
-Pure white seamless background (#FFFFFF). Product centered, horizontal orientation.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Product centered, horizontal orientation.
 ${bannedBlock([
   "do not foreshorten the length",
   "do not add accessory items or staging props",
@@ -162,7 +199,7 @@ const compactSquare: Deriver = {
     "do not invent logos or monograms not in the reference",
     "do not re-color the leather or fabric",
   ],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio product photograph of ${productName} (${category}).
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -172,7 +209,7 @@ Key features to preserve exactly:
   - leather or fabric grain texture
   - strap or handle attachment hardware
   - logo or monogram pattern only as shown in the reference
-Pure white seamless background (#FFFFFF). Product centered, even fill of the frame.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Product centered, even fill of the frame.
 ${bannedBlock([
   "do not re-shape the silhouette",
   "do not invent logos, monograms, or charms not present in the reference",
@@ -205,7 +242,7 @@ const compactRound: Deriver = {
     "color uniformity around the round",
   ],
   negativePrompts: ["do not re-shape the crown", "do not invent embroidery"],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio product photograph of ${productName} (${category}).
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -214,7 +251,7 @@ Key features to preserve exactly:
   - brim curvature or rim profile
   - embroidery, patches, or weave pattern as in reference
   - color uniformity all the way around
-Pure white seamless background (#FFFFFF). Product centered.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Product centered.
 ${bannedBlock([
   "do not re-shape the crown or brim",
   "do not invent embroidery or patches",
@@ -244,7 +281,7 @@ const horizontalThin: Deriver = {
     "surface graphic continuity",
   ],
   negativePrompts: ["do not crop the ends", "do not change orientation"],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio product photograph of ${productName} (${category}).
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -252,7 +289,7 @@ Key features to preserve exactly:
   - left-to-right proportions
   - any visible attachment points or hardware
   - surface graphic continuity end to end
-Pure white seamless background (#FFFFFF). Horizontal orientation, centered.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Horizontal orientation, centered.
 ${bannedBlock([
   "do not crop the ends",
   "do not change orientation",
@@ -287,7 +324,7 @@ const multiComponent: Deriver = {
     "do not invent additional components",
     "do not stack components in a way the reference does not show",
   ],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio product photograph of a multi-component ${productName} (${category}) set.
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -295,7 +332,7 @@ Key features to preserve exactly:
   - all components from the reference are visible in the frame
   - relative size of components is preserved
   - color and material of each component matches the reference
-Pure white seamless background (#FFFFFF). Components arranged as in the reference.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Components arranged as in the reference.
 ${bannedBlock([
   "do not omit any component shown in the reference",
   "do not invent additional components",
@@ -331,7 +368,7 @@ const apparelFlat: Deriver = {
     "do not change sleeve length",
     "do not invent or move the chest graphic",
   ],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio flat-lay photograph of ${productName} (${category}).
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -341,7 +378,7 @@ Key features to preserve exactly:
   - graphic placement and dimensions on the chest exactly as in reference
   - fabric weave or knit pattern at the seams
   - color exactness, no tonal drift
-Pure white seamless background (#FFFFFF). Flat lay, garment laid open with arms extended.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Flat lay, garment laid open with arms extended.
 ${bannedBlock([
   "do not change the neckline style",
   "do not change sleeve length or cuff style",
@@ -379,7 +416,7 @@ const accessorySmall: Deriver = {
     "do not invent stones, engravings, or charms",
     "do not change metal finish",
   ],
-  refinePrompt: ({ productName, category }) => `
+  refinePrompt: ({ productName, category, angle }) => `
 Studio macro photograph of ${productName} (${category}).
 Match the framing of the second reference (the crop oracle).
 Match the identity of the first reference (the studio source).
@@ -388,7 +425,7 @@ Key features to preserve exactly:
   - any stone color, cut, and setting style as in the reference
   - engraving or pattern detail on visible surfaces
   - clasp or fastening type
-Pure white seamless background (#FFFFFF). Centered with even fill, sharp focus.
+${angleBlock(angle)}Pure white seamless background (#FFFFFF). Centered with even fill, sharp focus.
 ${bannedBlock([
   "do not invent stones, engravings, or charms",
   "do not change metal finish or color",

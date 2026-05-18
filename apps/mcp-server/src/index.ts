@@ -38,6 +38,7 @@ import { requireTenant, type AuthVars } from "./lib/auth.js";
 import { rateLimitMiddleware } from "./lib/rate-limit.js";
 import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
+import { stageBfrProduct } from "./integrations/buyfishingrod-admin.js";
 import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
 import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
 import { auditEvent } from "./lib/audit.js";
@@ -1469,25 +1470,98 @@ app.post("/v1/launches", async (c) => {
     },
   });
 
+  // Phase J · progress-bar fix — opt-in async mode for the dashboard
+  // wizard. When the client passes ?async=1 the response returns as
+  // soon as the launch_runs row is inserted (status='pending'), and
+  // the pipeline runs in the background via executionCtx.waitUntil.
+  // The client then polls GET /v1/launches/:runId for real phase
+  // progress. Without this the request blocks for the full 90-120s
+  // pipeline duration and the bar appears "stuck at 10%".
+  const asyncMode = c.req.query("async") === "1";
+  const pipelineInput = {
+    product_id: p.product_id,
+    platforms: p.platforms as LaunchPlatform[],
+    include_video: false,
+    dry_run: p.dry_run,
+    include_seo:
+      surfaceCount !== undefined ? surfaceCount > 0 : p.include_seo,
+    seo_surfaces: p.surfaces,
+    seo_cost_cap_cents: p.seo_cost_cap_cents,
+    cost_cap_cents: p.cost_cap_cents,
+    anthropic_api_key: c.env.ANTHROPIC_API_KEY,
+    openai_api_key: c.env.OPENAI_API_KEY,
+    dataforseo_login: c.env.DATAFORSEO_LOGIN,
+    dataforseo_password: c.env.DATAFORSEO_PASSWORD,
+    env: c.env,
+    existing_run_id: runId,
+  } as const;
+
+  if (asyncMode) {
+    // Background-run the pipeline. waitUntil keeps the worker alive
+    // past the HTTP response so the launch actually executes; without
+    // it Cloudflare would terminate the isolate when the response
+    // returns and the launch would never complete.
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          await db
+            .update(launchRuns)
+            .set({ currentPhase: "creating" })
+            .where(eq(launchRuns.id, runId))
+            .catch(() => {});
+          const result = await runLaunchPipeline(db, pipelineInput);
+          if (!p.dry_run) {
+            const actualCents = result.total_cost_cents;
+            const billedDelta = prediction.total_cents - actualCents;
+            if (billedDelta > 0) {
+              await creditWallet(db, {
+                tenantId: tenant.id,
+                cents: billedDelta,
+                reason: "refund",
+                referenceType: "launch_run",
+                referenceId: result.run_id,
+              });
+            }
+          }
+          await auditEvent(db, {
+            tenantId: tenant.id,
+            actor: actor ?? null,
+            action: result.status === "succeeded" ? "launch.complete" : "launch.failed",
+            targetType: "launch_run",
+            targetId: result.run_id,
+            metadata: {
+              status: result.status,
+              actual_cents: result.total_cost_cents,
+              duration_ms: result.duration_ms,
+              hitl_count: result.hitl_count,
+            },
+          });
+        } catch (bgErr) {
+          console.error(
+            "[launch:async] pipeline threw:",
+            bgErr instanceof Error ? `${bgErr.name}: ${bgErr.message}` : String(bgErr)
+          );
+          await db
+            .update(launchRuns)
+            .set({ status: "failed", durationMs: 0 })
+            .where(eq(launchRuns.id, runId))
+            .catch(() => {});
+        }
+      })()
+    );
+    return c.json(
+      {
+        run_id: runId,
+        status: "pending",
+        async: true,
+        message: "Pipeline running in background. Poll GET /v1/launches/:run_id for progress.",
+      },
+      202
+    );
+  }
+
   try {
-    const result = await runLaunchPipeline(db, {
-      product_id: p.product_id,
-      platforms: p.platforms as LaunchPlatform[],
-      include_video: false,
-      dry_run: p.dry_run,
-      include_seo:
-        surfaceCount !== undefined ? surfaceCount > 0 : p.include_seo,
-      seo_surfaces: p.surfaces,
-      seo_cost_cap_cents: p.seo_cost_cap_cents,
-      cost_cap_cents: p.cost_cap_cents,
-      anthropic_api_key: c.env.ANTHROPIC_API_KEY,
-      openai_api_key: c.env.OPENAI_API_KEY,
-      dataforseo_login: c.env.DATAFORSEO_LOGIN,
-      dataforseo_password: c.env.DATAFORSEO_PASSWORD,
-      env: c.env,
-      // P0-4 — pipeline updates this row instead of inserting a new one.
-      existing_run_id: runId,
-    });
+    const result = await runLaunchPipeline(db, pipelineInput);
 
     // Refund the difference between predicted and actual cost (we charged
     // `prediction.total_cents` up-front; if the run produced fewer assets
@@ -2069,6 +2143,58 @@ app.delete("/v1/webhooks/:id", async (c) => {
   }
 });
 
+// Phase G · G15 — tenant-visible delivery feed + manual retry.
+app.get("/v1/webhooks/deliveries", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const limit = Number(c.req.query("limit") ?? "50");
+    const statusParam = c.req.query("status");
+    const status =
+      statusParam === "delivered" ||
+      statusParam === "pending" ||
+      statusParam === "exhausted"
+        ? statusParam
+        : "all";
+    const { listDeliveries } = await import("./lib/webhooks.js");
+    const deliveries = await listDeliveries(db, tenant.id, {
+      limit: Number.isFinite(limit) ? limit : 50,
+      status,
+    });
+    return c.json({ deliveries });
+  } catch (err) {
+    console.error("[/v1/webhooks/deliveries GET]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.post("/v1/webhooks/deliveries/:id/retry", async (c) => {
+  try {
+    const db = createDbClient(c.env);
+    const tenant = c.get("tenant") as Tenant;
+    const id = c.req.param("id");
+    const { retryDelivery } = await import("./lib/webhooks.js");
+    const result = await retryDelivery(db, tenant.id, id);
+    if (!result.ok) {
+      const code =
+        result.reason === "not_found"
+          ? 404
+          : result.reason === "subscription_disabled"
+            ? 409
+            : 409;
+      return c.json({ error: result.reason }, code);
+    }
+    return c.json({
+      delivered: result.delivered,
+      status_code: result.statusCode,
+      attempt: result.attempt,
+    });
+  } catch (err) {
+    console.error("[/v1/webhooks/deliveries/:id/retry POST]", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // Phase L1 — API key issuance / list / revoke.
 app.post("/v1/api-keys", async (c) => {
   try {
@@ -2453,10 +2579,176 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
     }
   }
   const succeeded = results.filter((r) => r.ok).length;
+
+  // Migration 0016 — mark the parent product(s) as 'staged' once any
+  // assets transitioned to approved. We collect distinct product ids
+  // from the variant→product join above so a multi-variant bulk
+  // approve only writes one update per product. Optimistic: even
+  // before BFR admin sends back its own status webhook, the FF Studio
+  // library can show a "📦 Staged" pill. The next inbound
+  // /v1/external/bfr-status-update will overwrite this with 'active'
+  // or 'archived' as the operator works through the queue.
+  const stagePushes: Array<{ productId: string; ok: boolean; adminUrl?: string; error?: string }> = [];
+  if (succeeded > 0) {
+    const productIds = new Set<string>();
+    for (const id of parsed.data.asset_ids) {
+      const [row] = await db
+        .select({ productId: productVariants.productId })
+        .from(platformAssets)
+        .innerJoin(
+          productVariants,
+          eq(productVariants.id, platformAssets.variantId)
+        )
+        .where(eq(platformAssets.id, id))
+        .limit(1);
+      if (row?.productId) productIds.add(row.productId);
+    }
+    if (productIds.size > 0) {
+      await db
+        .update(products)
+        .set({ bfrStatus: "staged", bfrSyncedAt: new Date() })
+        .where(inArray(products.id, Array.from(productIds)));
+
+      // Synchronous push to the BFR admin. Replaces the previous
+      // webhook-fan-out-only flow that silently failed when the BFR
+      // tenant had no webhook subscription configured. Synchronous
+      // call means: if BFR rejects (bad secret, network, etc.), we
+      // mark bfr_status='stage_failed' so the operator sees the
+      // error inline instead of believing the product reached BFR.
+      const signingSecret = (c.env as { FF_STUDIO_WEBHOOK_SECRET?: string })
+        .FF_STUDIO_WEBHOOK_SECRET;
+      const bfrBase = (c.env as { BFR_ADMIN_BASE_URL?: string }).BFR_ADMIN_BASE_URL;
+      if (signingSecret) {
+        for (const productId of productIds) {
+          try {
+            const [prod] = await db
+              .select({
+                id: products.id,
+                sku: products.sku,
+                externalId: products.externalId,
+                nameEn: products.nameEn,
+                nameZh: products.nameZh,
+              })
+              .from(products)
+              .where(eq(products.id, productId))
+              .limit(1);
+            if (!prod) continue;
+
+            const [variant] = await db
+              .select({ id: productVariants.id })
+              .from(productVariants)
+              .where(eq(productVariants.productId, productId))
+              .limit(1);
+
+            const approvedAssets = variant
+              ? await db
+                  .select({
+                    id: platformAssets.id,
+                    slot: platformAssets.slot,
+                    r2Url: platformAssets.r2Url,
+                    width: platformAssets.width,
+                    height: platformAssets.height,
+                    format: platformAssets.format,
+                  })
+                  .from(platformAssets)
+                  .where(
+                    and(
+                      eq(platformAssets.tenantId, tenant.id),
+                      eq(platformAssets.status, "approved"),
+                      eq(platformAssets.variantId, variant.id)
+                    )
+                  )
+              : [];
+
+            const listings = variant
+              ? await db
+                  .select({
+                    language: platformListings.language,
+                    copy: platformListings.copy,
+                  })
+                  .from(platformListings)
+                  .where(eq(platformListings.variantId, variant.id))
+              : [];
+
+            const copy: Record<string, unknown> = {};
+            for (const l of listings) {
+              // platform_listings.copy is a jsonb blob like
+              // { title, bullets, description } — pass through as-is.
+              copy[l.language ?? "en"] = l.copy;
+            }
+
+            const envelope = {
+              external_id: prod.externalId ?? null,
+              external_source: "ff-brand-studio" as const,
+              sku: prod.sku,
+              product_id: prod.id,
+              variant_id: variant?.id ?? "",
+              name: {
+                en: prod.nameEn ?? undefined,
+                zh: prod.nameZh ?? undefined,
+              },
+              copy: Object.keys(copy).length > 0 ? copy : undefined,
+              images: approvedAssets.map((a) => ({
+                slot: a.slot,
+                r2_url: a.r2Url,
+                width: a.width ?? null,
+                height: a.height ?? null,
+                format: a.format ?? null,
+              })),
+              staged_at: new Date().toISOString(),
+            };
+
+            if (envelope.images.length === 0) {
+              stagePushes.push({
+                productId,
+                ok: false,
+                error: "no_approved_images",
+              });
+              continue;
+            }
+
+            const result = await stageBfrProduct({
+              envelope,
+              signingSecret,
+              baseUrl: bfrBase,
+            });
+            const detail = (result.detail ?? {}) as { admin_url?: string };
+            stagePushes.push({
+              productId,
+              ok: true,
+              adminUrl: detail.admin_url,
+            });
+            // Record the admin URL so the FF Studio library can deep-
+            // link to the freshly-staged product in BFR.
+            if (detail.admin_url) {
+              await db
+                .update(products)
+                .set({ bfrUrl: detail.admin_url })
+                .where(eq(products.id, productId));
+            }
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            console.warn(`[bulk-approve] stage push failed for ${productId}:`, errMsg);
+            stagePushes.push({ productId, ok: false, error: errMsg });
+            await db
+              .update(products)
+              .set({ bfrStatus: "stage_failed" })
+              .where(eq(products.id, productId));
+          }
+        }
+      } else {
+        console.warn(
+          "[bulk-approve] FF_STUDIO_WEBHOOK_SECRET not configured — skipping BFR push"
+        );
+      }
+    }
+  }
+
   return c.json({
     approved: succeeded,
     failed: results.length - succeeded,
     results,
+    stage_pushes: stagePushes,
   });
 });
 
@@ -3034,6 +3326,11 @@ app.get("/api/assets", async (c) => {
         category: products.category,
         sellerNameEn: sellerProfiles.orgNameEn,
         tenantId: platformAssets.tenantId,
+        // Migration 0016 — bidirectional status sync. Surfaces the
+        // BFR-side product state on the same SKU row so the library
+        // can render a pill ('staged' / 'active' / 'archived').
+        bfrStatus: products.bfrStatus,
+        bfrUrl: products.bfrUrl,
       })
       .from(platformAssets)
       .leftJoin(productVariants, eq(platformAssets.variantId, productVariants.id))
@@ -3261,6 +3558,9 @@ app.post("/demo/seo-preview", async (c) => {
     brandConfig: null,
     externalId: null,
     externalSource: null,
+    bfrStatus: null,
+    bfrUrl: null,
+    bfrSyncedAt: null,
     createdAt: new Date(),
   };
 
@@ -3342,6 +3642,7 @@ app.post("/demo/launch-sku", async (c) => {
 // trigger's 15-min wallclock budget.
 import { sweepZombieRuns, purgeStaleIdempotencyKeys } from "./pipeline/zombie_sweeper.js";
 import { processDuePromise } from "./lib/webhooks.js";
+import { sweepExpiredDeletions } from "./lib/tenant-deletion.js";
 
 async function handleScheduled(
   event: ScheduledEvent,

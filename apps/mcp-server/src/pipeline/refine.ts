@@ -8,7 +8,7 @@
  */
 
 import type { PipelineCtx, StepResult } from "./types.js";
-import { getDeriver, type RefinePromptArgs } from "./derivers/index.js";
+import { getDeriver, type RefinePromptArgs, type AngleVariant } from "./derivers/index.js";
 import { publicUrl } from "./cache.js";
 
 export const REFINE_COST_CENTS = 30;
@@ -48,6 +48,10 @@ export interface RefineOptions {
   cropTag: string;
   /** Iter index for caching distinct iter outputs. */
   iter?: number;
+  /** Camera angle for multi-angle gallery generation. Defaults to
+   *  'studio' (canonical front crop). When set, the prompt builder
+   *  injects an angle-specific framing block. */
+  angle?: AngleVariant;
 }
 
 export async function refineCall(
@@ -66,6 +70,7 @@ export async function refineCall(
     productName: ctx.productName,
     productNameZh: ctx.productNameZh,
     category: ctx.category,
+    angle: opts.angle,
   };
   const prompt = opts.promptOverride ?? deriver.refinePrompt(promptArgs);
 
