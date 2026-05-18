@@ -41,6 +41,11 @@ export function StageProductButton({
   const tenant = useTenant();
   const apiFetch = useApiFetch();
   const [busy, setBusy] = useState(false);
+  // Local "we just staged it" flag so the button flips to "Staged ✓"
+  // immediately on success, without waiting for the parent's refetch
+  // round-trip. The parent's onStaged() still fires so the real asset
+  // rows refresh from DB and the new state survives a remount.
+  const [justStagedCount, setJustStagedCount] = useState<number | null>(null);
 
   // Tenant gating — adapters[] could include "buyfishingrod-admin",
   // "amazon-sp-api", etc. Empty / absent means non-enterprise tier.
@@ -48,11 +53,14 @@ export function StageProductButton({
   const enterpriseEnabled = Array.isArray(adapters) && adapters.length > 0;
 
   // Stageable = anything not yet approved/rejected. If the operator
-  // already approved manually earlier, those rows are skipped.
-  const stageable = useMemo(
-    () => assets.filter((a) => a.status !== "approved" && a.status !== "rejected"),
-    [assets]
-  );
+  // already approved manually earlier, those rows are skipped. If we
+  // just staged in this same render cycle, treat the previously-stageable
+  // set as already-staged so the button doesn't briefly snap back to
+  // "Stage product · N" before the parent's refetch completes.
+  const stageable = useMemo(() => {
+    if (justStagedCount !== null) return [];
+    return assets.filter((a) => a.status !== "approved" && a.status !== "rejected");
+  }, [assets, justStagedCount]);
 
   // Non-enterprise: render the button as a Link, no API call. The
   // outer markup matches the Bundle button so the row alignment
@@ -85,10 +93,12 @@ export function StageProductButton({
         }
       );
       if (res.approved > 0 && res.failed === 0) {
+        setJustStagedCount(res.approved);
         toast.success(
-          `Staged ${res.approved} asset${res.approved === 1 ? "" : "s"} for ${productLabel}.`
+          `Staged ${res.approved} asset${res.approved === 1 ? "" : "s"} for ${productLabel}. → admin.buyfishingrod.com`
         );
       } else if (res.approved > 0) {
+        setJustStagedCount(res.approved);
         toast.warning(
           `Staged ${res.approved} of ${stageable.length} — ${res.failed} failed.`
         );
@@ -105,23 +115,39 @@ export function StageProductButton({
     }
   }
 
+  const adminUrl = "https://admin.buyfishingrod.com/products?status=STAGING";
+  const showAdminLink = stageable.length === 0 && adapters?.[0] === "buyfishingrod-admin";
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={busy || stageable.length === 0}
-      className="inline-flex items-center gap-1.5 px-3 h-9 rounded-m3-full md-typescale-label-medium bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2 transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
-      title={
-        stageable.length === 0
-          ? "All assets already approved"
-          : `Approve ${stageable.length} asset${stageable.length === 1 ? "" : "s"} → push to ${adapters?.[0]}`
-      }
-    >
-      {busy
-        ? "Staging…"
-        : stageable.length === 0
-          ? "All staged ✓"
-          : `Stage product · ${stageable.length}`}
-    </button>
+    <div className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={busy || stageable.length === 0}
+        className="inline-flex items-center gap-1.5 px-3 h-9 rounded-m3-full md-typescale-label-medium bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2 transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
+        title={
+          stageable.length === 0
+            ? "All assets already approved"
+            : `Approve ${stageable.length} asset${stageable.length === 1 ? "" : "s"} → push to ${adapters?.[0]}`
+        }
+      >
+        {busy
+          ? "Staging…"
+          : stageable.length === 0
+            ? "Staged ✓"
+            : `Stage product · ${stageable.length}`}
+      </button>
+      {showAdminLink && (
+        <a
+          href={adminUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="md-typescale-label-medium text-primary hover:underline whitespace-nowrap"
+          title="Open the product in admin.buyfishingrod.com (STAGING queue)"
+        >
+          View in admin →
+        </a>
+      )}
+    </div>
   );
 }

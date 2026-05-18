@@ -273,6 +273,7 @@ export default function LibraryPage() {
                       setFilters((prev) => ({ ...prev, q: sku }));
                       setTab("listings");
                     }}
+                    onStaged={() => assetsQ.mutate()}
                   />
                 )}
               />
@@ -580,11 +581,13 @@ function SkuGroup({
   delay,
   onOpenAt,
   onShowListings,
+  onStaged,
 }: {
   group: SkuGroupShape;
   delay: number;
   onOpenAt: (idx: number) => void;
   onShowListings?: (sku: string) => void;
+  onStaged?: () => void;
 }) {
   return (
     <Card className="md-fade-in" style={{ animationDelay: `${delay}ms` }}>
@@ -624,6 +627,7 @@ function SkuGroup({
           <StageProductButton
             assets={group.items}
             productLabel={group.nameEn || group.sku}
+            onStaged={onStaged}
           />
           <BundleSkuButton group={group} />
         </div>
