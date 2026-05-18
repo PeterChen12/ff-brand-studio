@@ -224,8 +224,12 @@ app.use("/v1/webhooks", requireTenant);
 app.use("/v1/webhooks/*", requireTenant);
 app.use("/v1/tenant", requireTenant);
 app.use("/v1/tenant/*", requireTenant);
-// Phase B (F4) — operator HITL inbox.
+// Phase B (F4) — operator HITL inbox. Both the list route and subpaths
+// (e.g. /v1/inbox/bulk-approve) need tenant context — without the `/*`
+// glob, subpaths fall through, `c.get("tenant")` is undefined, and the
+// first call to `visibleTenantIds(tenant)` throws on `tenant.features`.
 app.use("/v1/inbox", requireTenant);
+app.use("/v1/inbox/*", requireTenant);
 app.use("/v1/promo-codes/*", requireTenant);
 
 // Phase M1 — rate limit AFTER auth so we have tenant context to scope
