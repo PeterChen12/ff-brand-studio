@@ -41,6 +41,7 @@ import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
 import { stageBfrProduct } from "./integrations/buyfishingrod-admin.js";
 import { resolveCredentials, requireString } from "./integrations/credentials.js";
+import { upsertDownstreamState } from "./integrations/downstream-state.js";
 import { claimEvent, markProcessed } from "./lib/webhook-inbox.js";
 import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
 import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
@@ -332,15 +333,19 @@ app.post("/v1/external/bfr-status-update", async (c) => {
   }
 
   // Verified — apply the update. Idempotent: same status applied twice
-  // is a no-op (well, just bumps bfr_synced_at).
-  await db
-    .update(products)
-    .set({
-      bfrStatus: data.status,
-      bfrUrl: data.url ?? null,
-      bfrSyncedAt: new Date(),
-    })
-    .where(eq(products.id, product.id));
+  // P4 — canonical state via the join table; legacy bfr_* mirror
+  // happens inside the helper for the dual-write window. Note this
+  // path is hardcoded to provider="buyfishingrod-admin" because the
+  // route is the legacy BFR receiver — when we add provider-agnostic
+  // status receivers in P5, callers pass the provider explicitly.
+  await upsertDownstreamState(db, {
+    productId: product.id,
+    tenantId: product.tenantId,
+    provider: data.external_source,
+    externalUrl: data.url ?? null,
+    status: data.status,
+    bumpSyncedAt: true,
+  });
 
   await auditEvent(db, {
     tenantId: product.tenantId,
@@ -2911,10 +2916,17 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
       if (row?.productId) productIds.add(row.productId);
     }
     if (productIds.size > 0) {
-      await db
-        .update(products)
-        .set({ bfrStatus: "staged", bfrSyncedAt: new Date() })
-        .where(inArray(products.id, Array.from(productIds)));
+      // P4 — write canonical state via the join table. Helper dual-
+      // writes products.bfr_* for the migration window.
+      for (const pid of productIds) {
+        await upsertDownstreamState(db, {
+          productId: pid,
+          tenantId: tenant.id,
+          provider: "buyfishingrod-admin",
+          status: "staged",
+          bumpSyncedAt: true,
+        });
+      }
 
       // Synchronous push to the BFR admin. Replaces the previous
       // webhook-fan-out-only flow that silently failed when the BFR
@@ -2965,15 +2977,18 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
 
             // P1.5 — stable event_id per stage push. Persist on first
             // attempt; reuse on retries so the BFR-side webhook_inbox
-            // dedupes correctly. Cleared elsewhere when bfrStatus
-            // resets (e.g. operator re-stages from scratch).
+            // dedupes correctly.
+            // P4 — write goes through the canonical helper which
+            // dual-writes the legacy bfr_stage_event_id column.
             let stageEventId = prod.bfrStageEventId;
             if (!stageEventId) {
               stageEventId = `stage:${prod.id}:${crypto.randomUUID()}`;
-              await db
-                .update(products)
-                .set({ bfrStageEventId: stageEventId })
-                .where(eq(products.id, productId));
+              await upsertDownstreamState(db, {
+                productId,
+                tenantId: tenant.id,
+                provider: "buyfishingrod-admin",
+                stageEventId,
+              });
             }
 
             const [variant] = await db
@@ -3063,22 +3078,25 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
               ok: true,
               adminUrl: detail.admin_url,
             });
-            // Record the admin URL so the FF Studio library can deep-
-            // link to the freshly-staged product in BFR.
+            // P4 — record the admin URL via the canonical helper.
             if (detail.admin_url) {
-              await db
-                .update(products)
-                .set({ bfrUrl: detail.admin_url })
-                .where(eq(products.id, productId));
+              await upsertDownstreamState(db, {
+                productId,
+                tenantId: tenant.id,
+                provider: "buyfishingrod-admin",
+                externalUrl: detail.admin_url,
+              });
             }
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             console.warn(`[bulk-approve] stage push failed for ${productId}:`, errMsg);
             stagePushes.push({ productId, ok: false, error: errMsg });
-            await db
-              .update(products)
-              .set({ bfrStatus: "stage_failed" })
-              .where(eq(products.id, productId));
+            await upsertDownstreamState(db, {
+              productId,
+              tenantId: tenant.id,
+              provider: "buyfishingrod-admin",
+              status: "stage_failed",
+            });
           }
         }
       }

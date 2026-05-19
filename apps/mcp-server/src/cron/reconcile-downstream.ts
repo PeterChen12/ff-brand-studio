@@ -21,6 +21,7 @@ import {
 } from "../db/schema.js";
 import { resolveCredentials } from "../integrations/credentials.js";
 import { fetchProductStateGeneric } from "../integrations/generic-rest.js";
+import { upsertDownstreamState } from "../integrations/downstream-state.js";
 
 const MAX_PRODUCTS_PER_TICK = 50;
 // Map FF Studio's internal status set to the tenant-api spec set so
@@ -125,12 +126,15 @@ export async function reconcileDownstream(
         );
         continue;
       }
-      // Stamp last_reconciled_at even on miss / 404 so we don't keep
-      // hammering products that don't exist downstream.
-      await db
-        .update(products)
-        .set({ lastReconciledAt: new Date() })
-        .where(eq(products.id, product.id));
+      // P4 — stamp last_reconciled_at via the canonical helper
+      // (also mirrors to the legacy column during dual-write).
+      await upsertDownstreamState(db, {
+        productId: product.id,
+        integrationId: integ.id,
+        provider: integ.provider,
+        externalId: product.externalId,
+        bumpReconciledAt: true,
+      });
 
       const local = normalizeStatus(product.bfrStatus);
       const remoteStatus = normalizeStatus(remote?.status);

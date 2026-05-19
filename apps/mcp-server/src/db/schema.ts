@@ -553,6 +553,46 @@ export type NewAuditEvent = typeof auditEvents.$inferInsert;
 
 // ── Promo codes (testing wallet top-ups) ─────────────────────────────────
 
+// P4 — canonical per-(product, integration) state. Replaces the
+// per-platform bfr_* columns on products. Lets the same product have
+// independent state for multiple downstream destinations (Shopify +
+// BFR-clone admin + Amazon, etc.). Currently dual-written with the
+// legacy columns; reads switch over once the dual-write window
+// (~1 release) confirms parity.
+export const productDownstreamState = pgTable(
+  "product_downstream_state",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    integrationId: uuid("integration_id")
+      .notNull()
+      .references(() => integrationCredentials.id),
+    provider: text("provider").notNull(),
+    externalId: text("external_id"),
+    externalUrl: text("external_url"),
+    status: text("status"),
+    stageEventId: text("stage_event_id"),
+    lastSyncedAt: timestamp("last_synced_at"),
+    lastReconciledAt: timestamp("last_reconciled_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => ({
+    providerStatusIdx: index("product_downstream_state_provider_idx").on(
+      t.provider,
+      t.status
+    ),
+    externalIdx: index("product_downstream_state_external_idx").on(
+      t.provider,
+      t.externalId
+    ),
+  })
+);
+
+export type ProductDownstreamState = typeof productDownstreamState.$inferSelect;
+
 // P3 — drift log. One row per detected mismatch between FF Studio's
 // local view of a product and the tenant's actual downstream state.
 // Dashboard surfaces unresolved rows so operators can pick a side.

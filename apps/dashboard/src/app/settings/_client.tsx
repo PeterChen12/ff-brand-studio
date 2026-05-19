@@ -15,6 +15,7 @@ import { ApiKeysPanel } from "@/components/settings/api-keys-panel";
 import { WebhooksPanel } from "@/components/settings/webhooks-panel";
 import { TenantPanel } from "@/components/settings/tenant-panel";
 import { ChannelsPanel } from "@/components/settings/channels-panel";
+import { IntegrationsPanel } from "@/components/settings/integrations-panel";
 
 type Tab = "api-keys" | "webhooks" | "tenant" | "channels" | "advanced";
 
@@ -116,7 +117,12 @@ export default function SettingsClient() {
           {TABS.find((t) => t.id === tab)?.description ?? ""}
         </p>
 
-        {tab === "channels" && <ChannelsPanel />}
+        {tab === "channels" && (
+          <div className="space-y-8">
+            <IntegrationsPanel />
+            <ChannelsPanel />
+          </div>
+        )}
         {tab === "tenant" && <TenantPanel />}
         {tab === "advanced" && (
           <div className="space-y-10">
