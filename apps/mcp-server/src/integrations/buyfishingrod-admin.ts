@@ -1,20 +1,18 @@
 /**
- * Phase B (B4) + Phase F · Iter 02 — adapter for buyfishingrod-admin.
+ * BuyFishingRod admin adapter.
  *
- * Previous version (Phase B B4) was a stub throwing notImplemented; the
- * Stage Product workflow in Phase E iter 02 worked around it by using
- * the per-asset webhook fan-out via bulk-approve.
+ * P2 — after the generic-rest adapter shipped, this file is a thin
+ * labelled wrapper. It exists to:
+ *   1. Keep `provider="buyfishingrod-admin"` as a stable id for the
+ *      audit log + dashboard UX, even though the on-the-wire calls
+ *      are identical to generic-rest.
+ *   2. Carry the `adapter_stage_enabled` feature-flag gate so the
+ *      registry-driven fan-out path (`publishAssets`) can stay opt-in
+ *      while bulk-approve uses stageBfrProduct() directly.
  *
- * F2 fills in the real publishAssets impl: POSTs a single product-level
- * envelope to BFR's /api/integrations/ff-brand-studio/stage-product
- * endpoint with HMAC signature. The BFR-side endpoint is owned by
- * another agent and MUST ship dormant (receive + 200 OK, no caller)
- * before this adapter is allowed to go live. See PHASE_F_SAFETY_RESEARCH.md
- * "F2 safety" section.
- *
- * Feature-flag gated by `tenant.features.adapter_stage_enabled` so we
- * can ship the studio code and turn it on per-tenant only after the
- * BFR-side receiver is confirmed deployed.
+ * If you're integrating a new ecommerce admin to FF Studio, do NOT
+ * copy this file — implement the tenant-api OpenAPI contract on your
+ * side and pick "generic-rest" as your provider in the dashboard.
  */
 
 import type {
@@ -24,21 +22,16 @@ import type {
 } from "./adapter.js";
 import { ApiError } from "../lib/api-error.js";
 import { requireString } from "./credentials.js";
+import {
+  stageProductGeneric,
+  fetchProductStateGeneric,
+} from "./generic-rest.js";
 
-/** Default BFR base URL; overridable via integration_credentials row. */
-const DEFAULT_BFR_BASE_URL = "https://admin.buyfishingrod.com";
-
-const ENDPOINT_PATH = "/api/integrations/ff-brand-studio/stage-product";
-
-/** Envelope sent to BFR. Shape is the contract — changes need BFR-side
- *  coordination. */
-interface StageEnvelope {
+/** Envelope sent to BFR. Exported for use by the bulk-approve callsite.
+ *  Shape matches the public tenant-api spec — changes need a spec bump. */
+export interface StageEnvelope {
   external_id: string | null;
   external_source: "ff-brand-studio";
-  // P0 — every envelope carries an event_id. Receivers dedupe on this.
-  // Senders MUST generate a stable UUID per logical mutation; retries
-  // of the same call MUST reuse it (handled by the caller in
-  // stageBfrProduct below — one event_id per invocation).
   event_id: string;
   sku: string;
   product_id: string;
@@ -55,75 +48,38 @@ interface StageEnvelope {
   staged_at: string;
 }
 
-async function hmacHex(secret: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
-  const bytes = new Uint8Array(sig);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex;
-}
-
 /**
- * Public entry point — accepts a webhook secret + base URL override
- * so the adapter can be tested with arbitrary endpoints. Production
- * call site reads these from worker env (`FF_STUDIO_WEBHOOK_SECRET`)
- * and the tenant's integration_credentials row.
+ * Direct stage push — used by bulk-approve which doesn't go through
+ * the adapter registry. Thin wrapper over stageProductGeneric so all
+ * BFR-bound requests follow the same transport contract.
  */
 export async function stageBfrProduct(args: {
   envelope: StageEnvelope;
   baseUrl?: string;
   signingSecret: string;
 }): Promise<PublishResult> {
-  const url = `${(args.baseUrl ?? DEFAULT_BFR_BASE_URL).replace(/\/$/, "")}${ENDPOINT_PATH}`;
-  const body = JSON.stringify(args.envelope);
-  const t = Math.floor(Date.now() / 1000);
-  const sig = await hmacHex(args.signingSecret, `${t}.${body}`);
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-ff-signature": `t=${t},v1=${sig}`,
-      // P0 — echo the envelope's event_id in a header. BFR dedupe
-      // path reads either header OR body; redundancy is intentional
-      // so the receiver doesn't have to JSON-parse before deciding.
-      "x-ff-event-id": args.envelope.event_id,
-    },
-    body,
-    signal: AbortSignal.timeout(15_000),
+  return stageProductGeneric({
+    baseUrl: args.baseUrl ?? "https://admin.buyfishingrod.com",
+    signingSecret: args.signingSecret,
+    envelope: args.envelope,
   });
+}
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new ApiError(
-      502,
-      "bfr_stage_failed",
-      `BFR /stage-product returned ${res.status}: ${text.slice(0, 400)}`
-    );
-  }
-  let detail: Record<string, unknown> = {};
-  try {
-    detail = (await res.json()) as Record<string, unknown>;
-  } catch {
-    // BFR returned non-JSON; treat as success-with-no-detail.
-  }
-  return {
-    externalListingId: args.envelope.external_id ?? undefined,
-    detail,
-  };
+/**
+ * Reconciler helper — used by P3 cron to fetch current BFR state for a
+ * product. Defers to the generic implementation.
+ */
+export async function fetchBfrProductState(args: {
+  baseUrl: string;
+  signingSecret: string;
+  externalId: string;
+}) {
+  return fetchProductStateGeneric(args);
 }
 
 export const buyfishingrodAdminAdapter: MarketplaceAdapter = {
   provider: "buyfishingrod-admin",
-  label: "buyfishingrod-admin (stage)",
+  label: "BuyFishingRod admin (BFR dogfood)",
   enabled: true,
   async publishAssets(ctx: PublishContext): Promise<PublishResult> {
     const features = (ctx.tenant.features ?? {}) as Record<string, unknown>;
@@ -132,18 +88,15 @@ export const buyfishingrodAdminAdapter: MarketplaceAdapter = {
         503,
         "adapter_stage_disabled",
         "Set tenant.features.adapter_stage_enabled=true to use the BFR adapter. " +
-          "Use the bulk-approve + webhook fan-out path otherwise."
+          "Otherwise bulk-approve drives the BFR push directly."
       );
     }
-    // P1 — read from resolved credentials, not worker env. Multi-tenant
-    // safe: each tenant's row in integration_credentials carries its own
-    // baseUrl + signingSecret.
     const baseUrl = requireString(ctx.credentials.config, "baseUrl");
     const signingSecret = requireString(ctx.credentials.config, "signingSecret");
     const envelope: StageEnvelope = {
       external_id: ctx.externalId,
       external_source: "ff-brand-studio",
-      event_id: `stage:${ctx.productId}:${Math.floor(Date.now() / 1000)}`,
+      event_id: `stage:${ctx.productId}:${crypto.randomUUID().slice(0, 12)}`,
       sku: ctx.sku,
       product_id: ctx.productId,
       variant_id: ctx.variantId,
@@ -168,6 +121,6 @@ export const buyfishingrodAdminAdapter: MarketplaceAdapter = {
       }
       envelope.copy = copy;
     }
-    return stageBfrProduct({ envelope, signingSecret, baseUrl });
+    return stageProductGeneric({ baseUrl, signingSecret, envelope });
   },
 };

@@ -8,10 +8,15 @@
 
 import type { MarketplaceAdapter } from "./adapter.js";
 import { buyfishingrodAdminAdapter } from "./buyfishingrod-admin.js";
+import { genericRestAdapter } from "./generic-rest.js";
 import { amazonSpApiAdapter } from "./amazon-sp-api.js";
 import { shopifyAdminAdapter } from "./shopify-admin.js";
 
+// generic-rest is the public default for any tenant that implements
+// the OpenAPI tenant-api spec. buyfishingrod-admin is a labelled
+// alias of the same transport, kept for dashboard UX + audit trail.
 const ALL_ADAPTERS: MarketplaceAdapter[] = [
+  genericRestAdapter,
   buyfishingrodAdminAdapter,
   amazonSpApiAdapter,
   shopifyAdminAdapter,

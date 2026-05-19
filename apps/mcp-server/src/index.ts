@@ -1854,6 +1854,20 @@ app.get("/docs", async (c) => {
   });
 });
 
+// P2 — public tenant-API contract. Any company integrating FF Studio
+// implements the three endpoints documented here. Inlined at build
+// time so we don't ship a file-asset binding just for one YAML file.
+app.get("/v1/tenant-api.yaml", async (c) => {
+  const { getTenantApiYaml } = await import("./tenant-api-spec.js");
+  return new Response(getTenantApiYaml(), {
+    headers: {
+      "content-type": "text/yaml; charset=utf-8",
+      // Public spec — no auth, no rate-limit. Customers fetch it from CI.
+      "cache-control": "public, max-age=300",
+    },
+  });
+});
+
 // Phase L2 — single-product fetch, list, and soft-delete.
 app.get("/v1/products/:id", async (c) => {
   try {
@@ -2258,6 +2272,40 @@ app.post("/v1/integrations", async (c) => {
     rotated: row.rotatedAt !== null,
     created: row.rotatedAt === null,
   });
+});
+
+// P3 — drift inbox for the dashboard. Returns unresolved drift rows
+// for the current tenant. Operators triage each: "Trust remote"
+// updates products.bfr_status to match; "Trust local" re-pushes via
+// stageBfrProduct on the next bulk-approve; "Ignore" marks resolved.
+app.get("/v1/integrations/drift", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const db = createDbClient(c.env);
+  const { listUnresolvedDrift } = await import("./cron/reconcile-downstream.js");
+  const items = await listUnresolvedDrift(db, tenant.id, 100);
+  return c.json({ items });
+});
+
+app.post("/v1/integrations/drift/:id/resolve", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const id = c.req.param("id");
+  const { resolution } = (await c.req.json().catch(() => ({}))) as {
+    resolution?: string;
+  };
+  const db = createDbClient(c.env);
+  const { reconciliationLog } = await import("./db/schema.js");
+  const [row] = await db
+    .update(reconciliationLog)
+    .set({ resolvedAt: new Date(), resolution: resolution ?? "manual" })
+    .where(
+      and(
+        eq(reconciliationLog.id, id),
+        eq(reconciliationLog.tenantId, tenant.id)
+      )
+    )
+    .returning({ id: reconciliationLog.id });
+  if (!row) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true });
 });
 
 // #9 — GET-by-id so the dashboard edit form can pre-populate.
@@ -3857,6 +3905,7 @@ app.post("/demo/seo-preview", async (c) => {
     bfrStageEventId: null,
     bfrUrl: null,
     bfrSyncedAt: null,
+    lastReconciledAt: null,
     createdAt: new Date(),
   };
 
@@ -3971,6 +4020,27 @@ async function handleScheduled(
         }
       } catch (err) {
         console.error("[cron] idempotency purge failed", err);
+      }
+      // P3 — reverse reconciler. Bounded per tick (50 fetches max).
+      try {
+        const { reconcileDownstream } = await import("./cron/reconcile-downstream.js");
+        const r = await reconcileDownstream(db, env as unknown as Record<string, unknown>);
+        if (r.productsChecked > 0) {
+          console.log("[cron] reconcile-downstream", JSON.stringify(r));
+        }
+      } catch (err) {
+        console.error("[cron] reconcile-downstream failed", err);
+      }
+      // P1.5 #4 — purge old webhook_inbox rows (>30 days).
+      try {
+        const { sql: drizzleSql } = await import("drizzle-orm");
+        const result = await db.execute(
+          drizzleSql`DELETE FROM webhook_inbox WHERE processed_at IS NOT NULL AND processed_at < now() - interval '30 days'`
+        );
+        const count = (result as { count?: number }).count ?? 0;
+        if (count > 0) console.log("[cron] webhook_inbox purged", count);
+      } catch (err) {
+        console.error("[cron] webhook_inbox purge failed", err);
       }
     })()
   );

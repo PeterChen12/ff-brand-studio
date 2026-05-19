@@ -131,6 +131,11 @@ export const products = pgTable(
     // push so the BFR webhook_inbox dedupes correctly. Generated on
     // first attempt, cleared when bfr_status resets to NULL.
     bfrStageEventId: text("bfr_stage_event_id"),
+    // P3 — when the reconciler last compared this product against the
+    // tenant downstream. Used to spread reconciliation work over time
+    // so a single cron invocation doesn't try to fetch state for every
+    // product on every run.
+    lastReconciledAt: timestamp("last_reconciled_at"),
     bfrUrl: text("bfr_url"),
     bfrSyncedAt: timestamp("bfr_synced_at"),
     createdAt: timestamp("created_at").defaultNow(),
@@ -547,6 +552,40 @@ export type AuditEvent = typeof auditEvents.$inferSelect;
 export type NewAuditEvent = typeof auditEvents.$inferInsert;
 
 // ── Promo codes (testing wallet top-ups) ─────────────────────────────────
+
+// P3 — drift log. One row per detected mismatch between FF Studio's
+// local view of a product and the tenant's actual downstream state.
+// Dashboard surfaces unresolved rows so operators can pick a side.
+export const reconciliationLog = pgTable(
+  "reconciliation_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    externalId: text("external_id"),
+    localStatus: text("local_status"),
+    remoteStatus: text("remote_status"),
+    diff: jsonb("diff").notNull(),
+    detectedAt: timestamp("detected_at").notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at"),
+    resolution: text("resolution"),
+  },
+  (t) => ({
+    unresolvedIdx: index("reconciliation_log_unresolved_idx").on(
+      t.tenantId,
+      t.resolvedAt
+    ),
+    productIdx: index("reconciliation_log_product_idx").on(
+      t.productId,
+      t.detectedAt
+    ),
+  })
+);
+
+export type ReconciliationLog = typeof reconciliationLog.$inferSelect;
 
 export const promoCodes = pgTable("promo_codes", {
   id: uuid("id").primaryKey().defaultRandom(),

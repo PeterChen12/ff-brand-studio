@@ -1,0 +1,198 @@
+openapi: 3.1.0
+info:
+  title: FF Brand Studio — Tenant API Contract
+  version: "1.0.0"
+  description: |
+    Public contract every customer of FF Brand Studio implements to
+    receive product/asset push events from FF Studio.
+
+    **You implement these endpoints; FF Studio calls them.**
+
+    Three endpoints are required:
+      1. POST /api/integrations/ff-brand-studio/stage-product
+         Receive a freshly-staged product (or a re-stage of an existing one).
+      2. GET /api/integrations/ff-brand-studio/products/{external_id}
+         Return the current state of one of your products keyed by the
+         id FF Studio uses (external_id). Used by the reverse reconciler.
+      3. POST /api/integrations/ff-brand-studio/status-update
+         Receive operator-driven status changes from FF Studio (rare —
+         most state changes flow the OTHER direction, from your admin
+         back to FF Studio).
+
+    **Auth**: every request carries:
+      - `x-ff-signature: t=<unix>,v1=<hex-hmac-sha256>` where the HMAC
+        is over `${t}.${rawBody}` keyed with a shared secret you
+        configure via the FF Studio dashboard.
+      - `x-ff-event-id: <opaque-stable-id>` — your endpoint MUST dedupe
+        on this. A retried delivery has the same id.
+
+    **Replay window**: reject signatures where `|now - t| > 300` seconds.
+
+    **Response shape**: return `{ ok: true, ... }` on success. On
+    failure return 4xx with `{ error: "<short_code>", message: "..." }`.
+    FF Studio retries on 5xx (1m / 5m / 30m / 2h / 12h) until 12 hours
+    elapse. 4xx is treated as a permanent failure.
+
+servers:
+  - url: "https://your-admin.example.com"
+    description: Your admin server
+
+paths:
+  /api/integrations/ff-brand-studio/stage-product:
+    post:
+      summary: Receive a staged product
+      description: |
+        FF Studio sends this when an operator clicks Stage on an
+        approved asset/listing. Idempotent on `event_id`.
+      parameters:
+        - $ref: "#/components/parameters/Signature"
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StageEnvelope"
+      responses:
+        "200":
+          description: Product staged or duplicate event acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StageOk"
+        "401":
+          description: Signature missing / invalid
+        "400":
+          description: Body malformed
+        "500":
+          description: Internal — FF Studio will retry
+
+  /api/integrations/ff-brand-studio/products/{external_id}:
+    get:
+      summary: Return current state of a tenant-side product (reconciler)
+      description: |
+        FF Studio's reverse reconciler calls this every ~15 min to detect
+        drift (e.g. operator changed product status manually). Return
+        the smallest payload that lets FF Studio compare local vs remote.
+      parameters:
+        - name: external_id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/Signature"
+      responses:
+        "200":
+          description: Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductState"
+        "404":
+          description: No such external_id on the tenant side
+
+  /api/integrations/ff-brand-studio/status-update:
+    post:
+      summary: Receive a status change pushed FROM FF Studio
+      parameters:
+        - $ref: "#/components/parameters/Signature"
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusUpdate"
+      responses:
+        "200":
+          description: Accepted
+
+components:
+  parameters:
+    Signature:
+      name: x-ff-signature
+      in: header
+      required: true
+      schema: { type: string, example: "t=1716090000,v1=abcd..." }
+      description: HMAC-SHA256 over `${t}.${rawBody}` keyed with the shared secret.
+    EventId:
+      name: x-ff-event-id
+      in: header
+      required: true
+      schema: { type: string }
+      description: Stable id. Receiver MUST dedupe.
+  schemas:
+    StageEnvelope:
+      type: object
+      required: [external_source, event_id, sku, product_id, variant_id, images, staged_at]
+      properties:
+        external_source:
+          type: string
+          enum: ["ff-brand-studio"]
+        external_id:
+          type: [string, "null"]
+          description: Your-side product id, if FF Studio knows it.
+        event_id: { type: string }
+        sku: { type: string }
+        product_id: { type: string, description: "FF Studio's internal product UUID" }
+        variant_id: { type: string }
+        name:
+          type: object
+          properties:
+            en: { type: string }
+            zh: { type: string }
+        copy:
+          type: object
+          description: "Per-surface listing copy (e.g. amazon-us / shopify)."
+          additionalProperties:
+            type: object
+            properties:
+              title: { type: string }
+              bullets: { type: array, items: { type: string } }
+              description: { type: string }
+        images:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [slot, r2_url]
+            properties:
+              slot: { type: string, example: "MAIN" }
+              r2_url: { type: string, format: uri }
+              width: { type: [integer, "null"] }
+              height: { type: [integer, "null"] }
+              format: { type: [string, "null"] }
+        staged_at: { type: string, format: date-time }
+        test:
+          type: boolean
+          description: "When true, verify signature + dedupe but DON'T create products. Used by the dashboard's Test Connection button."
+    StageOk:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        idempotent: { type: boolean, description: "true on duplicate delivery" }
+        product_id: { type: string, description: "Your-side product id" }
+        admin_url: { type: string, format: uri }
+        image_count: { type: integer }
+        deduped_count: { type: integer }
+    ProductState:
+      type: object
+      required: [external_id, status]
+      properties:
+        external_id: { type: string }
+        status:
+          type: string
+          enum: [draft, staged, active, archived, deleted]
+        url: { type: string, format: uri }
+        last_modified_at: { type: string, format: date-time }
+    StatusUpdate:
+      type: object
+      required: [external_source, external_id, status]
+      properties:
+        external_source: { type: string }
+        external_id: { type: string }
+        status:
+          type: string
+          enum: [draft, staged, active, archived]
+        url: { type: string, format: uri }
+        event_id: { type: string }
