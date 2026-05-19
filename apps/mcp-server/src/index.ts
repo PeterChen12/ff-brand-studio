@@ -2226,31 +2226,10 @@ app.post("/v1/integrations", async (c) => {
   const { encryptCredentials } = await import("./lib/crypto.js");
   const encryptedCredentials = await encryptCredentials(env.CREDENTIAL_KEK_HEX, config);
 
-  // Upsert by (tenantId, provider) — one row per (tenant, provider).
-  // Re-POST to the same provider rotates the secret.
-  const existing = await db
-    .select({ id: integrationCredentials.id })
-    .from(integrationCredentials)
-    .where(
-      and(
-        eq(integrationCredentials.tenantId, tenant.id),
-        eq(integrationCredentials.provider, provider)
-      )
-    )
-    .limit(1);
-  if (existing.length > 0) {
-    const [row] = await db
-      .update(integrationCredentials)
-      .set({
-        accountLabel: accountLabel ?? null,
-        encryptedCredentials,
-        status,
-        rotatedAt: new Date(),
-      })
-      .where(eq(integrationCredentials.id, existing[0].id))
-      .returning({ id: integrationCredentials.id });
-    return c.json({ id: row.id, rotated: true });
-  }
+  // P1.5 #6 — atomic upsert backed by the
+  // integration_credentials_tenant_provider_uniq constraint. Eliminates
+  // the previous select-then-insert TOCTOU race where two concurrent
+  // POSTs could both insert.
   const [row] = await db
     .insert(integrationCredentials)
     .values({
@@ -2260,8 +2239,53 @@ app.post("/v1/integrations", async (c) => {
       encryptedCredentials,
       status,
     })
-    .returning({ id: integrationCredentials.id });
-  return c.json({ id: row.id, created: true }, 201);
+    .onConflictDoUpdate({
+      target: [integrationCredentials.tenantId, integrationCredentials.provider],
+      set: {
+        accountLabel: accountLabel ?? null,
+        encryptedCredentials,
+        status,
+        rotatedAt: new Date(),
+      },
+    })
+    .returning({
+      id: integrationCredentials.id,
+      createdAt: integrationCredentials.createdAt,
+      rotatedAt: integrationCredentials.rotatedAt,
+    });
+  return c.json({
+    id: row.id,
+    rotated: row.rotatedAt !== null,
+    created: row.rotatedAt === null,
+  });
+});
+
+// #9 — GET-by-id so the dashboard edit form can pre-populate.
+app.get("/v1/integrations/:id", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const id = c.req.param("id");
+  const db = createDbClient(c.env);
+  const [row] = await db
+    .select({
+      id: integrationCredentials.id,
+      provider: integrationCredentials.provider,
+      accountLabel: integrationCredentials.accountLabel,
+      status: integrationCredentials.status,
+      createdAt: integrationCredentials.createdAt,
+      rotatedAt: integrationCredentials.rotatedAt,
+      expiresAt: integrationCredentials.expiresAt,
+    })
+    .from(integrationCredentials)
+    .where(
+      and(
+        eq(integrationCredentials.id, id),
+        eq(integrationCredentials.tenantId, tenant.id)
+      )
+    )
+    .limit(1);
+  if (!row) return c.json({ error: "not_found" }, 404);
+  // NEVER include encryptedCredentials in the response.
+  return c.json(row);
 });
 
 app.delete("/v1/integrations/:id", async (c) => {
@@ -2319,10 +2343,24 @@ app.post("/v1/integrations/:id/test", async (c) => {
   if (!baseUrl || !signingSecret) {
     return c.json({ error: "missing_baseUrl_or_signingSecret" }, 400);
   }
+  // P1.5 #7 — target the same receiver the production adapter uses
+  // (`/stage-product`), not `/webhook`. A minimal-but-valid envelope
+  // exercises both the signature verifier AND the stage-product
+  // handler's source-check + idempotency claim. test:true tells the
+  // receiver to skip the actual product write — the inbox row stays
+  // for inspection (event_id is `test-...`).
+  const testEventId = `test-${id}-${Math.floor(Date.now() / 1000)}`;
   const testBody = JSON.stringify({
-    test: true,
     external_source: "ff-brand-studio",
-    sent_at: new Date().toISOString(),
+    event_id: testEventId,
+    test: true,
+    images: [
+      {
+        slot: "test",
+        r2_url: "https://example.com/test.jpg",
+      },
+    ],
+    staged_at: new Date().toISOString(),
   });
   const t = Math.floor(Date.now() / 1000);
   const enc = new TextEncoder();
@@ -2339,12 +2377,12 @@ app.post("/v1/integrations/:id/test", async (c) => {
     .join("");
   let res: Response;
   try {
-    res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/integrations/ff-brand-studio/webhook`, {
+    res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/integrations/ff-brand-studio/stage-product`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-ff-signature": `t=${t},v1=${hex}`,
-        "x-ff-event-id": `test-${id}-${t}`,
+        "x-ff-event-id": testEventId,
       },
       body: testBody,
       signal: AbortSignal.timeout(10_000),
@@ -2870,11 +2908,25 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
                 externalId: products.externalId,
                 nameEn: products.nameEn,
                 nameZh: products.nameZh,
+                bfrStageEventId: products.bfrStageEventId,
               })
               .from(products)
               .where(eq(products.id, productId))
               .limit(1);
             if (!prod) continue;
+
+            // P1.5 — stable event_id per stage push. Persist on first
+            // attempt; reuse on retries so the BFR-side webhook_inbox
+            // dedupes correctly. Cleared elsewhere when bfrStatus
+            // resets (e.g. operator re-stages from scratch).
+            let stageEventId = prod.bfrStageEventId;
+            if (!stageEventId) {
+              stageEventId = `stage:${prod.id}:${crypto.randomUUID()}`;
+              await db
+                .update(products)
+                .set({ bfrStageEventId: stageEventId })
+                .where(eq(products.id, productId));
+            }
 
             const [variant] = await db
               .select({ id: productVariants.id })
@@ -2922,11 +2974,9 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
             const envelope = {
               external_id: prod.externalId ?? null,
               external_source: "ff-brand-studio" as const,
-              // P0 — stable event_id per stage push. Format
-              // "stage:{productId}:{epochSec}" so a re-run within the
-              // same wall-clock second hits idempotency on the BFR
-              // side; older runs get a new id and re-stage cleanly.
-              event_id: `stage:${prod.id}:${Math.floor(Date.now() / 1000)}`,
+              // P1.5 — stable across retries (persisted in
+              // products.bfr_stage_event_id above).
+              event_id: stageEventId,
               sku: prod.sku,
               product_id: prod.id,
               variant_id: variant?.id ?? "",
@@ -3804,6 +3854,7 @@ app.post("/demo/seo-preview", async (c) => {
     externalId: null,
     externalSource: null,
     bfrStatus: null,
+    bfrStageEventId: null,
     bfrUrl: null,
     bfrSyncedAt: null,
     createdAt: new Date(),

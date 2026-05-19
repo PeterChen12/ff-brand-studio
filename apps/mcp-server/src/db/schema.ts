@@ -127,6 +127,10 @@ export const products = pgTable(
     // 'staged' locally from bulk-approve). NULL on every column means
     // "never staged".
     bfrStatus: text("bfr_status"),
+    // P1.5 — stable event_id reused across retries of the SAME stage
+    // push so the BFR webhook_inbox dedupes correctly. Generated on
+    // first attempt, cleared when bfr_status resets to NULL.
+    bfrStageEventId: text("bfr_stage_event_id"),
     bfrUrl: text("bfr_url"),
     bfrSyncedAt: timestamp("bfr_synced_at"),
     createdAt: timestamp("created_at").defaultNow(),

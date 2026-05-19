@@ -81,6 +81,14 @@ export async function resolveCredentials(
     return { source: row.id, config };
   }
 
+  // P1.5 fix — if a row exists but is non-active (disabled / rotated-
+  // out / pending), DO NOT fall through to the env fallback. The env
+  // fallback is tenant-unscoped — silently substituting another tenant's
+  // credentials would leak data across tenants.
+  if (row) {
+    throw new CredentialsNotFoundError(tenantId, provider);
+  }
+
   // Legacy fallback: worker-env for the BFR-admin path. Scheduled for
   // removal in P3.
   if (provider === "buyfishingrod-admin") {
