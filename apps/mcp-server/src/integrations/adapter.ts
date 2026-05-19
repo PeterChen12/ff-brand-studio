@@ -17,6 +17,7 @@
  */
 
 import type { Tenant } from "../db/schema.js";
+import type { ResolvedCredentials } from "./credentials.js";
 
 export interface PublishedAsset {
   /** Slot identifier the platform uses internally (e.g. "MAIN", "PT01"). */
@@ -37,6 +38,14 @@ export interface PublishedListing {
 
 export interface PublishContext {
   tenant: Tenant;
+  /**
+   * P1 — per-tenant credentials resolved before invoking the adapter.
+   * Adapters MUST read URLs / secrets / tokens from `credentials.config`
+   * and never reach into worker env directly. This is what makes FF
+   * Studio multi-tenant: each tenant has its own row in
+   * integration_credentials and the adapter doesn't care which.
+   */
+  credentials: ResolvedCredentials;
   productId: string;
   variantId: string;
   externalId: string | null;

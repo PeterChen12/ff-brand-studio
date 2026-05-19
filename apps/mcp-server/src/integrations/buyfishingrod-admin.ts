@@ -23,6 +23,7 @@ import type {
   PublishResult,
 } from "./adapter.js";
 import { ApiError } from "../lib/api-error.js";
+import { requireString } from "./credentials.js";
 
 /** Default BFR base URL; overridable via integration_credentials row. */
 const DEFAULT_BFR_BASE_URL = "https://admin.buyfishingrod.com";
@@ -134,22 +135,11 @@ export const buyfishingrodAdminAdapter: MarketplaceAdapter = {
           "Use the bulk-approve + webhook fan-out path otherwise."
       );
     }
-    // Read signing secret from the worker env via globalThis (the registry
-    // doesn't pass env down today). In production this comes from
-    // FF_STUDIO_WEBHOOK_SECRET (same secret as the existing webhook
-    // subscription). The receiver verifies with the same shared secret.
-    const env = (globalThis as { ENV?: Record<string, string | undefined> }).ENV;
-    const signingSecret =
-      env?.FF_STUDIO_WEBHOOK_SECRET ??
-      env?.BFR_STAGE_SIGNING_SECRET ??
-      "";
-    if (!signingSecret) {
-      throw new ApiError(
-        500,
-        "missing_signing_secret",
-        "FF_STUDIO_WEBHOOK_SECRET not bound to the worker — set it via `wrangler secret put`."
-      );
-    }
+    // P1 — read from resolved credentials, not worker env. Multi-tenant
+    // safe: each tenant's row in integration_credentials carries its own
+    // baseUrl + signingSecret.
+    const baseUrl = requireString(ctx.credentials.config, "baseUrl");
+    const signingSecret = requireString(ctx.credentials.config, "signingSecret");
     const envelope: StageEnvelope = {
       external_id: ctx.externalId,
       external_source: "ff-brand-studio",
@@ -178,6 +168,6 @@ export const buyfishingrodAdminAdapter: MarketplaceAdapter = {
       }
       envelope.copy = copy;
     }
-    return stageBfrProduct({ envelope, signingSecret });
+    return stageBfrProduct({ envelope, signingSecret, baseUrl });
   },
 };

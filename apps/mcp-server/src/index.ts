@@ -21,6 +21,7 @@ import {
   auditEvents,
   tenants,
   webhookSubscriptions,
+  integrationCredentials,
   promoCodes,
   promoRedemptions,
   SAMPLE_TENANT_ID,
@@ -39,6 +40,7 @@ import { rateLimitMiddleware } from "./lib/rate-limit.js";
 import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
 import { stageBfrProduct } from "./integrations/buyfishingrod-admin.js";
+import { resolveCredentials, requireString } from "./integrations/credentials.js";
 import { claimEvent, markProcessed } from "./lib/webhook-inbox.js";
 import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
 import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
@@ -411,6 +413,9 @@ app.use("/v1/api-keys", requireTenant);
 app.use("/v1/api-keys/*", requireTenant);
 app.use("/v1/webhooks", requireTenant);
 app.use("/v1/webhooks/*", requireTenant);
+// P1 — per-tenant integration credentials (replaces worker env vars).
+app.use("/v1/integrations", requireTenant);
+app.use("/v1/integrations/*", requireTenant);
 app.use("/v1/tenant", requireTenant);
 app.use("/v1/tenant/*", requireTenant);
 // Phase B (F4) — operator HITL inbox. Both the list route and subpaths
@@ -2172,6 +2177,193 @@ app.delete("/v1/webhooks/:id", async (c) => {
   }
 });
 
+// P1 — integration_credentials CRUD. Tenants configure their downstream
+// destinations (BFR-like admin, Shopify, generic-rest) via these
+// endpoints instead of asking us to set worker secrets.
+//
+// All endpoints are tenant-scoped via requireTenant middleware.
+const IntegrationConfigInput = z.object({
+  provider: z.string().min(1).max(64),
+  accountLabel: z.string().max(120).optional(),
+  // Adapter-specific. For buyfishingrod-admin / generic-rest:
+  //   { baseUrl: string, signingSecret: string }
+  config: z.record(z.unknown()),
+  status: z.enum(["active", "disabled"]).default("active"),
+});
+
+app.get("/v1/integrations", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const db = createDbClient(c.env);
+  const rows = await db
+    .select({
+      id: integrationCredentials.id,
+      provider: integrationCredentials.provider,
+      accountLabel: integrationCredentials.accountLabel,
+      status: integrationCredentials.status,
+      createdAt: integrationCredentials.createdAt,
+      rotatedAt: integrationCredentials.rotatedAt,
+      expiresAt: integrationCredentials.expiresAt,
+    })
+    .from(integrationCredentials)
+    .where(eq(integrationCredentials.tenantId, tenant.id))
+    .orderBy(desc(integrationCredentials.createdAt));
+  // NEVER return encryptedCredentials — clients shouldn't see ciphertext.
+  return c.json({ integrations: rows });
+});
+
+app.post("/v1/integrations", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const env = c.env as { CREDENTIAL_KEK_HEX?: string };
+  if (!env.CREDENTIAL_KEK_HEX) {
+    return c.json({ error: "kek_not_bound" }, 503);
+  }
+  const parsed = IntegrationConfigInput.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+  const { provider, accountLabel, config, status } = parsed.data;
+  const db = createDbClient(c.env);
+  const { encryptCredentials } = await import("./lib/crypto.js");
+  const encryptedCredentials = await encryptCredentials(env.CREDENTIAL_KEK_HEX, config);
+
+  // Upsert by (tenantId, provider) — one row per (tenant, provider).
+  // Re-POST to the same provider rotates the secret.
+  const existing = await db
+    .select({ id: integrationCredentials.id })
+    .from(integrationCredentials)
+    .where(
+      and(
+        eq(integrationCredentials.tenantId, tenant.id),
+        eq(integrationCredentials.provider, provider)
+      )
+    )
+    .limit(1);
+  if (existing.length > 0) {
+    const [row] = await db
+      .update(integrationCredentials)
+      .set({
+        accountLabel: accountLabel ?? null,
+        encryptedCredentials,
+        status,
+        rotatedAt: new Date(),
+      })
+      .where(eq(integrationCredentials.id, existing[0].id))
+      .returning({ id: integrationCredentials.id });
+    return c.json({ id: row.id, rotated: true });
+  }
+  const [row] = await db
+    .insert(integrationCredentials)
+    .values({
+      tenantId: tenant.id,
+      provider,
+      accountLabel: accountLabel ?? null,
+      encryptedCredentials,
+      status,
+    })
+    .returning({ id: integrationCredentials.id });
+  return c.json({ id: row.id, created: true }, 201);
+});
+
+app.delete("/v1/integrations/:id", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const id = c.req.param("id");
+  const db = createDbClient(c.env);
+  const deleted = await db
+    .delete(integrationCredentials)
+    .where(
+      and(
+        eq(integrationCredentials.id, id),
+        eq(integrationCredentials.tenantId, tenant.id)
+      )
+    )
+    .returning({ id: integrationCredentials.id });
+  if (deleted.length === 0) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true });
+});
+
+// P1 — test a saved integration by POSTing an empty signed test envelope
+// to the configured baseUrl. Returns the upstream response status so the
+// operator can verify their endpoint is up + verifying signatures correctly.
+app.post("/v1/integrations/:id/test", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  const id = c.req.param("id");
+  const db = createDbClient(c.env);
+  const [row] = await db
+    .select({
+      provider: integrationCredentials.provider,
+      encryptedCredentials: integrationCredentials.encryptedCredentials,
+      status: integrationCredentials.status,
+    })
+    .from(integrationCredentials)
+    .where(
+      and(
+        eq(integrationCredentials.id, id),
+        eq(integrationCredentials.tenantId, tenant.id)
+      )
+    )
+    .limit(1);
+  if (!row) return c.json({ error: "not_found" }, 404);
+  if (row.status !== "active") return c.json({ error: "inactive" }, 400);
+  const env = c.env as { CREDENTIAL_KEK_HEX?: string };
+  if (!env.CREDENTIAL_KEK_HEX) return c.json({ error: "kek_not_bound" }, 503);
+  const { decryptCredentials, type: _ignore } = await import("./lib/crypto.js").then((m) => ({
+    decryptCredentials: m.decryptCredentials,
+    type: 0,
+  }));
+  const config = await decryptCredentials<Record<string, unknown>>(
+    env.CREDENTIAL_KEK_HEX,
+    row.encryptedCredentials as never
+  );
+  const baseUrl = String(config.baseUrl ?? "");
+  const signingSecret = String(config.signingSecret ?? "");
+  if (!baseUrl || !signingSecret) {
+    return c.json({ error: "missing_baseUrl_or_signingSecret" }, 400);
+  }
+  const testBody = JSON.stringify({
+    test: true,
+    external_source: "ff-brand-studio",
+    sent_at: new Date().toISOString(),
+  });
+  const t = Math.floor(Date.now() / 1000);
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(signingSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(`${t}.${testBody}`));
+  const hex = Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/integrations/ff-brand-studio/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-ff-signature": `t=${t},v1=${hex}`,
+        "x-ff-event-id": `test-${id}-${t}`,
+      },
+      body: testBody,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: "network_error",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const text = await res.text().catch(() => "");
+  return c.json({
+    ok: res.ok,
+    upstreamStatus: res.status,
+    upstreamBody: text.slice(0, 400),
+  });
+});
+
 // Phase G · G15 — tenant-visible delivery feed + manual retry.
 app.get("/v1/webhooks/deliveries", async (c) => {
   try {
@@ -2644,10 +2836,31 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
       // call means: if BFR rejects (bad secret, network, etc.), we
       // mark bfr_status='stage_failed' so the operator sees the
       // error inline instead of believing the product reached BFR.
-      const signingSecret = (c.env as { FF_STUDIO_WEBHOOK_SECRET?: string })
-        .FF_STUDIO_WEBHOOK_SECRET;
-      const bfrBase = (c.env as { BFR_ADMIN_BASE_URL?: string }).BFR_ADMIN_BASE_URL;
-      if (signingSecret) {
+      //
+      // P1 — credentials resolved from integration_credentials (per
+      // tenant), with the legacy worker-env path as fallback during
+      // the dual-write window. resolveCredentials() throws
+      // CredentialsNotFoundError if neither source is configured —
+      // we catch it and skip the BFR push with a warning instead of
+      // 500ing the whole bulk-approve.
+      let resolvedBfr: { baseUrl: string; signingSecret: string } | null = null;
+      try {
+        const creds = await resolveCredentials(
+          db,
+          c.env as unknown as Record<string, unknown>,
+          tenant.id,
+          "buyfishingrod-admin"
+        );
+        resolvedBfr = {
+          baseUrl: requireString(creds.config, "baseUrl"),
+          signingSecret: requireString(creds.config, "signingSecret"),
+        };
+      } catch (err) {
+        console.warn(
+          `[bulk-approve] no BFR credentials for tenant=${tenant.id}; skipping BFR push: ${err instanceof Error ? err.message : err}`
+        );
+      }
+      if (resolvedBfr) {
         for (const productId of productIds) {
           try {
             const [prod] = await db
@@ -2743,8 +2956,8 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
 
             const result = await stageBfrProduct({
               envelope,
-              signingSecret,
-              baseUrl: bfrBase,
+              signingSecret: resolvedBfr.signingSecret,
+              baseUrl: resolvedBfr.baseUrl,
             });
             const detail = (result.detail ?? {}) as { admin_url?: string };
             stagePushes.push({
@@ -2770,11 +2983,9 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
               .where(eq(products.id, productId));
           }
         }
-      } else {
-        console.warn(
-          "[bulk-approve] FF_STUDIO_WEBHOOK_SECRET not configured — skipping BFR push"
-        );
       }
+      // (No else: when resolveCredentials threw above, we already
+      // warned and resolvedBfr is null — the loop body skipped.)
     }
   }
 
