@@ -39,6 +39,7 @@ import { rateLimitMiddleware } from "./lib/rate-limit.js";
 import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
 import { stageBfrProduct } from "./integrations/buyfishingrod-admin.js";
+import { claimEvent, markProcessed } from "./lib/webhook-inbox.js";
 import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
 import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
 import { auditEvent } from "./lib/audit.js";
@@ -216,6 +217,10 @@ const BfrStatusUpdateInput = z.object({
   status: z.enum(["staged", "active", "archived", "draft"]),
   url: z.string().url().optional(),
   ts: z.number().int().optional(),
+  // P0 — optional event_id for inbox dedupe. Senders SHOULD include
+  // a stable UUID per logical state change; receivers tolerate
+  // omission for legacy callers.
+  event_id: z.string().optional(),
 });
 
 app.post("/v1/external/bfr-status-update", async (c) => {
@@ -304,6 +309,26 @@ app.post("/v1/external/bfr-status-update", async (c) => {
     return c.json({ error: "bad_signature" }, 401);
   }
 
+  // P0 — idempotency. After signature verification but before any DB
+  // mutation, claim the inbox slot keyed on event_id (header or body).
+  const eventId =
+    c.req.header("x-ff-event-id")?.trim() || data.event_id?.trim();
+  if (eventId) {
+    const claim = await claimEvent(db, {
+      eventId,
+      source: data.external_source,
+      eventType: "product.status_update",
+      tenantId: product.tenantId,
+    });
+    if (claim.status === "duplicate") {
+      return c.json({
+        ok: true,
+        idempotent: true,
+        previousResult: claim.previousResult,
+      });
+    }
+  }
+
   // Verified — apply the update. Idempotent: same status applied twice
   // is a no-op (well, just bumps bfr_synced_at).
   await db
@@ -328,6 +353,10 @@ app.post("/v1/external/bfr-status-update", async (c) => {
       url: data.url ?? null,
     },
   });
+
+  if (eventId) {
+    await markProcessed(db, eventId, `ok status=${data.status}`).catch(() => {});
+  }
 
   return c.json({ ok: true, product_id: product.id, status: data.status });
 });
@@ -2680,6 +2709,11 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
             const envelope = {
               external_id: prod.externalId ?? null,
               external_source: "ff-brand-studio" as const,
+              // P0 — stable event_id per stage push. Format
+              // "stage:{productId}:{epochSec}" so a re-run within the
+              // same wall-clock second hits idempotency on the BFR
+              // side; older runs get a new id and re-stage cleanly.
+              event_id: `stage:${prod.id}:${Math.floor(Date.now() / 1000)}`,
               sku: prod.sku,
               product_id: prod.id,
               variant_id: variant?.id ?? "",

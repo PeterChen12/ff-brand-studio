@@ -489,6 +489,31 @@ export const webhookDeliveries = pgTable(
 export type WebhookSubscription = typeof webhookSubscriptions.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 
+// P0 (refactor) — generic inbox for inbound webhooks from any
+// upstream. Receivers upsert on event_id BEFORE mutating local state;
+// a re-delivery of the same event short-circuits without writing.
+// See REFACTOR_PLAN.md and lib/webhook-inbox.ts.
+export const webhookInbox = pgTable(
+  "webhook_inbox",
+  {
+    eventId: text("event_id").primaryKey(),
+    source: text("source").notNull(),
+    eventType: text("event_type").notNull(),
+    tenantId: uuid("tenant_id"),
+    receivedAt: timestamp("received_at").notNull().defaultNow(),
+    processedAt: timestamp("processed_at"),
+    result: text("result"),
+  },
+  (t) => ({
+    sourceReceivedIdx: index("webhook_inbox_source_received_idx").on(
+      t.source,
+      t.receivedAt
+    ),
+  })
+);
+
+export type WebhookInboxRow = typeof webhookInbox.$inferSelect;
+
 export const auditEvents = pgTable(
   "audit_events",
   {

@@ -34,6 +34,11 @@ const ENDPOINT_PATH = "/api/integrations/ff-brand-studio/stage-product";
 interface StageEnvelope {
   external_id: string | null;
   external_source: "ff-brand-studio";
+  // P0 — every envelope carries an event_id. Receivers dedupe on this.
+  // Senders MUST generate a stable UUID per logical mutation; retries
+  // of the same call MUST reuse it (handled by the caller in
+  // stageBfrProduct below — one event_id per invocation).
+  event_id: string;
   sku: string;
   product_id: string;
   variant_id: string;
@@ -86,6 +91,10 @@ export async function stageBfrProduct(args: {
     headers: {
       "Content-Type": "application/json",
       "x-ff-signature": `t=${t},v1=${sig}`,
+      // P0 — echo the envelope's event_id in a header. BFR dedupe
+      // path reads either header OR body; redundancy is intentional
+      // so the receiver doesn't have to JSON-parse before deciding.
+      "x-ff-event-id": args.envelope.event_id,
     },
     body,
     signal: AbortSignal.timeout(15_000),
@@ -144,6 +153,7 @@ export const buyfishingrodAdminAdapter: MarketplaceAdapter = {
     const envelope: StageEnvelope = {
       external_id: ctx.externalId,
       external_source: "ff-brand-studio",
+      event_id: `stage:${ctx.productId}:${Math.floor(Date.now() / 1000)}`,
       sku: ctx.sku,
       product_id: ctx.productId,
       variant_id: ctx.variantId,
