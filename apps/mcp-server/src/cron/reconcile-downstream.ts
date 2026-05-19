@@ -12,7 +12,7 @@
  * per-fetch timeout of 10s.
  */
 
-import { and, asc, desc, eq, isNotNull, sql as drizzleSql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, sql as drizzleSql } from "drizzle-orm";
 import type { DbClient } from "../db/client.js";
 import {
   integrationCredentials,
@@ -27,14 +27,27 @@ const MAX_PRODUCTS_PER_TICK = 50;
 // Map FF Studio's internal status set to the tenant-api spec set so
 // drift detection compares apples-to-apples regardless of which side
 // chose the label.
+//
+// FIX P5-review #4: do NOT remap "stage_failed" to "staged". That hid
+// real delivery failures: when the BFR push errored the local row was
+// "stage_failed" and the remote correctly reported "staged" (it had
+// never received anything) → previous normalize collapsed both to
+// "staged" → no drift recorded. The operator never saw it.
 function normalizeStatus(s: string | null | undefined): string | null {
   if (!s) return null;
   const v = s.toLowerCase().trim();
   if (v === "draft" || v === "staged" || v === "active" || v === "archived") return v;
-  // BFR-internal flavors → spec values.
   if (v === "staging") return "staged";
-  if (v === "stage_failed") return "staged"; // we attempted; downstream may not show it
   return v;
+}
+
+// Returns true if a product is in a state that hasn't actually been
+// pushed downstream yet — we skip reconcile for these because there's
+// no remote state to compare against.
+function shouldSkipReconcile(localStatus: string | null | undefined): boolean {
+  if (!localStatus) return true;
+  const v = localStatus.toLowerCase().trim();
+  return v === "stage_failed" || v === "draft";
 }
 
 export interface ReconcileResult {
@@ -112,6 +125,11 @@ export async function reconcileDownstream(
     for (const product of batch) {
       result.productsChecked++;
       if (!product.externalId) continue;
+      // FIX P5-review #4: don't reconcile products that were never
+      // delivered downstream. stage_failed / draft products have no
+      // remote counterpart to compare against, and treating their
+      // absence as drift would generate noise.
+      if (shouldSkipReconcile(product.bfrStatus)) continue;
       let remote;
       try {
         remote = await fetchProductStateGeneric({
@@ -130,6 +148,7 @@ export async function reconcileDownstream(
       // (also mirrors to the legacy column during dual-write).
       await upsertDownstreamState(db, {
         productId: product.id,
+        tenantId: integ.tenantId,
         integrationId: integ.id,
         provider: integ.provider,
         externalId: product.externalId,
@@ -143,6 +162,9 @@ export async function reconcileDownstream(
       // Drift — record. Resolve idle prior unresolved logs for this
       // product so we don't accumulate dozens of identical rows when
       // the drift persists for hours.
+      // FIX P5-review #1: must be isNull(), not eq(..., NULL) — the
+      // latter is always false in SQL, so prior rows were never
+      // closed and the dashboard drift inbox grew unbounded.
       result.driftsRecorded++;
       await db
         .update(reconciliationLog)
@@ -153,7 +175,7 @@ export async function reconcileDownstream(
         .where(
           and(
             eq(reconciliationLog.productId, product.id),
-            eq(reconciliationLog.resolvedAt, drizzleSql`NULL` as never)
+            isNull(reconciliationLog.resolvedAt)
           )
         )
         .catch(() => {});

@@ -49,11 +49,16 @@ const ADAPTERS = [
 
 function randomSecret(): string {
   const bytes = new Uint8Array(48);
-  if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
-    window.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  // FIX P5-review #6: no Math.random() fallback. crypto.getRandomValues
+  // is universally available in modern browsers; the fallback would
+  // silently downgrade a production secret's entropy on a broken
+  // environment. Throw loudly instead so the operator notices.
+  if (typeof window === "undefined" || !window.crypto?.getRandomValues) {
+    throw new Error(
+      "crypto.getRandomValues not available — refusing to generate a weak HMAC secret"
+    );
   }
+  window.crypto.getRandomValues(bytes);
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -330,9 +335,20 @@ export function IntegrationsPanel() {
                   <button
                     type="button"
                     onClick={() => {
-                      void navigator.clipboard.writeText(draft.signingSecret);
-                      setSecretCopied(true);
-                      setTimeout(() => setSecretCopied(false), 2000);
+                      // FIX P5-review #7: surface clipboard failure
+                      // (HTTP-context, denied permission, etc.) so the
+                      // operator doesn't believe a copy happened.
+                      navigator.clipboard
+                        .writeText(draft.signingSecret)
+                        .then(() => {
+                          setSecretCopied(true);
+                          setTimeout(() => setSecretCopied(false), 2000);
+                        })
+                        .catch(() => {
+                          toast.error(
+                            "Clipboard write failed — please select and copy the secret manually"
+                          );
+                        });
                     }}
                     className="text-xs underline-offset-2 hover:underline whitespace-nowrap"
                   >

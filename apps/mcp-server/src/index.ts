@@ -2402,11 +2402,19 @@ app.post("/v1/integrations/:id/test", async (c) => {
   // handler's source-check + idempotency claim. test:true tells the
   // receiver to skip the actual product write — the inbox row stays
   // for inspection (event_id is `test-...`).
+  //
+  // FIX P5-review #8: include sku / product_id / variant_id placeholders
+  // so receivers that strictly validate the spec return 200 (skipped)
+  // instead of 400 (validation error). The OpenAPI schema marks these
+  // three as required for StageEnvelope.
   const testEventId = `test-${id}-${Math.floor(Date.now() / 1000)}`;
   const testBody = JSON.stringify({
     external_source: "ff-brand-studio",
     event_id: testEventId,
     test: true,
+    sku: "TEST-CONNECTION",
+    product_id: "test",
+    variant_id: "test",
     images: [
       {
         slot: "test",
@@ -2916,8 +2924,14 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
       if (row?.productId) productIds.add(row.productId);
     }
     if (productIds.size > 0) {
-      // P4 — write canonical state via the join table. Helper dual-
-      // writes products.bfr_* for the migration window.
+      // Note (P5-review #5): the canonical product_downstream_state
+      // write below SKIPS when no active integration_credentials row
+      // exists for this tenant + provider yet — first-ever bulk-
+      // approve before any integration is configured. In that case
+      // the legacy mirror still writes products.bfr_status='staged'
+      // so reads keep working; the canonical row appears once the
+      // operator configures the integration and the next reconcile
+      // cycle runs. Intentional gap during the migration window.
       for (const pid of productIds) {
         await upsertDownstreamState(db, {
           productId: pid,

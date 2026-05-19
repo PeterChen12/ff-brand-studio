@@ -113,7 +113,11 @@ components:
       in: header
       required: true
       schema: { type: string, example: "t=1716090000,v1=abcd..." }
-      description: HMAC-SHA256 over `${t}.${rawBody}` keyed with the shared secret.
+      description: |
+        HMAC-SHA256 over `${t}.${rawBody}` keyed with the shared secret,
+        encoded as lowercase hex. For GET requests (no body), use the
+        empty string for `rawBody` so the signed string is `${t}.`.
+        Receivers can use one verifier across both GET and POST.
     EventId:
       name: x-ff-event-id
       in: header

@@ -25,9 +25,12 @@ import {
 
 export interface DownstreamStatePatch {
   productId: string;
-  /** Either integrationId (preferred) OR (tenantId + provider) to look up. */
+  /** REQUIRED for tenant ownership check. Without this we'd accept
+   *  cross-tenant writes from any caller that guesses an integration_id. */
+  tenantId: string;
+  /** Either integrationId (preferred) OR provider to look up. When
+   *  integrationId is provided, we still verify its tenantId matches. */
   integrationId?: string;
-  tenantId?: string;
   provider?: string;
   externalId?: string | null;
   externalUrl?: string | null;
@@ -73,27 +76,38 @@ export async function upsertDownstreamState(
   let integrationId = patch.integrationId ?? null;
   let provider = patch.provider ?? null;
 
-  if (!integrationId) {
-    if (!patch.tenantId || !patch.provider) {
-      throw new Error(
-        "upsertDownstreamState: need integrationId OR (tenantId + provider)"
-      );
-    }
-    integrationId = await resolveIntegrationId(db, patch.tenantId, patch.provider);
-    if (!integrationId) {
-      // No active integration → no canonical row to write. Legacy
-      // mirror still runs below (for BFR provider) so the bfr_*
-      // column write keeps working during transition.
-    }
-  }
-
-  if (!provider && integrationId) {
-    const [row] = await db
-      .select({ provider: integrationCredentials.provider })
+  // FIX P5-review #3: tenant ownership check is mandatory. When the
+  // caller passes an integrationId directly, verify it belongs to
+  // patch.tenantId before writing. Without this, any caller that
+  // knew an integration_id UUID from another tenant could write
+  // cross-tenant rows.
+  if (integrationId) {
+    const [owner] = await db
+      .select({
+        tenantId: integrationCredentials.tenantId,
+        provider: integrationCredentials.provider,
+      })
       .from(integrationCredentials)
       .where(eq(integrationCredentials.id, integrationId))
       .limit(1);
-    provider = row?.provider ?? null;
+    if (!owner) {
+      throw new Error(`upsertDownstreamState: integrationId not found`);
+    }
+    if (owner.tenantId !== patch.tenantId) {
+      throw new Error(
+        `upsertDownstreamState: integration belongs to a different tenant`
+      );
+    }
+    provider = provider ?? owner.provider;
+  } else {
+    if (!patch.provider) {
+      throw new Error(
+        "upsertDownstreamState: need integrationId OR provider (with tenantId always)"
+      );
+    }
+    integrationId = await resolveIntegrationId(db, patch.tenantId, patch.provider);
+    // integrationId may still be null here — legacy mirror still runs
+    // below for buyfishingrod-admin during the migration window.
   }
 
   // Canonical write — skip when integrationId resolution failed.

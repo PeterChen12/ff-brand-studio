@@ -98,9 +98,10 @@ export async function signedGet(args: {
 }): Promise<Response> {
   const url = `${args.baseUrl.replace(/\/$/, "")}${args.path}`;
   const t = Math.floor(Date.now() / 1000);
-  // For GET there's no body — sign just the timestamp + path so the
-  // receiver knows the request hasn't been replayed.
-  const sig = await hmacHex(args.signingSecret, `${t}.GET ${args.path}`);
+  // FIX P5-review #2: sign the same shape as POST (`${t}.${body}`)
+  // with body="" so receivers can reuse one verifier across GET +
+  // POST. The OpenAPI spec's Signature description now matches.
+  const sig = await hmacHex(args.signingSecret, `${t}.`);
   return fetch(url, {
     method: "GET",
     headers: {
