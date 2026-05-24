@@ -304,3 +304,198 @@ export const WEBHOOK_RETRY_POLICY = {
   maxAttempts: MAX_ATTEMPTS,
   delaysSeconds: ATTEMPT_DELAYS_SECONDS,
 };
+
+// ─── Delivery audit log + manual retry ────────────────────────────────
+//
+// `listDeliveries` powers the Settings → Webhooks → Recent deliveries
+// table. `retryDelivery` is the operator-triggered "send it again now"
+// button next to a failed row. Both are scoped to the tenant via the
+// inner-joined subscription so a tenant can never read or retry
+// another tenant's deliveries.
+
+export type DeliveryStatusFilter = "all" | "delivered" | "pending" | "exhausted";
+
+export interface DeliveryRow {
+  id: string;
+  subscriptionId: string;
+  eventId: string;
+  eventType: string;
+  attempt: number;
+  statusCode: number | null;
+  responseBody: string | null;
+  deliveredAt: Date | null;
+  nextAttemptAt: Date | null;
+}
+
+/**
+ * Tenant-scoped list of webhook delivery attempts, newest first.
+ *
+ * Status taxonomy (no separate column — derived from the existing fields):
+ *   - delivered:  `delivered_at IS NOT NULL`
+ *   - pending:    `delivered_at IS NULL` AND `attempt < MAX_ATTEMPTS`
+ *   - exhausted:  `delivered_at IS NULL` AND `attempt >= MAX_ATTEMPTS`
+ *
+ * `webhook_deliveries` doesn't carry a `created_at` column today, so we
+ * order by id desc (random UUID, but stable + good-enough for an audit
+ * pane where the operator just wants newest-on-top). If chronological
+ * order becomes important we add a `created_at` column in a migration.
+ */
+export async function listDeliveries(
+  db: DbClient,
+  tenantId: string,
+  opts: { limit?: number; status?: DeliveryStatusFilter } = {}
+): Promise<DeliveryRow[]> {
+  const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+  // `sql` lets us express "IS NOT NULL" — Drizzle doesn't ship a notNull
+  // helper alongside `isNull`. Imported lazily to match the file's
+  // existing dynamic-import style for less-common operators.
+  const { sql } = await import("drizzle-orm");
+  const statusPredicate =
+    opts.status === "delivered"
+      ? sql`${webhookDeliveries.deliveredAt} IS NOT NULL`
+      : opts.status === "pending"
+        ? and(
+            isNull(webhookDeliveries.deliveredAt),
+            sql`${webhookDeliveries.attempt} < ${MAX_ATTEMPTS}`
+          )
+        : opts.status === "exhausted"
+          ? and(
+              isNull(webhookDeliveries.deliveredAt),
+              sql`${webhookDeliveries.attempt} >= ${MAX_ATTEMPTS}`
+            )
+          : undefined;
+
+  const rows = await db
+    .select({
+      id: webhookDeliveries.id,
+      subscriptionId: webhookDeliveries.subscriptionId,
+      eventId: webhookDeliveries.eventId,
+      eventType: webhookDeliveries.eventType,
+      attempt: webhookDeliveries.attempt,
+      statusCode: webhookDeliveries.statusCode,
+      responseBody: webhookDeliveries.responseBody,
+      deliveredAt: webhookDeliveries.deliveredAt,
+      nextAttemptAt: webhookDeliveries.nextAttemptAt,
+    })
+    .from(webhookDeliveries)
+    .innerJoin(
+      webhookSubscriptions,
+      eq(webhookDeliveries.subscriptionId, webhookSubscriptions.id)
+    )
+    .where(
+      statusPredicate
+        ? and(eq(webhookSubscriptions.tenantId, tenantId), statusPredicate)
+        : eq(webhookSubscriptions.tenantId, tenantId)
+    )
+    .orderBy(desc(webhookDeliveries.id))
+    .limit(limit);
+
+  return rows;
+}
+
+export type RetryDeliveryResult =
+  | {
+      ok: true;
+      delivered: boolean;
+      statusCode: number | null;
+      attempt: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | "not_found"
+        | "subscription_disabled"
+        | "already_delivered";
+    };
+
+/**
+ * Manual retry — invokes the delivery inline so the operator sees the
+ * outcome (success / status code) in the same response. The row is
+ * updated to mirror what the scheduled sweeper would have written:
+ *   - delivered:    delivered_at = now(), next_attempt_at = null
+ *   - failed (<max): attempt += 1, next_attempt_at = +backoff
+ *   - failed (=max): attempt += 1, next_attempt_at = null (exhausted)
+ *
+ * Already-delivered / disabled-subscription cases short-circuit
+ * without firing a network request. Exhausted deliveries get one
+ * fresh shot (attempt reset to a fresh fire from current attempt + 1,
+ * capped by the same MAX_ATTEMPTS logic).
+ */
+export async function retryDelivery(
+  db: DbClient,
+  tenantId: string,
+  deliveryId: string
+): Promise<RetryDeliveryResult> {
+  const [row] = await db
+    .select({
+      delivery: webhookDeliveries,
+      subscription: webhookSubscriptions,
+    })
+    .from(webhookDeliveries)
+    .innerJoin(
+      webhookSubscriptions,
+      eq(webhookDeliveries.subscriptionId, webhookSubscriptions.id)
+    )
+    .where(
+      and(
+        eq(webhookDeliveries.id, deliveryId),
+        eq(webhookSubscriptions.tenantId, tenantId)
+      )
+    )
+    .limit(1);
+
+  if (!row) return { ok: false, reason: "not_found" };
+  if (row.subscription.disabledAt) {
+    return { ok: false, reason: "subscription_disabled" };
+  }
+  if (row.delivery.deliveredAt) {
+    return { ok: false, reason: "already_delivered" };
+  }
+
+  const event = row.delivery.payload as DeliveryEvent;
+  const nextAttempt = (row.delivery.attempt ?? 0) + 1;
+  const result = await deliverOne(row.subscription, event, nextAttempt);
+
+  if (result.delivered) {
+    await db
+      .update(webhookDeliveries)
+      .set({
+        attempt: nextAttempt,
+        statusCode: result.status,
+        responseBody: result.responseBody?.slice(0, 600) ?? null,
+        deliveredAt: new Date(),
+        nextAttemptAt: null,
+      })
+      .where(eq(webhookDeliveries.id, deliveryId));
+  } else if (nextAttempt >= MAX_ATTEMPTS) {
+    await db
+      .update(webhookDeliveries)
+      .set({
+        attempt: nextAttempt,
+        statusCode: result.status,
+        responseBody: result.responseBody?.slice(0, 600) ?? null,
+        nextAttemptAt: null,
+      })
+      .where(eq(webhookDeliveries.id, deliveryId));
+  } else {
+    const delay =
+      ATTEMPT_DELAYS_SECONDS[nextAttempt] ?? ATTEMPT_DELAYS_SECONDS.at(-1)!;
+    const next = new Date(Date.now() + delay * 1000);
+    await db
+      .update(webhookDeliveries)
+      .set({
+        attempt: nextAttempt,
+        statusCode: result.status,
+        responseBody: result.responseBody?.slice(0, 600) ?? null,
+        nextAttemptAt: next,
+      })
+      .where(eq(webhookDeliveries.id, deliveryId));
+  }
+
+  return {
+    ok: true,
+    delivered: result.delivered,
+    statusCode: result.status,
+    attempt: nextAttempt,
+  };
+}
