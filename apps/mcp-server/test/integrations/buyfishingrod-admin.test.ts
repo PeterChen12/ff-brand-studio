@@ -67,7 +67,10 @@ describe("stageBfrProduct", () => {
       stageBfrProduct({ envelope: baseEnvelope, signingSecret: "whsec_b" })
     ).rejects.toMatchObject({
       status: 502,
-      code: "bfr_stage_failed",
+      // Generic code since stageBfrProduct delegates to stageProductGeneric
+      // — see integrations/generic-rest.ts. The BFR-specific path is the
+      // baseUrl default, not the error label.
+      code: "tenant_stage_failed",
     });
   });
 
