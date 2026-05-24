@@ -90,10 +90,14 @@ describe("DERIVERS registry", () => {
         - strap or handle attachment hardware
         - logo or monogram pattern only as shown in the reference
       Pure white seamless background (#FFFFFF). Product centered, even fill of the frame.
-      ABSOLUTELY NO:
-        - no text, no letters, no numbers anywhere in the image
+      ═══════════════════════════════════════
+      ABSOLUTELY FORBIDDEN — image must contain ZERO of these:
+      ═══════════════════════════════════════
+        - no text, no letters, no numbers, no characters, no glyphs anywhere in the image
+        - no English words, no Chinese characters, no Japanese characters, no Korean characters
+        - no signs, no posters, no banners, no labels overlaid on the scene
         - no logos that aren't physically printed on the actual product
-        - no watermarks
+        - no watermarks, no signatures, no AI-generated text marks
         - no floating captions, callouts, or speech bubbles
         - no dimension labels or spec tags
         - no garbled or partially-rendered text characters
