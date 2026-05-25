@@ -272,6 +272,13 @@ export const launchRuns = pgTable(
     currentPhase: text("current_phase"),
     async: boolean("async").notNull().default(false),
     predictedCents: integer("predicted_cents"),
+    // Migration 0024 — short human-readable failure / block summary the
+    // pipeline writes when a run ends `failed` or `hitl_blocked`. Lets
+    // operators see *why* without diving into Langfuse traces or
+    // audit_events. App-side cap of 1000 chars; column is plain TEXT
+    // so the worker can write a longer reason if a future iteration
+    // wants more detail.
+    lastError: text("last_error"),
   },
   (t) => ({
     // P1-4 — drives /v1/launches cursor pagination + /api/launches list

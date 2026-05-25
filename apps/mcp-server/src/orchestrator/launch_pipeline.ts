@@ -503,6 +503,12 @@ export async function runLaunchPipeline(
       // consistent.
       const actualTotalCents = Math.round(pipelineRes.totalCostCents);
 
+      // P4 observability — summarise why the run ended where it did, so
+      // operators viewing the library page see the reason without
+      // bouncing to Langfuse or psql. Null on success; otherwise the
+      // first 1000 chars of a hyphen-separated summary.
+      const lastError = buildRunSummary(status, pipelineRes);
+
       await db
         .update(launchRuns)
         .set({
@@ -510,6 +516,7 @@ export async function runLaunchPipeline(
           totalCostCents: actualTotalCents,
           hitlInterventions: pipelineRes.fairCount,
           durationMs: Date.now() - startedAt,
+          lastError,
         })
         .where(eq(launchRuns.id, runId));
 
@@ -1144,4 +1151,47 @@ export async function runLaunchPipeline(
     seo: seoResult,
     partial_listings: partialListings.length > 0 ? partialListings : undefined,
   };
+}
+
+// ─── P4 observability — short failure summary for launch_runs.last_error ──
+//
+// Returns null on success, otherwise a `~1000 char human-readable summary
+// of why the run ended where it did. Pulled from pipelineRes.errors,
+// fair-flag counts, and the iteration cap that triggered the block.
+
+interface PipelineSummaryShape {
+  ok: boolean;
+  fairCount: number;
+  errors?: string[];
+  slotsWritten?: number;
+  fairCrops?: Array<{ cropName: string; iters: number }>;
+}
+
+function buildRunSummary(
+  status: LaunchPipelineResult["status"],
+  pipelineRes: PipelineSummaryShape
+): string | null {
+  if (status === "succeeded") return null;
+
+  const parts: string[] = [];
+  if (status === "hitl_blocked") {
+    parts.push(
+      `Awaiting brand review (${pipelineRes.fairCount} crop${pipelineRes.fairCount === 1 ? "" : "s"} hit the refine iteration cap and need human eyes).`
+    );
+    if (Array.isArray(pipelineRes.fairCrops) && pipelineRes.fairCrops.length > 0) {
+      const names = pipelineRes.fairCrops
+        .map((c) => `${c.cropName} (iters=${c.iters})`)
+        .join(", ");
+      parts.push(`Crops needing review: ${names}.`);
+    }
+  } else if (status === "cost_capped") {
+    parts.push("Stopped at the per-launch budget cap before every angle finished.");
+  } else if (status === "failed") {
+    parts.push("Pipeline did not complete — see errors below for the failing step.");
+  }
+  if (Array.isArray(pipelineRes.errors) && pipelineRes.errors.length > 0) {
+    parts.push("Errors: " + pipelineRes.errors.slice(0, 5).join(" | "));
+  }
+  const summary = parts.join(" ");
+  return summary.slice(0, 1000);
 }
