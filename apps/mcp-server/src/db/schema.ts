@@ -666,6 +666,39 @@ export type NewPromoCode = typeof promoCodes.$inferInsert;
 export type PromoRedemption = typeof promoRedemptions.$inferSelect;
 export type NewPromoRedemption = typeof promoRedemptions.$inferInsert;
 
+// ─── Tenant deletion (GDPR right-to-erasure) ──────────────────────────
+//
+// Added by migration 0023. One row per pending/cancelled/completed
+// deletion request — tenant_id is the PK so a tenant can only have
+// one open request at a time. Request → 30-day grace → either tenant
+// cancels (status='cancelled', row kept for audit) or the cron sweep
+// flips to 'completed' once eligible_at passes.
+
+export const tenantDeletions = pgTable(
+  "tenant_deletions",
+  {
+    tenantId: uuid("tenant_id")
+      .primaryKey()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    status: text("status").notNull(), // 'pending' | 'cancelled' | 'completed'
+    requestedAt: timestamp("requested_at").notNull().defaultNow(),
+    eligibleAt: timestamp("eligible_at").notNull(),
+    cancelledAt: timestamp("cancelled_at"),
+    completedAt: timestamp("completed_at"),
+    reason: text("reason"),
+  },
+  (t) => ({
+    // Partial index matches the partial SQL index in the migration —
+    // Drizzle doesn't have first-class partial-index syntax but this
+    // gets us the same physical structure on the column for the cron
+    // sweep query (`status='pending' AND eligible_at <= now()`).
+    dueIdx: index("idx_tenant_deletions_due").on(t.eligibleAt),
+  })
+);
+
+export type TenantDeletion = typeof tenantDeletions.$inferSelect;
+export type NewTenantDeletion = typeof tenantDeletions.$inferInsert;
+
 /**
  * Hard-coded UUID for the legacy-demo "Sample Catalog" tenant. Every row
  * created before Phase G is owned by this tenant; new signups also see
