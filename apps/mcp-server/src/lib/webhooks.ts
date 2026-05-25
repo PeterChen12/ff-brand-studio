@@ -323,6 +323,7 @@ export interface DeliveryRow {
   attempt: number;
   statusCode: number | null;
   responseBody: string | null;
+  createdAt: Date;
   deliveredAt: Date | null;
   nextAttemptAt: Date | null;
 }
@@ -335,10 +336,10 @@ export interface DeliveryRow {
  *   - pending:    `delivered_at IS NULL` AND `attempt < MAX_ATTEMPTS`
  *   - exhausted:  `delivered_at IS NULL` AND `attempt >= MAX_ATTEMPTS`
  *
- * `webhook_deliveries` doesn't carry a `created_at` column today, so we
- * order by id desc (random UUID, but stable + good-enough for an audit
- * pane where the operator just wants newest-on-top). If chronological
- * order becomes important we add a `created_at` column in a migration.
+ * Order by `created_at` desc (added in migration 0022) so the audit
+ * pane truly shows newest-on-top. The fallback `id` desc that used to
+ * be here was random-UUID order — fine for "newest few" smoke checks
+ * but a lie for a chronological audit log.
  */
 export async function listDeliveries(
   db: DbClient,
@@ -374,6 +375,7 @@ export async function listDeliveries(
       attempt: webhookDeliveries.attempt,
       statusCode: webhookDeliveries.statusCode,
       responseBody: webhookDeliveries.responseBody,
+      createdAt: webhookDeliveries.createdAt,
       deliveredAt: webhookDeliveries.deliveredAt,
       nextAttemptAt: webhookDeliveries.nextAttemptAt,
     })
@@ -387,7 +389,7 @@ export async function listDeliveries(
         ? and(eq(webhookSubscriptions.tenantId, tenantId), statusPredicate)
         : eq(webhookSubscriptions.tenantId, tenantId)
     )
-    .orderBy(desc(webhookDeliveries.id))
+    .orderBy(desc(webhookDeliveries.createdAt))
     .limit(limit);
 
   return rows;

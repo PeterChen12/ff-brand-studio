@@ -148,6 +148,12 @@ export const TenantFeaturesSchema = z
      *  with cream/ivory studio backdrops can raise to ~16 so the snap
      *  catches the off-white pack shot. Capped at 64. */
     force_white_bg_tolerance: z.number().int().min(0).max(64).optional(),
+    /** Max refine iterations per crop before flagging FAIR for HITL.
+     *  Default 5 (was 3 pre-2026-05-24 — forensic showed most multi-
+     *  platform launches hit the cap on a borderline crop and ended
+     *  `hitl_blocked`). Clamped [1, 10] in the iterate loop; the
+     *  per-launch wallet cap is still the hard ceiling on cost. */
+    refine_max_iters: z.number().int().min(1).max(10).optional(),
     // Adapter destinations
     publish_destinations: z.array(z.string()).optional(),
   })
