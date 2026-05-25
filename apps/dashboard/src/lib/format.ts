@@ -30,8 +30,15 @@ export function friendlyStatus(status: string | null | undefined): string {
   if (!status) return "—";
   const map: Record<string, string> = {
     succeeded: "Done",
-    hitl_blocked: "Needs review",
-    cost_capped: "Hit budget cap",
+    // "hitl_blocked" → "Awaiting review". Renamed from "Needs review"
+    // because the prior phrasing led users to think the pipeline had
+    // failed; in reality images + copy were generated successfully and
+    // are sitting in the library waiting for a human eye on the brand
+    // scorecard.
+    hitl_blocked: "Awaiting review",
+    // "cost_capped" → "Budget cap reached". Same impulse — "Hit
+    // budget cap" sounded fatal; the partial results are still useful.
+    cost_capped: "Budget cap reached",
     failed: "Failed",
     pending: "Pending",
     running: "Running",

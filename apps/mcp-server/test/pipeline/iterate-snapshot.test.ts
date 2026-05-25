@@ -179,7 +179,14 @@ describe("refineWithIteration — golden master (inline loop)", () => {
       metrics: {},
     });
 
-    const out = await refineWithIteration(fakeEnv, fakeCtx, baseInput);
+    // Pin to 3 iters via the tenant feature so this scenario stays
+    // a 3-iter test regardless of the default bump (3 → 5) made on
+    // 2026-05-24. Verifies the FAIR-ship-best path with a known cap.
+    const out = await refineWithIteration(
+      fakeEnv,
+      { ...fakeCtx, features: { ...fakeCtx.features, refine_max_iters: 3 } },
+      baseInput
+    );
     if ("error" in out) throw new Error(out.error);
     expect(out.asset.iters).toBe(3);
     expect(out.asset.fair).toBe(true);

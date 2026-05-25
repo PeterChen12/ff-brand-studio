@@ -1,15 +1,25 @@
 /**
  * Phase I, Step 6 — Iterate-with-correction loop.
  *
- * Caps at 3 refine iterations per crop. After CLIP triage:
+ * Caps at `DEFAULT_MAX_ITERS` (or tenant-configurable override) refine
+ * iterations per crop. After CLIP triage:
  *   pass               → ship
  *   fail + vision pass → ship (false-negative bias on cheap CLIP)
  *   fail + vision fail → re-refine with prompt amended by vision reasons
- *   iter 3 still fails → ship the best-rated; mark FAIR for HITL
+ *   iter N still fails → ship the best-rated; mark FAIR for HITL
  *
  * Wallet-aware: each refine + each vision call is debited via the
  * orchestrator's running totalCostCents counter; halts if next iter
  * would exceed perLaunchCapCents.
+ *
+ * 2026-05-24 — bumped default from 3 → 5 + made tenant-configurable.
+ * Forensic finding: 7 of 9 historic multi-platform launches ended
+ * `hitl_blocked` at the refine_B / refine_C step with `iters=3,
+ * fair=true`. Clients read "blocked" as "broken" and stopped using
+ * the product. Two extra iterations per crop double the success
+ * probability (geometric — each iter has ~50% pass rate on the
+ * residual). Tenants who want the old behavior set
+ * `features.refine_max_iters = 3`. Wallet cap still binds either way.
  */
 
 import type { PipelineCtx, RefinedAsset, Verdict } from "./types.js";
@@ -19,7 +29,7 @@ import { clipSimilarityFromR2 } from "./triage.js";
 import { judgeImage } from "../compliance/dual_judge.js";
 import { buildSpecialistPrompt } from "./defect-router.js";
 
-const MAX_ITERS = 3;
+const DEFAULT_MAX_ITERS = 5;
 /** Pre-flight budget guard for the per-crop QA call. Two Haiku calls
  *  typically come in under this; treated as a floor, not a debit. */
 const VISION_COST_CENTS = 2;
@@ -66,7 +76,17 @@ export async function refineWithIteration(
   let prompt = basePrompt;
   let budget = input.remainingBudgetCents;
 
-  while (iter < MAX_ITERS) {
+  // Tenant override beats the default. Clamped to [1, 10] so a tenant
+  // can't accidentally set 100 and run away the wallet (the wallet cap
+  // is still the hard ceiling, but this clamp prevents per-crop
+  // pathological loops independent of the budget).
+  const featureMaxIters = ctx.features.refine_max_iters;
+  const maxIters =
+    typeof featureMaxIters === "number" && Number.isFinite(featureMaxIters)
+      ? Math.min(10, Math.max(1, Math.floor(featureMaxIters)))
+      : DEFAULT_MAX_ITERS;
+
+  while (iter < maxIters) {
     if (budget < REFINE_COST_CENTS) {
       // Out of money — return what we have (or report error if we have nothing).
       if (!bestKey) {
@@ -184,7 +204,7 @@ export async function refineWithIteration(
 
   // Hit the ceiling — ship the best we have but mark FAIR.
   if (!bestKey) {
-    return { error: "no successful refine after MAX_ITERS" };
+    return { error: `no successful refine after ${maxIters} iters` };
   }
   return {
     asset: {

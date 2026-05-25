@@ -487,11 +487,17 @@ export const webhookDeliveries = pgTable(
     statusCode: integer("status_code"),
     responseBody: text("response_body"),
     attempt: integer("attempt").notNull().default(1),
+    // Added by 0022 — lets listDeliveries() order chronologically.
+    // NOT NULL on the column with DEFAULT NOW(), so legacy rows that
+    // existed before the migration get the migration moment as their
+    // timestamp (acceptable since they weren't time-orderable before).
+    createdAt: timestamp("created_at").notNull().defaultNow(),
     deliveredAt: timestamp("delivered_at"),
     nextAttemptAt: timestamp("next_attempt_at"),
   },
   (t) => ({
     subIdx: index("idx_webhook_deliv_sub").on(t.subscriptionId),
+    createdIdx: index("idx_webhook_deliv_created_at").on(t.createdAt),
   })
 );
 

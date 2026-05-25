@@ -12,14 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         # No `version:` — action reads from package.json#packageManager (pnpm@10.33.2),
         # the Node 20+ canonical source of truth. Specifying both errors out
         # with ERR_PNPM_BAD_PM_VERSION (see commit history 2026-04-25 → -26 for proof).
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -49,14 +49,14 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: type-check-and-unit-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         # No `version:` — action reads from package.json#packageManager (pnpm@10.33.2),
         # the Node 20+ canonical source of truth. Specifying both errors out
         # with ERR_PNPM_BAD_PM_VERSION (see commit history 2026-04-25 → -26 for proof).
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm

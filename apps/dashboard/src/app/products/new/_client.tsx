@@ -90,8 +90,8 @@ const PHASE_LABEL: Record<string, string> = {
   seo: "Generating listing copy",
   grounding: "Fact-checking claims",
   succeeded: "Done",
-  hitl_blocked: "Needs review",
-  cost_capped: "Hit budget cap",
+  hitl_blocked: "Awaiting review",
+  cost_capped: "Budget cap reached",
   failed: "Failed",
 };
 
@@ -425,11 +425,18 @@ export default function NewProductPageInner() {
                   `"${trimmedName}" launched — opening in library.`,
                 );
               } else if (run.status === "hitl_blocked") {
-                toast.warning(
-                  `"${trimmedName}" needs review — opening in library.`,
+                // Generated images + copy successfully, just need a
+                // human eye on the brand-compliance scorecard before
+                // they go live. Tell the user that explicitly so they
+                // stop thinking "blocked" = "broken" (the previous
+                // copy was the #1 source of confused support tickets).
+                toast.success(
+                  `"${trimmedName}" generated successfully — open in library to review brand scores.`,
                 );
               } else if (run.status === "cost_capped") {
-                toast.warning(`Hit budget cap — partial results in library.`);
+                toast.warning(
+                  `Generation hit the budget cap before completing every angle — open in library to review what we got.`,
+                );
               } else {
                 toast.error(`Launch failed — opening library for diagnostics.`);
               }
