@@ -19,6 +19,11 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          # Skip package-manager autodetect — repo root has pnpm-lock.yaml so
+          # v5 tries to set up pnpm caching, but pnpm isn't installed in this
+          # workflow (we npm-install playwright into runner.temp). Explicit
+          # empty value disables the cache step entirely.
+          cache: ''
 
       # Install playwright LOCALLY (not -g) so the inline require() in the
       # synthetic-checks step resolves it. Globally-installed modules aren't
