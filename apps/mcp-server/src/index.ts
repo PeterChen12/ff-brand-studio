@@ -1478,7 +1478,10 @@ app.post("/v1/launches", async (c) => {
         // littered with permanently-pending rows.
         await db
           .update(launchRuns)
-          .set({ status: "failed" })
+          .set({
+            status: "failed",
+            lastError: `Wallet has ${err.balanceCents}¢; this launch needs ${err.requestedCents}¢. Top up to retry.`,
+          })
           .where(eq(launchRuns.id, runId))
           .catch(() => {});
         return c.json(
@@ -1582,7 +1585,11 @@ app.post("/v1/launches", async (c) => {
           );
           await db
             .update(launchRuns)
-            .set({ status: "failed", durationMs: 0 })
+            .set({
+              status: "failed",
+              durationMs: 0,
+              lastError: `Pipeline threw: ${bgErr instanceof Error ? `${bgErr.name}: ${bgErr.message}`.slice(0, 1000) : String(bgErr).slice(0, 1000)}`,
+            })
             .where(eq(launchRuns.id, runId))
             .catch(() => {});
         }
