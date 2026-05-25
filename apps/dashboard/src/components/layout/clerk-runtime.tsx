@@ -15,10 +15,10 @@ import { NowProvider } from "@/lib/use-now";
 const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
 
 // Defensive guard — a previous deploy regression silently shipped a
-// `pk_test_*` Clerk publishable key to production, where it hit the
-// dev-instance rate limits (max 2 orgs, JWT mint throttling) and
-// caused user uploads to look "stuck" with no surface error. Catch
-// it at runtime so the same regression never goes unnoticed again.
+// `pk_test_*` Clerk publishable key to production. Detection stays
+// (loud console.error so operator tooling picks it up); the visible
+// banner is gated behind ?clerk-debug=1 so end users don't see a
+// red alarm bar for a config issue they can't act on.
 const IS_DEV_CLERK_KEY = PUBLISHABLE_KEY.startsWith("pk_test_");
 const IS_PROD_HOSTNAME =
   typeof window !== "undefined" &&
@@ -29,19 +29,23 @@ const IS_PROD_HOSTNAME =
 function ClerkKeyGuard() {
   useEffect(() => {
     if (IS_DEV_CLERK_KEY && IS_PROD_HOSTNAME) {
-      // Loud console error in addition to the visible banner — operator
-      // tooling that scrapes console logs will pick this up.
       // eslint-disable-next-line no-console
       console.error(
         "[clerk-key-guard] Production deploy is using a pk_test_* Clerk key. " +
-          "Clerk dev instances have strict rate limits + 2-org cap; user " +
-          "uploads will appear stuck. Rotate NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY " +
-          "to a pk_live_* key from Clerk's production instance and redeploy."
+          "Rotate NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY to a pk_live_* key from " +
+          "Clerk's production instance and redeploy. (Visible banner suppressed; " +
+          "append ?clerk-debug=1 to surface it.)"
       );
     }
   }, []);
 
-  if (!IS_DEV_CLERK_KEY || !IS_PROD_HOSTNAME) return null;
+  const showBanner =
+    IS_DEV_CLERK_KEY &&
+    IS_PROD_HOSTNAME &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("clerk-debug") === "1";
+
+  if (!showBanner) return null;
   return (
     <div
       role="alert"
@@ -61,12 +65,11 @@ function ClerkKeyGuard() {
         boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
       }}
     >
-      ⚠ This deploy is using a Clerk DEVELOPMENT key (pk_test_*) — uploads
-      may appear stuck due to dev-instance rate limits. Rotate{" "}
+      ⚠ Clerk DEVELOPMENT key (pk_test_*) in production — rotate{" "}
       <code style={{ background: "rgba(0,0,0,0.15)", padding: "1px 6px", borderRadius: 3 }}>
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
       </code>{" "}
-      to a <code>pk_live_*</code> key and redeploy.
+      to <code>pk_live_*</code>.
     </div>
   );
 }
