@@ -26,12 +26,9 @@ export const tenants = pgTable(
     plan: text("plan").notNull().default("free"),
     features: jsonb("features").notNull().default({}),
     createdAt: timestamp("created_at").defaultNow(),
-    // Phase G · G24 — GDPR right-to-erasure timestamps. NULL = no
-    // pending deletion; both set = request is in the 30-day grace
-    // window; scheduled handler hard-deletes once eligibleAt has passed.
-    deletionRequestedAt: timestamp("deletion_requested_at"),
-    deletionEligibleAt: timestamp("deletion_eligible_at"),
-    deletionReason: text("deletion_reason"),
+    // GDPR right-to-erasure state lives in the dedicated `tenant_deletions`
+    // table (migration 0023). The earlier `deletion_*` columns on this
+    // table were never wired up and were dropped in migration 0025.
   },
   (t) => ({
     clerkOrgIdx: index("idx_tenants_clerk_org_id").on(t.clerkOrgId),

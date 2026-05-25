@@ -616,6 +616,29 @@ export default function NewProductPageInner() {
                   ))}
                 </div>
               )}
+              {/* Pre-submit "ready" banner. Clients were dropping images
+                  and waiting for the badge to change from "pending"
+                  forever — never realising that nothing transmits until
+                  they hit Launch. Banner shows only when the queue is
+                  *exclusively* in the ready/pre-submit state so we
+                  don't double-message during active uploads. */}
+              {files.length > 0 &&
+                launchStage.kind === "idle" &&
+                files.every((f) => f.status === "pending") && (
+                  <div className="rounded-m3-md md-surface-container-low border ff-hairline px-4 py-3 md-typescale-body-small text-on-surface-variant mt-3 flex items-start gap-3">
+                    <span aria-hidden className="text-primary text-base leading-none mt-0.5">
+                      ⬆
+                    </span>
+                    <span>
+                      <span className="text-on-surface md-typescale-label-medium block mb-0.5">
+                        {files.length} image{files.length === 1 ? "" : "s"} ready
+                        · 已选 {files.length} 张图片
+                      </span>
+                      Nothing is uploading yet — click <strong>Launch →</strong>{" "}
+                      to begin. 点击右下角 <strong>Launch →</strong> 开始上传与生成。
+                    </span>
+                  </div>
+                )}
               {errorFiles.length > 0 && (
                 <p className="md-typescale-body-small text-error mt-2">
                   {errorFiles.length} image{errorFiles.length === 1 ? "" : "s"}{" "}
@@ -696,9 +719,15 @@ function FileTile({
             }
             size="sm"
           >
+            {/* "pending" → "ready" — the file is queued waiting for
+                 Launch click, not actively uploading. Client confusion
+                 over the literal text "pending" led to 10-min waits
+                 with users expecting transmission to be happening. */}
             {file.status === "uploading" && pct !== null
               ? `${pct}%`
-              : file.status}
+              : file.status === "pending"
+                ? "ready"
+                : file.status}
           </Badge>
         </div>
       </div>
