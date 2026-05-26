@@ -35,9 +35,28 @@ export function useApiFetch() {
   const { getToken, isSignedIn, orgId } = useAuth();
   return useCallback(
     async <T = unknown>(path: string, init: RequestInit = {}): Promise<T> => {
-      const token = isSignedIn
-        ? await getToken({ skipCache: true, organizationId: orgId ?? undefined })
-        : null;
+      // Wrap getToken so a Clerk-side failure (dev-instance rate limit,
+      // network hiccup, expired session) surfaces as an ApiError with
+      // status 401 instead of bubbling up as a generic Error. Generic
+      // Errors hit the ErrorState "Couldn't load this view" fallback
+      // body, which gives the user no hint that re-signing-in would fix
+      // it. Status-401 path renders the proper "Your session expired"
+      // message + Sign-in CTA.
+      let token: string | null = null;
+      if (isSignedIn) {
+        try {
+          token = await getToken({ skipCache: true, organizationId: orgId ?? undefined });
+        } catch (clerkErr) {
+          const msg = clerkErr instanceof Error ? clerkErr.message : String(clerkErr);
+          // eslint-disable-next-line no-console
+          console.warn("[clerk-getToken]", path, msg);
+          throw new ApiError(
+            401,
+            { code: "clerk_token_unavailable", detail: msg },
+            `Auth unavailable — ${msg.slice(0, 120)}`
+          );
+        }
+      }
       if (token && typeof console !== "undefined") {
         const payload = decodeJwtPayload(token);
         // Use console.warn so the diagnostic survives filters that hide
