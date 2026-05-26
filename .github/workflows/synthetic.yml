@@ -16,14 +16,16 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
+      # Install pnpm BEFORE setup-node@v5 so setup-node's autodetect of
+      # pnpm-lock.yaml at repo root doesn't crash with "Unable to locate
+      # executable file: pnpm". `cache: ''` alone wasn't enough — v5 still
+      # tries to resolve the package manager during input validation.
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-          # Skip package-manager autodetect — repo root has pnpm-lock.yaml so
-          # v5 tries to set up pnpm caching, but pnpm isn't installed in this
-          # workflow (we npm-install playwright into runner.temp). Explicit
-          # empty value disables the cache step entirely.
-          cache: ''
 
       # Install playwright LOCALLY (not -g) so the inline require() in the
       # synthetic-checks step resolves it. Globally-installed modules aren't
