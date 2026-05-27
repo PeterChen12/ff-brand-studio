@@ -13,6 +13,7 @@ import { MCP_URL } from "@/lib/config";
 import { formatCents } from "@/lib/format";
 import { TenantProvider, type TenantSnapshot } from "@/lib/tenant-context";
 import { OrgGate } from "@/components/layout/org-gate";
+import { useFallbackKey, clearFallbackKey } from "@/lib/fallback-auth";
 
 /**
  * M3 navigation drawer pattern — modified.
@@ -44,10 +45,19 @@ type HealthState = "ok" | "degraded" | "error" | "loading";
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const { isLoaded, isSignedIn } = useAuth();
+  const fallbackKey = useFallbackKey();
 
   // Auth-only routes render their own layout — bypass the Shell entirely.
   if (pathname.startsWith("/sign-in") || pathname.startsWith("/sign-up")) {
     return <>{children}</>;
+  }
+
+  // Fallback API-key mode — Clerk is bypassed entirely. The worker
+  // resolves the tenant directly from api_keys.tenant_id, so OrgGate
+  // (which exists only to coerce a Clerk org_id into the JWT) is also
+  // skipped. RedirectToSignIn is skipped too — the key IS the session.
+  if (fallbackKey) {
+    return <ShellInner pathname={pathname}>{children}</ShellInner>;
   }
 
   if (!isLoaded) {
@@ -79,6 +89,7 @@ function ShellInner({
   children: React.ReactNode;
 }) {
   const { getToken, isSignedIn, orgId } = useAuth();
+  const fallbackKey = useFallbackKey();
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -160,14 +171,16 @@ function ShellInner({
   // currently-active org) — the prior cookie-reading approach broke
   // when __session became HttpOnly and was a workaround anyway.
   useEffect(() => {
-    if (!isSignedIn) return;
+    if (!isSignedIn && !fallbackKey) return;
     let alive = true;
     async function poll() {
       try {
-        const token = await getToken({
-          skipCache: true,
-          organizationId: orgId ?? undefined,
-        });
+        const token = fallbackKey
+          ? fallbackKey
+          : await getToken({
+              skipCache: true,
+              organizationId: orgId ?? undefined,
+            });
         if (!token) {
           if (alive) setWalletState({ kind: "auth-error" });
           return;
@@ -238,7 +251,7 @@ function ShellInner({
     };
     // pathname intentionally NOT a dep — refiring poll on every nav
     // burned a request per route change with no benefit (P2-7).
-  }, [isSignedIn, getToken, orgId]);
+  }, [isSignedIn, getToken, orgId, fallbackKey]);
 
   const dotClass = {
     ok: "bg-tertiary",
@@ -394,31 +407,55 @@ function ShellInner({
         </Link>
 
         {/* Tenant + identity — Clerk OrganizationSwitcher acts as the
-            tenant picker; the avatar opens the standard Clerk user menu. */}
-        <div className="px-5 py-4 border-t ff-hairline flex items-center gap-3">
-          <OrganizationSwitcher
-            hidePersonal
-            afterCreateOrganizationUrl="/"
-            afterSelectOrganizationUrl="/"
-            appearance={{
-              elements: {
-                organizationSwitcherTrigger:
-                  "flex-1 px-3 py-2 rounded-m3-full hover:bg-surface-container-high transition-colors text-left",
-                organizationPreviewMainIdentifier:
-                  "md-typescale-label-large text-on-surface",
-                organizationPreviewSecondaryIdentifier:
-                  "md-typescale-body-small text-on-surface-variant/70",
-              },
-            }}
-          />
-          <UserButton
-            appearance={{
-              elements: {
-                avatarBox: "h-9 w-9 ring-1 ring-outline-variant",
-              },
-            }}
-          />
-        </div>
+            tenant picker; the avatar opens the standard Clerk user menu.
+            In fallback mode (API key) Clerk components are skipped and
+            we render an "exit fallback" affordance instead. */}
+        {fallbackKey ? (
+          <div className="px-5 py-4 border-t ff-hairline flex flex-col gap-2">
+            <div className="ff-stamp-label">Fallback auth · 应急登录</div>
+            <div className="md-typescale-body-small text-on-surface-variant/80">
+              Signed in with API key{" "}
+              <code className="font-mono text-[0.7rem] tracking-tight bg-surface-container-high px-1.5 py-0.5 rounded">
+                ff_live_{fallbackKey.slice(8, 16)}…
+              </code>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                clearFallbackKey();
+                if (typeof window !== "undefined") window.location.href = "/sign-in";
+              }}
+              className="self-start md-typescale-label-medium text-primary hover:underline"
+            >
+              Exit fallback mode →
+            </button>
+          </div>
+        ) : (
+          <div className="px-5 py-4 border-t ff-hairline flex items-center gap-3">
+            <OrganizationSwitcher
+              hidePersonal
+              afterCreateOrganizationUrl="/"
+              afterSelectOrganizationUrl="/"
+              appearance={{
+                elements: {
+                  organizationSwitcherTrigger:
+                    "flex-1 px-3 py-2 rounded-m3-full hover:bg-surface-container-high transition-colors text-left",
+                  organizationPreviewMainIdentifier:
+                    "md-typescale-label-large text-on-surface",
+                  organizationPreviewSecondaryIdentifier:
+                    "md-typescale-body-small text-on-surface-variant/70",
+                },
+              }}
+            />
+            <UserButton
+              appearance={{
+                elements: {
+                  avatarBox: "h-9 w-9 ring-1 ring-outline-variant",
+                },
+              }}
+            />
+          </div>
+        )}
 
         {/* Service indicator — health probe to the Worker. */}
         <div

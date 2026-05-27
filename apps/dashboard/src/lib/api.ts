@@ -3,6 +3,7 @@
 import { useAuth } from "@clerk/react";
 import { useCallback } from "react";
 import { MCP_URL } from "./config";
+import { useFallbackKey } from "./fallback-auth";
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown, message: string) {
@@ -33,17 +34,23 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
  */
 export function useApiFetch() {
   const { getToken, isSignedIn, orgId } = useAuth();
+  const fallbackKey = useFallbackKey();
   return useCallback(
     async <T = unknown>(path: string, init: RequestInit = {}): Promise<T> => {
-      // Wrap getToken so a Clerk-side failure (dev-instance rate limit,
-      // network hiccup, expired session) surfaces as an ApiError with
-      // status 401 instead of bubbling up as a generic Error. Generic
-      // Errors hit the ErrorState "Couldn't load this view" fallback
-      // body, which gives the user no hint that re-signing-in would fix
-      // it. Status-401 path renders the proper "Your session expired"
-      // message + Sign-in CTA.
+      // Fallback API key takes precedence over Clerk. It exists exactly
+      // because Clerk is failing (rate-limited, wrong instance, down) —
+      // checking Clerk first would defeat the escape hatch.
       let token: string | null = null;
-      if (isSignedIn) {
+      if (fallbackKey) {
+        token = fallbackKey;
+      } else if (isSignedIn) {
+        // Wrap getToken so a Clerk-side failure (dev-instance rate limit,
+        // network hiccup, expired session) surfaces as an ApiError with
+        // status 401 instead of bubbling up as a generic Error. Generic
+        // Errors hit the ErrorState "Couldn't load this view" fallback
+        // body, which gives the user no hint that re-signing-in would fix
+        // it. Status-401 path renders the proper "Your session expired"
+        // message + Sign-in CTA.
         try {
           token = await getToken({ skipCache: true, organizationId: orgId ?? undefined });
         } catch (clerkErr) {
@@ -100,7 +107,7 @@ export function useApiFetch() {
       }
       return body as T;
     },
-    [getToken, isSignedIn, orgId]
+    [getToken, isSignedIn, orgId, fallbackKey]
   );
 }
 
@@ -111,9 +118,12 @@ export function useApiFetch() {
  */
 export function useApiDownload() {
   const { getToken, isSignedIn, orgId } = useAuth();
+  const fallbackKey = useFallbackKey();
   return useCallback(
     async (path: string, fallbackFilename: string): Promise<void> => {
-      const token = isSignedIn
+      const token = fallbackKey
+        ? fallbackKey
+        : isSignedIn
         ? await getToken({ skipCache: true, organizationId: orgId ?? undefined })
         : null;
       const headers = new Headers();
@@ -137,6 +147,6 @@ export function useApiDownload() {
       a.remove();
       URL.revokeObjectURL(url);
     },
-    [getToken, isSignedIn, orgId]
+    [getToken, isSignedIn, orgId, fallbackKey]
   );
 }

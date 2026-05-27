@@ -11,6 +11,7 @@ import { ClerkProvider } from "@clerk/react";
 import { Toaster } from "sonner";
 import { Shell } from "@/components/layout/shell";
 import { NowProvider } from "@/lib/use-now";
+import { captureFallbackKeyFromUrl, useFallbackKey } from "@/lib/fallback-auth";
 
 const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
 
@@ -25,6 +26,35 @@ const IS_PROD_HOSTNAME =
   !window.location.hostname.includes("localhost") &&
   !window.location.hostname.includes("127.0.0.1") &&
   !window.location.hostname.endsWith(".local");
+
+function FallbackBanner() {
+  const fallbackKey = useFallbackKey();
+  if (!fallbackKey) return null;
+  return (
+    <div
+      role="status"
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 9998,
+        background: "rgb(255 184 0)",
+        color: "rgb(28 27 25)",
+        padding: "6px 16px",
+        fontSize: 12,
+        fontWeight: 600,
+        fontFamily: "system-ui, sans-serif",
+        textAlign: "center",
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.15)",
+      }}
+    >
+      Fallback API key active · Clerk bypassed
+    </div>
+  );
+}
 
 function ClerkKeyGuard() {
   useEffect(() => {
@@ -75,6 +105,12 @@ function ClerkKeyGuard() {
 }
 
 export function ClerkRuntime({ children }: { children: React.ReactNode }) {
+  // Capture ?ff_api_key=... / ?ff_logout=1 once on mount so an operator
+  // can hand the user a single emergency URL that bypasses Clerk.
+  useEffect(() => {
+    captureFallbackKeyFromUrl();
+  }, []);
+
   return (
     <ClerkProvider
       publishableKey={PUBLISHABLE_KEY}
@@ -101,6 +137,7 @@ export function ClerkRuntime({ children }: { children: React.ReactNode }) {
       }}
     >
       <NowProvider>
+        <FallbackBanner />
         <ClerkKeyGuard />
         <Shell>{children}</Shell>
         <Toaster
