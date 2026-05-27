@@ -1,0 +1,80 @@
+name: QA
+
+# Runs the central QA repo's Playwright journey tests against the deployed
+# dashboard on every PR. Blocks merge if the journey tests fail.
+#
+# Why journey tests specifically: page-load smoke tests passed for both
+# Clerk cutover failures this week. Journey tests drive sign-in + assert
+# /v1/me/state returns the right tenant, which catches the bug class that
+# was actually breaking us.
+#
+# Cross-account note: this repo lives under PeterChen12 (personal) while
+# the qa repo lives under creatorainco (private). To clone qa we need a
+# fine-grained Personal Access Token with read access to creatorainco/qa,
+# stored as secret QA_REPO_PAT. One-time setup, instructions below.
+#
+# Required GH secrets (set via `gh secret set <NAME>`):
+#   QA_REPO_PAT             — PAT with `Contents: Read` on creatorainco/qa
+#   FF_STUDIO_QA_EMAIL      — e2e-qa@creatorain.com
+#   FF_STUDIO_QA_PASSWORD   — that user's Clerk LIVE password
+#   FF_STUDIO_QA_API_KEY    — ff_live_* key for the QA tenant
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  qa-journey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout FF Brand Studio (for context)
+        uses: actions/checkout@v4
+        with:
+          path: ff-brand-studio
+
+      - name: Checkout creatorainco/qa
+        uses: actions/checkout@v4
+        with:
+          repository: creatorainco/qa
+          ref: main
+          token: ${{ secrets.QA_REPO_PAT }}
+          path: qa
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: qa/package-lock.json
+
+      - name: Install QA deps
+        working-directory: qa
+        run: npm ci
+
+      - name: Install Playwright (chromium only)
+        working-directory: qa
+        run: npx playwright install --with-deps chromium
+
+      - name: Run FF Brand Studio journey tests against staging
+        working-directory: qa
+        env:
+          QA_ENV: staging
+          CI: "true"
+          FF_STUDIO_QA_EMAIL: ${{ secrets.FF_STUDIO_QA_EMAIL }}
+          FF_STUDIO_QA_PASSWORD: ${{ secrets.FF_STUDIO_QA_PASSWORD }}
+          FF_STUDIO_QA_API_KEY: ${{ secrets.FF_STUDIO_QA_API_KEY }}
+        run: npx playwright test --project=ff-brand-studio-journey
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-ff-brand-studio
+          path: |
+            qa/reports/playwright
+            qa/test-results
+          retention-days: 14
