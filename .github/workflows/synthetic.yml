@@ -20,9 +20,9 @@ jobs:
       # pnpm-lock.yaml at repo root doesn't crash with "Unable to locate
       # executable file: pnpm". `cache: ''` alone wasn't enough — v5 still
       # tries to resolve the package manager during input validation.
+      # No `version:` — pnpm/action-setup@v5 errors if both `version` and
+      # `packageManager` are set, so let it read from package.json.
       - uses: pnpm/action-setup@v5
-        with:
-          version: 9
       - uses: actions/setup-node@v5
         with:
           node-version: 22
