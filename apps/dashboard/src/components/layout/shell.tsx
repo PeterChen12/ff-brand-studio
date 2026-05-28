@@ -48,7 +48,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const fallbackKey = useFallbackKey();
 
   // Auth-only routes render their own layout — bypass the Shell entirely.
-  if (pathname.startsWith("/sign-in") || pathname.startsWith("/sign-up")) {
+  // /backup is the always-reachable Clerk-bypass page; ClerkRuntime already
+  // skips ClerkProvider for it, but include it here defensively so the
+  // Shell never tries to gate it on auth state either.
+  if (
+    pathname.startsWith("/sign-in") ||
+    pathname.startsWith("/sign-up") ||
+    pathname.startsWith("/backup")
+  ) {
     return <>{children}</>;
   }
 

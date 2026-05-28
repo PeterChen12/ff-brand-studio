@@ -6,12 +6,14 @@
  * imported during prerender. See clerk-app-shell.tsx for the rationale.
  */
 
-import { useEffect } from "react";
-import { ClerkProvider } from "@clerk/react";
+import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
+import { ClerkProvider, useAuth } from "@clerk/react";
 import { Toaster } from "sonner";
 import { Shell } from "@/components/layout/shell";
 import { NowProvider } from "@/lib/use-now";
 import { captureFallbackKeyFromUrl, useFallbackKey } from "@/lib/fallback-auth";
+import { EmergencyAccess } from "@/components/layout/emergency-access";
 
 const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
 
@@ -104,12 +106,75 @@ function ClerkKeyGuard() {
   );
 }
 
+/**
+ * Watches useAuth().isLoaded for a fixed timeout. If Clerk's SDK hasn't
+ * initialized by then, surface the EmergencyAccess UI inline so the user
+ * has a recovery path.
+ *
+ * 2026-05-28 incident: Clerk's allowed_origins didn't include a custom
+ * subdomain → SDK never finished → Shell rendered "LOADING…" forever.
+ * That kind of failure is now bounded to {CLERK_INIT_TIMEOUT_MS}ms.
+ */
+const CLERK_INIT_TIMEOUT_MS = 8_000;
+function ClerkInitGate({ children }: { children: React.ReactNode }) {
+  const { isLoaded } = useAuth();
+  const fallbackKey = useFallbackKey();
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (isLoaded || fallbackKey) return;
+    const id = setTimeout(() => setTimedOut(true), CLERK_INIT_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [isLoaded, fallbackKey]);
+
+  // Happy paths: Clerk loaded, OR we already have a fallback key (Shell
+  // handles the bypass downstream).
+  if (isLoaded || fallbackKey) return <>{children}</>;
+
+  // SDK is taking too long to come up. Render the EmergencyAccess form
+  // so the user can paste a backup key and proceed.
+  if (timedOut) {
+    return (
+      <EmergencyAccess
+        title="Sign-in is taking longer than usual"
+        subtitle="The authentication service hasn't responded in time. If you have a backup access key, paste it below — or refresh to try again."
+      />
+    );
+  }
+
+  // Pre-timeout — show the existing loading splash so it matches Shell's
+  // own loading state visually.
+  return (
+    <div className="min-h-screen md-surface flex items-center justify-center">
+      <div className="md-typescale-label-small text-on-surface-variant tracking-stamp uppercase">
+        Loading…
+      </div>
+    </div>
+  );
+}
+
 export function ClerkRuntime({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname() ?? "/";
+
   // Capture ?ff_api_key=... / ?ff_logout=1 once on mount so an operator
   // can hand the user a single emergency URL that bypasses Clerk.
   useEffect(() => {
     captureFallbackKeyFromUrl();
   }, []);
+
+  // /backup is the always-reachable escape hatch. Never mount Clerk for
+  // it — if Clerk's SDK is failing, the import itself can race with the
+  // render and freeze the page. Rendering the route directly here means
+  // the user can ALWAYS reach the paste-key form, even if every other
+  // Clerk-dependent route is broken.
+  if (pathname.startsWith("/backup")) {
+    return (
+      <NowProvider>
+        <FallbackBanner />
+        {children}
+      </NowProvider>
+    );
+  }
 
   return (
     <ClerkProvider
@@ -139,7 +204,9 @@ export function ClerkRuntime({ children }: { children: React.ReactNode }) {
       <NowProvider>
         <FallbackBanner />
         <ClerkKeyGuard />
-        <Shell>{children}</Shell>
+        <ClerkInitGate>
+          <Shell>{children}</Shell>
+        </ClerkInitGate>
         <Toaster
           position="bottom-right"
           theme="light"
