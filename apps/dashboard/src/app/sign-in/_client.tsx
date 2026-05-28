@@ -26,6 +26,19 @@ export default function SignInPage() {
           signUpUrl="/sign-up"
           fallbackRedirectUrl="/"
         />
+        {/* Discoverable escape hatch: a user who can't sign in (Clerk down,
+            forgot password, rate-limited, etc.) can hit /backup and paste
+            their ff_live_ key. This link is the only way most users will
+            ever learn the route exists, so keep it visible but not noisy. */}
+        <p className="mt-6 text-center md-typescale-body-small text-on-surface-variant/70">
+          Having trouble?{" "}
+          <a
+            href="/backup"
+            className="text-primary hover:underline font-medium"
+          >
+            Use backup access
+          </a>
+        </p>
       </div>
     </div>
   );
