@@ -9,12 +9,13 @@ name: QA
 # was actually breaking us.
 #
 # Cross-account note: this repo lives under PeterChen12 (personal) while
-# the qa repo lives under creatorainco (private). To clone qa we need a
-# fine-grained Personal Access Token with read access to creatorainco/qa,
-# stored as secret QA_REPO_PAT. One-time setup, instructions below.
+# the qa repo lives under creatorainco. As of 2026-05-28 creatorainco/qa
+# is PUBLIC, so anonymous checkout works — no PAT needed. If qa is ever
+# made private again, restore the `token: ${{ secrets.QA_REPO_PAT }}`
+# line on the checkout step and set the PAT secret per
+# Claude_Code_Context/qa-secrets-checklist.md.
 #
 # Required GH secrets (set via `gh secret set <NAME>`):
-#   QA_REPO_PAT             — PAT with `Contents: Read` on creatorainco/qa
 #   FF_STUDIO_QA_EMAIL      — e2e-qa@creatorain.com
 #   FF_STUDIO_QA_PASSWORD   — that user's Clerk LIVE password
 #   FF_STUDIO_QA_API_KEY    — ff_live_* key for the QA tenant
@@ -41,7 +42,6 @@ jobs:
         with:
           repository: creatorainco/qa
           ref: main
-          token: ${{ secrets.QA_REPO_PAT }}
           path: qa
 
       - name: Setup Node 20
