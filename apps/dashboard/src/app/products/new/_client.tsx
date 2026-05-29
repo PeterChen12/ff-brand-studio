@@ -253,8 +253,23 @@ export default function NewProductPageInner() {
     setSubmitting(true);
     setSubmitError(null);
 
+    // Track which step failed so the ErrorState body shows
+    // "Image upload failed: <cause>" instead of just "<cause>". The
+    // previous behavior left users (and screenshot-driven support) with
+    // no way to tell whether the issue was R2, /v1/products, or the
+    // launch endpoint.
+    type Phase = "upload-intent" | "image-upload" | "product-create" | "launch";
+    let phase: Phase = "upload-intent";
+    const phaseLabel: Record<Phase, string> = {
+      "upload-intent": "Couldn't prepare uploads",
+      "image-upload": "Image upload failed",
+      "product-create": "Couldn't save the product",
+      "launch": "Couldn't start the launch",
+    };
+
     try {
       // 1. Mint upload intent
+      phase = "upload-intent";
       const exts = files
         .map((f) => extractExt(f.file))
         .filter((x): x is "jpg" | "jpeg" | "png" | "webp" => !!x);
@@ -271,6 +286,7 @@ export default function NewProductPageInner() {
       // the failed tile shows its error inline. Submit is blocked
       // (canSubmit re-checks errorFiles) until the user retries or
       // removes the bad ones.
+      phase = "image-upload";
       const queue = files.map((f, i) => ({ f, i, url: intent.urls[i] }));
       const uploadedKeys: string[] = [];
       let failedCount = 0;
@@ -336,6 +352,7 @@ export default function NewProductPageInner() {
       }
 
       // 3. Finalize the product create
+      phase = "product-create";
       // Detect CJK ideographs to route the single-field name into the
       // right DB column. name_en stays always-populated (required by
       // the Zod schema and the NOT NULL column constraint); when the
@@ -376,6 +393,7 @@ export default function NewProductPageInner() {
       // request blocks for the full 90-120s pipeline duration, causing
       // the progress bar to appear "stuck at 10%" / creating until the
       // very end.
+      phase = "launch";
       const launch = await apiFetch<{ run_id: string }>("/v1/launches?async=1", {
         method: "POST",
         body: JSON.stringify({
@@ -457,9 +475,14 @@ export default function NewProductPageInner() {
       };
       void poll();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Launch failed";
-      setSubmitError(err);
-      setLaunchStage({ kind: "error", message });
+      const cause = err instanceof Error ? err.message : String(err);
+      // Compose: "{phase-friendly-title}: {actual cause}" so the user
+      // sees both what step broke and why, without expanding details.
+      const annotated = new Error(`${phaseLabel[phase]}: ${cause}`);
+      // Preserve original error chain for the technical-detail expand.
+      (annotated as { cause?: unknown }).cause = err;
+      setSubmitError(annotated);
+      setLaunchStage({ kind: "error", message: annotated.message });
       setSubmitting(false);
     }
   }
@@ -651,7 +674,6 @@ export default function NewProductPageInner() {
           {submitError !== null && (
             <div className="col-span-12">
               <ErrorState
-                title="Couldn't onboard this product"
                 error={submitError}
                 onRetry={() => setSubmitError(null)}
               />

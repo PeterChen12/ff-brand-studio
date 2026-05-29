@@ -117,9 +117,23 @@ function friendlyMessage(error: unknown): {
       body: "Reconnect and we'll retry automatically.",
     };
   }
+  // Non-ApiError exceptions (upload failures, fetch errors, R2 PUT
+  // rejections, etc.). The previous "Refresh, or check the API health
+  // pill" body told users nothing actionable — the actual cause was
+  // hidden inside the <details> they had to click. Surface the message
+  // inline so users (and support, via screenshots) can see what broke.
+  // Keep <details> for the long-form stack trace.
+  let body = "Try again, or contact support if it persists.";
+  if (error instanceof Error && error.message) {
+    body = error.message.length > 240
+      ? error.message.slice(0, 237) + "…"
+      : error.message;
+  } else if (typeof error === "string" && error.length > 0) {
+    body = error.length > 240 ? error.slice(0, 237) + "…" : error;
+  }
   return {
-    title: "Couldn't load this view",
-    body: "Refresh, or check the API health pill in the sidebar.",
+    title: "Something went wrong",
+    body,
   };
 }
 
