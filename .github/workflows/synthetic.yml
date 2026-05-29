@@ -40,7 +40,10 @@ jobs:
       - name: synthetic checks
         working-directory: ${{ runner.temp }}
         env:
-          DASHBOARD_URL: ${{ vars.DASHBOARD_URL || 'https://image-generation.buyfishingrod.com' }}
+          # Both dashboard URLs — synthetic must catch a regression on either
+          # one, not just the BFR vanity domain. The 2026-05-27 CORS bug went
+          # undetected here because we only probed image-generation.bfr.com.
+          DASHBOARD_URLS: ${{ vars.DASHBOARD_URLS || 'https://image-generation.buyfishingrod.com,https://ff-brand-studio.pages.dev' }}
           WORKER_URL: ${{ vars.WORKER_URL || 'https://ff-brand-studio-mcp.creatorain.workers.dev' }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
@@ -50,13 +53,22 @@ jobs:
           const crypto = require("crypto");
 
           (async () => {
-            const dashboard = process.env.DASHBOARD_URL;
+            const dashboards = (process.env.DASHBOARD_URLS || "")
+              .split(",").map(s => s.trim()).filter(Boolean);
             const worker = process.env.WORKER_URL;
             const checks = [
               { url: `${worker}/health`, expect: 200 },
               { url: `${worker}/docs`, expect: 200 },
               { url: `${worker}/v1/openapi.yaml`, expect: 200 },
-              { url: `${dashboard}/sign-in`, expect: 200 },
+              ...dashboards.map(d => ({ url: `${d}/sign-in`, expect: 200 })),
+              // CORS preflight from each dashboard origin against the worker.
+              // The 204+missing-ACA-Origin failure mode we just fixed would
+              // be caught here as a "preflight rejected" line.
+              ...dashboards.map(d => ({
+                url: `${worker}/health`,
+                expect: 200,
+                preflightFrom: d,
+              })),
             ];
 
             const browser = await chromium.launch();
@@ -64,6 +76,25 @@ jobs:
             const page = await ctx.newPage();
             const failures = [];
             for (const c of checks) {
+              if (c.preflightFrom) {
+                // CORS preflight check: simulate a browser sending OPTIONS
+                // with Origin: <dashboard>. Fail if ACA-Origin is missing.
+                const res = await fetch(c.url, {
+                  method: "OPTIONS",
+                  headers: {
+                    Origin: c.preflightFrom,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "content-type,authorization",
+                  },
+                });
+                const aca = res.headers.get("access-control-allow-origin");
+                if (!aca || (aca !== c.preflightFrom && aca !== "*")) {
+                  failures.push(`CORS preflight ${c.url} from ${c.preflightFrom} → missing/wrong ACA-Origin (got: ${aca || "<none>"})`);
+                } else {
+                  console.log(`OK  preflight ${c.url} from ${c.preflightFrom}`);
+                }
+                continue;
+              }
               const res = await page.goto(c.url, { waitUntil: "domcontentloaded", timeout: 20000 });
               const status = res?.status() ?? 0;
               if (status !== c.expect) {
