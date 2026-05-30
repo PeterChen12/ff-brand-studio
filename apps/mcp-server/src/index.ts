@@ -84,21 +84,40 @@ export { visibleTenantIds };
 // branches the team spins up.
 const STATIC_ALLOWED_ORIGINS = new Set([
   "https://image-generation.buyfishingrod.com",
+  "https://ff-brand-studio.pages.dev",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
 ]);
+
+function isAllowedOrigin(origin: string | undefined, env: CloudflareBindings): boolean {
+  if (!origin) return false;
+  if (STATIC_ALLOWED_ORIGINS.has(origin)) return true;
+  const extra = (env.CORS_EXTRA_ORIGINS ?? "")
+    .split(",")
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+  return extra.includes(origin);
+}
+
+// Returns the dashboard origin to send Stripe redirects back to. Honors the
+// caller's Origin header so a session started from pages.dev returns there
+// instead of being bounced to the BFR dashboard (pre-fix behavior).
+function stripeReturnOrigin(c: { req: { header: (k: string) => string | undefined }; env: CloudflareBindings }): string {
+  const origin = c.req.header("Origin") ?? c.req.header("Referer");
+  if (origin) {
+    try {
+      const u = new URL(origin);
+      const normalized = `${u.protocol}//${u.host}`;
+      if (isAllowedOrigin(normalized, c.env)) return normalized;
+    } catch {
+      // fall through to default
+    }
+  }
+  return "https://image-generation.buyfishingrod.com";
+}
 app.use("*", (c, next) =>
   cors({
-    origin: (origin) => {
-      if (!origin) return null;
-      if (STATIC_ALLOWED_ORIGINS.has(origin)) return origin;
-      const extra = (c.env.CORS_EXTRA_ORIGINS ?? "")
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter(Boolean);
-      if (extra.includes(origin)) return origin;
-      return null;
-    },
+    origin: (origin) => (isAllowedOrigin(origin ?? undefined, c.env) ? origin : null),
     allowHeaders: [
       "Authorization",
       "Content-Type",
@@ -1189,10 +1208,7 @@ app.post("/v1/billing/checkout-session", async (c) => {
       top_up_cents: String(parsed.data.amount_cents),
     },
     customer: tenant.stripeCustomerId ?? undefined,
-    return_url: `${new URL(c.req.url).origin.replace(
-      "ff-brand-studio-mcp.creatorain.workers.dev",
-      "image-generation.buyfishingrod.com"
-    )}/billing?session_id={CHECKOUT_SESSION_ID}`,
+    return_url: `${stripeReturnOrigin(c)}/billing?session_id={CHECKOUT_SESSION_ID}`,
   });
 
   return c.json({ client_secret: session.client_secret });
