@@ -44,7 +44,6 @@ type HealthState = "ok" | "degraded" | "error" | "loading";
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
-  const { isLoaded, isSignedIn } = useAuth();
   const fallbackKey = useFallbackKey();
 
   // Auth-only routes render their own layout — bypass the Shell entirely.
@@ -63,9 +62,29 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // resolves the tenant directly from api_keys.tenant_id, so OrgGate
   // (which exists only to coerce a Clerk org_id into the JWT) is also
   // skipped. RedirectToSignIn is skipped too — the key IS the session.
+  //
+  // ClerkRuntime skips <ClerkProvider> entirely in this mode, so any
+  // useAuth() call below this point would throw. The Shell's entry
+  // therefore deliberately does NOT call useAuth — it's deferred to
+  // ClerkAuthGate (only rendered on the non-fallback branch).
   if (fallbackKey) {
-    return <ShellInner pathname={pathname}>{children}</ShellInner>;
+    return <ShellInner pathname={pathname} mode="fallback">{children}</ShellInner>;
   }
+
+  return <ClerkAuthGate pathname={pathname}>{children}</ClerkAuthGate>;
+}
+
+// Clerk-mode gate — the only useAuth() call in the Shell tree's
+// pre-render phase. Only rendered when no fallback key is present,
+// which means <ClerkProvider> IS in the tree (per ClerkRuntime).
+function ClerkAuthGate({
+  pathname,
+  children,
+}: {
+  pathname: string;
+  children: React.ReactNode;
+}) {
+  const { isLoaded, isSignedIn } = useAuth();
 
   if (!isLoaded) {
     return (
@@ -83,19 +102,27 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <OrgGate>
-      <ShellInner pathname={pathname}>{children}</ShellInner>
+      <ShellInner pathname={pathname} mode="clerk">{children}</ShellInner>
     </OrgGate>
   );
 }
 
+type ShellMode = "clerk" | "fallback";
+
 function ShellInner({
   pathname,
+  mode,
   children,
 }: {
   pathname: string;
+  mode: ShellMode;
   children: React.ReactNode;
 }) {
-  const { getToken, isSignedIn, orgId } = useAuth();
+  // useAuth() must NOT be called here — when mode="fallback", ClerkProvider
+  // isn't in the tree at all and the hook would throw. The wallet poll's
+  // token-getting logic is hoisted into WalletPollClerk / WalletPollFallback
+  // (headless components mounted by mode below) so each variant only calls
+  // the hooks it can safely call.
   const fallbackKey = useFallbackKey();
   const [health, setHealth] = useState<HealthState>("loading");
   const [pingMs, setPingMs] = useState<number | null>(null);
@@ -173,92 +200,9 @@ function ShellInner({
     };
   }, []);
 
-  // Phase H4 — wallet pill in the sidebar. Polls /v1/me/state every
-  // 60s. Uses Clerk's getToken (with skipCache so the JWT reflects the
-  // currently-active org) — the prior cookie-reading approach broke
-  // when __session became HttpOnly and was a workaround anyway.
-  useEffect(() => {
-    if (!isSignedIn && !fallbackKey) return;
-    let alive = true;
-    async function poll() {
-      try {
-        const token = fallbackKey
-          ? fallbackKey
-          : await getToken({
-              skipCache: true,
-              organizationId: orgId ?? undefined,
-            });
-        if (!token) {
-          if (alive) setWalletState({ kind: "auth-error" });
-          return;
-        }
-        const res = await fetch(`${MCP_URL}/v1/me/state`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!alive) return;
-        if (res.status === 401 || res.status === 403) {
-          if (typeof console !== "undefined") {
-            // eslint-disable-next-line no-console
-            console.warn(
-              "[wallet-pill]",
-              res.status,
-              await res.text().catch(() => "")
-            );
-          }
-          setWalletState({ kind: "auth-error" });
-          return;
-        }
-        if (!res.ok) {
-          if (typeof console !== "undefined") {
-            // eslint-disable-next-line no-console
-            console.warn(
-              "[wallet-pill]",
-              res.status,
-              await res.text().catch(() => "")
-            );
-          }
-          setWalletState({ kind: "unknown-error" });
-          return;
-        }
-        const data = (await res.json()) as {
-          tenant?: {
-            id?: string;
-            name?: string;
-            plan?: string;
-            wallet_balance_cents?: number;
-            features?: Record<string, unknown>;
-          };
-        };
-        if (typeof data.tenant?.wallet_balance_cents === "number") {
-          setWalletState({ kind: "ok", cents: data.tenant.wallet_balance_cents });
-        } else {
-          setWalletState({ kind: "unknown-error" });
-        }
-        if (
-          data.tenant?.id &&
-          data.tenant?.name &&
-          data.tenant?.plan
-        ) {
-          setTenant({
-            id: data.tenant.id,
-            name: data.tenant.name,
-            plan: data.tenant.plan,
-            features: (data.tenant.features as Record<string, unknown>) ?? {},
-          });
-        }
-      } catch {
-        if (alive) setWalletState({ kind: "unknown-error" });
-      }
-    }
-    poll();
-    const id = setInterval(poll, 60_000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-    // pathname intentionally NOT a dep — refiring poll on every nav
-    // burned a request per route change with no benefit (P2-7).
-  }, [isSignedIn, getToken, orgId, fallbackKey]);
+  // Wallet poll lives in mode-specific sub-components mounted just below
+  // so that the Clerk-mode useAuth() call doesn't run in fallback mode
+  // (when ClerkProvider isn't in the tree at all).
 
   const dotClass = {
     ok: "bg-tertiary",
@@ -269,6 +213,18 @@ function ShellInner({
 
   return (
     <TenantProvider value={tenant}>
+    {/* Mode-specific wallet poll — see WalletPollClerk / WalletPollFallback
+        below. Headless: they only set state, render nothing. The split
+        means useAuth() never gets called in fallback mode. */}
+    {mode === "clerk" ? (
+      <WalletPollClerk onWalletState={setWalletState} onTenant={setTenant} />
+    ) : (
+      <WalletPollFallback
+        fallbackKey={fallbackKey}
+        onWalletState={setWalletState}
+        onTenant={setTenant}
+      />
+    )}
     <div className="min-h-screen md-surface flex">
       {/* ── M3 navigation drawer (left) ──────────────────────────────────── */}
       <aside
@@ -587,4 +543,144 @@ function ShellInner({
     </div>
     </TenantProvider>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wallet poll — headless components that GET a token, poll
+// /v1/me/state every 60s, and feed walletState + tenant snapshots up via
+// callback. Split by mode so the Clerk variant's useAuth() call doesn't
+// run in fallback mode (when ClerkProvider isn't in the tree). The
+// previous inline-useAuth-inside-ShellInner approach mounted
+// ClerkProvider unconditionally, defeating the "fallback bypasses
+// Clerk entirely" contract from reference_bfr_fallback_key.
+// ─────────────────────────────────────────────────────────────────────────
+
+type WalletStateUpdate =
+  | { kind: "loading" }
+  | { kind: "ok"; cents: number }
+  | { kind: "auth-error" }
+  | { kind: "unknown-error" };
+
+type WalletPollProps = {
+  onWalletState: (s: WalletStateUpdate) => void;
+  onTenant: (t: TenantSnapshot) => void;
+};
+
+function applyStateResponse(
+  res: Response,
+  alive: { current: boolean },
+  props: WalletPollProps
+): Promise<void> {
+  return (async () => {
+    if (!alive.current) return;
+    if (res.status === 401 || res.status === 403) {
+      if (typeof console !== "undefined") {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[wallet-pill]",
+          res.status,
+          await res.text().catch(() => "")
+        );
+      }
+      props.onWalletState({ kind: "auth-error" });
+      return;
+    }
+    if (!res.ok) {
+      if (typeof console !== "undefined") {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[wallet-pill]",
+          res.status,
+          await res.text().catch(() => "")
+        );
+      }
+      props.onWalletState({ kind: "unknown-error" });
+      return;
+    }
+    const data = (await res.json()) as {
+      tenant?: {
+        id?: string;
+        name?: string;
+        plan?: string;
+        wallet_balance_cents?: number;
+        features?: Record<string, unknown>;
+      };
+    };
+    if (typeof data.tenant?.wallet_balance_cents === "number") {
+      props.onWalletState({
+        kind: "ok",
+        cents: data.tenant.wallet_balance_cents,
+      });
+    } else {
+      props.onWalletState({ kind: "unknown-error" });
+    }
+    if (data.tenant?.id && data.tenant?.name && data.tenant?.plan) {
+      props.onTenant({
+        id: data.tenant.id,
+        name: data.tenant.name,
+        plan: data.tenant.plan,
+        features: (data.tenant.features as Record<string, unknown>) ?? {},
+      });
+    }
+  })();
+}
+
+function WalletPollClerk(props: WalletPollProps): null {
+  const { getToken, isSignedIn, orgId } = useAuth();
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const alive = { current: true };
+    async function poll() {
+      try {
+        const token = await getToken({
+          skipCache: true,
+          organizationId: orgId ?? undefined,
+        });
+        if (!token) {
+          if (alive.current) props.onWalletState({ kind: "auth-error" });
+          return;
+        }
+        const res = await fetch(`${MCP_URL}/v1/me/state`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        await applyStateResponse(res, alive, props);
+      } catch {
+        if (alive.current) props.onWalletState({ kind: "unknown-error" });
+      }
+    }
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => {
+      alive.current = false;
+      clearInterval(id);
+    };
+  }, [isSignedIn, getToken, orgId, props]);
+  return null;
+}
+
+function WalletPollFallback(
+  props: WalletPollProps & { fallbackKey: string | null }
+): null {
+  const { fallbackKey } = props;
+  useEffect(() => {
+    if (!fallbackKey) return;
+    const alive = { current: true };
+    async function poll() {
+      try {
+        const res = await fetch(`${MCP_URL}/v1/me/state`, {
+          headers: { Authorization: `Bearer ${fallbackKey}` },
+        });
+        await applyStateResponse(res, alive, props);
+      } catch {
+        if (alive.current) props.onWalletState({ kind: "unknown-error" });
+      }
+    }
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => {
+      alive.current = false;
+      clearInterval(id);
+    };
+  }, [fallbackKey, props]);
+  return null;
 }
