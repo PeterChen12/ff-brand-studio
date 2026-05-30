@@ -12,7 +12,11 @@ import { ClerkProvider, useAuth } from "@clerk/react";
 import { Toaster } from "sonner";
 import { Shell } from "@/components/layout/shell";
 import { NowProvider } from "@/lib/use-now";
-import { captureFallbackKeyFromUrl, useFallbackKey } from "@/lib/fallback-auth";
+import {
+  captureFallbackKeyFromUrl,
+  getFallbackKey,
+  useFallbackKey,
+} from "@/lib/fallback-auth";
 import { EmergencyAccess } from "@/components/layout/emergency-access";
 
 const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
@@ -156,8 +160,32 @@ function ClerkInitGate({ children }: { children: React.ReactNode }) {
 export function ClerkRuntime({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
 
-  // Capture ?ff_api_key=... / ?ff_logout=1 once on mount so an operator
-  // can hand the user a single emergency URL that bypasses Clerk.
+  // Synchronous URL → localStorage capture during the first render.
+  // Runs BEFORE we read useFallbackKey() and decide whether to mount
+  // <ClerkProvider>, so an inbound `?ff_api_key=` link bypasses Clerk
+  // on the very first paint — no fapi calls fire at all. Previously the
+  // capture ran in a useEffect AFTER mount, so <ClerkProvider> would
+  // initialize + hit /v1/{client,environment,sessions,tokens} before
+  // fallback took over, defeating the bypass guarantee in
+  // reference_bfr_fallback_key. Caught by qa journey test "fallback
+  // banner renders + Clerk SDK is bypassed" (qa#9 / 2026-05-30).
+  //
+  // useState's lazy init runs exactly once per mount before render, so
+  // the URL-stripping + localStorage write happens at the right time.
+  // captureFallbackKeyFromUrl is idempotent — safe if called again from
+  // the useEffect below (kept as belt-and-suspenders for cross-tab
+  // storage events).
+  const [initialFallbackKey] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    captureFallbackKeyFromUrl();
+    return getFallbackKey();
+  });
+  const liveFallbackKey = useFallbackKey();
+  const fallbackKey = liveFallbackKey ?? initialFallbackKey;
+
+  // Belt-and-suspenders: re-run capture on mount in case useState init was
+  // skipped for any reason (SSR, hot-reload, etc.). Safe to call multiple
+  // times — the underlying logic is idempotent.
   useEffect(() => {
     captureFallbackKeyFromUrl();
   }, []);
@@ -172,6 +200,34 @@ export function ClerkRuntime({ children }: { children: React.ReactNode }) {
       <NowProvider>
         <FallbackBanner />
         {children}
+      </NowProvider>
+    );
+  }
+
+  // Fallback API-key mode — skip <ClerkProvider> entirely. Shell's
+  // top-level no longer calls useAuth(); useAuth-using sub-components
+  // (ClerkAuthGate, WalletPollClerk) only mount on the non-fallback
+  // branch via Shell's mode switch. So no Clerk hook calls happen here
+  // and no /v1/{client,environment,sessions,tokens} requests fire.
+  if (fallbackKey) {
+    return (
+      <NowProvider>
+        <FallbackBanner />
+        <Shell>{children}</Shell>
+        <Toaster
+          position="bottom-right"
+          theme="light"
+          richColors
+          closeButton
+          toastOptions={{
+            classNames: {
+              toast:
+                "rounded-m3-md border ff-hairline shadow-m3-2 md-surface-container-low text-on-surface",
+              title: "md-typescale-label-large",
+              description: "md-typescale-body-small text-on-surface-variant",
+            },
+          }}
+        />
       </NowProvider>
     );
   }
