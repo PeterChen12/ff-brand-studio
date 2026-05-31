@@ -23,7 +23,12 @@ name: QA
 on:
   pull_request:
     branches: [master]
-  push:
+  # For push to master, run AFTER Deploy completes so we test the actually-
+  # deployed build, not the previous one. Push + Deploy used to fire in
+  # parallel, which produced false failures from QA hitting stale pages.dev.
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
     branches: [master]
   workflow_dispatch:
 
@@ -31,6 +36,9 @@ jobs:
   qa-journey:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # When fired by Deploy completing, only run if it succeeded — otherwise
+    # we're testing a half-deployed build.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout FF Brand Studio (for context)
         uses: actions/checkout@v4
