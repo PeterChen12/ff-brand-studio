@@ -8,13 +8,17 @@ export interface GuardianOutput {
   minScore: number;
 }
 
-// scoreBrandComplianceFn is injected so guardian.ts can swap stub → real impl (Step 4.2)
+// scoreBrandComplianceFn is injected so guardian.ts can swap stub → real impl (Step 4.2).
+// Phase 1 P1.2 — added optional brandProfile so the score fn can render
+// tenant-specific guardian rules. Score fn ignores the param when scoring
+// against the FF default profile (legacy demo flows).
 export type ScoreFn = (params: {
   assetUrl: string;
   assetType: string;
   copyEn?: string;
   copyZh?: string;
   apiKey: string;
+  brandProfile?: unknown;
 }) => Promise<BrandScorecardType>;
 
 export async function guardianStep(params: {
@@ -25,6 +29,8 @@ export async function guardianStep(params: {
   scoreFn: ScoreFn;
   langfuse: Langfuse;
   traceId: string;
+  /** Per-tenant brand profile threaded into the score fn. */
+  brandProfile?: unknown;
 }): Promise<GuardianOutput> {
   const trace = params.langfuse.trace({ id: params.traceId });
   const span = trace.span({ name: "brand-guardian" });
@@ -40,6 +46,7 @@ export async function guardianStep(params: {
         copyEn: params.copyEn,
         copyZh: params.copyZh,
         apiKey: params.apiKey,
+        brandProfile: params.brandProfile,
       });
     } catch {
       // On error, use stub to avoid crashing the workflow

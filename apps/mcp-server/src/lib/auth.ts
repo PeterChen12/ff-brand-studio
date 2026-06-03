@@ -1,29 +1,89 @@
 /**
- * requireTenant Hono middleware — Phase G.
+ * requireTenant Hono middleware.
  *
- * Verifies a Clerk session JWT (preferred) or session cookie, extracts
- * the active organization id, and resolves it to a tenant row via
- * ensureTenantForOrg. Attaches both `tenant` and `actor` (Clerk user id)
- * to the Hono context for downstream handlers.
+ * Verifies a Clerk session JWT (preferred), an `ff_live_*` API key, or
+ * a session cookie. Resolves to a tenant row via ensureTenantForOrg
+ * and attaches `tenant` + `actor` to the Hono context.
  *
- * 401 cases:
+ * Org resolution (fixed 2026-06-01 — see ADR not yet written; previous
+ * design required `org_id` as a JWT claim sourced from a Clerk dashboard
+ * JWT template named `session`. That template is per-instance, dashboard-
+ * edited, and invisible from code; every new Clerk instance / user / org
+ * recreated the "JWT lacks org_id" 401 bug. New design:
+ *
+ *   1. If the JWT carries `org_id` (legacy template still configured), use it.
+ *   2. Else if the request sends `X-Org-Id` and the user is a member of
+ *      that org per Clerk's Backend API, use it. (Used by the dashboard
+ *      when `useAuth().orgId` is set so multi-org users have an explicit
+ *      active org.)
+ *   3. Else look the user up via Clerk Backend API; if they have exactly
+ *      one organization membership, use it (with a short KV cache).
+ *   4. Else return a structured 403 — `no_organization` for zero memberships
+ *      (dashboard renders <CreateOrganization />) or `ambiguous_org` for
+ *      multi-membership without an `X-Org-Id` header.
+ *
+ * 401 cases (now narrower):
  *   - No Authorization header AND no __session cookie
  *   - Invalid / expired JWT
- *   - JWT has no `org_id` claim (force-orgs is enforced — every signed-in
- *     user must be acting in the context of an organization)
+ *   - Invalid `ff_live_*` API key
+ *
+ * The previous `missing_org_context` 401 case is gone — that information
+ * lives on the server now, not in the JWT.
  *
  * Open routes (apply middleware *after* declaring these): /health,
- * /v1/clerk-webhook, /v1/stripe-webhook (Phase H), /sse + /messages
- * (MCP transport — for now). Phase L will tighten MCP behind API keys.
+ * /v1/clerk-webhook, /v1/stripe-webhook.
  */
 
 import type { Context, Next } from "hono";
-import { verifyToken } from "@clerk/backend";
+import { createClerkClient, verifyToken } from "@clerk/backend";
 import { eq } from "drizzle-orm";
 import { createDbClient } from "../db/client.js";
 import { ensureTenantForOrg } from "./tenants.js";
 import { tenants, type Tenant } from "../db/schema.js";
 import { verifyApiKey } from "./api-keys.js";
+
+// 5 minutes — short enough that an org membership revocation propagates
+// within the same trip, long enough to amortize the Clerk API roundtrip
+// (~50ms) across a burst of requests.
+const ORG_LOOKUP_TTL_SECONDS = 300;
+
+interface OrgLookupCacheEntry {
+  orgIds: string[];        // all orgs the user is a member of
+  orgNames: Record<string, string>;
+  cachedAt: number;
+}
+
+async function lookupUserOrgs(
+  env: CloudflareBindings,
+  userId: string
+): Promise<OrgLookupCacheEntry> {
+  const cacheKey = `clerk_user_orgs:${userId}`;
+  const cached = await env.SESSION_KV.get(cacheKey, "json");
+  if (cached) return cached as OrgLookupCacheEntry;
+
+  const clerk = createClerkClient({ secretKey: env.CLERK_SECRET_KEY });
+  // limit=10 is intentional: we only care about the 0/1/many distinction
+  // and we want to return the full list on multi-membership so the
+  // ambiguous_org error includes them. If a user genuinely has >10 orgs,
+  // they'll need to send X-Org-Id explicitly.
+  const memberships = await clerk.users.getOrganizationMembershipList({
+    userId,
+    limit: 10,
+  });
+  const items = Array.isArray(memberships) ? memberships : memberships.data ?? [];
+  const entry: OrgLookupCacheEntry = {
+    orgIds: items.map((m) => m.organization.id),
+    orgNames: Object.fromEntries(
+      items.map((m) => [m.organization.id, m.organization.name ?? "Unnamed Org"])
+    ),
+    cachedAt: Date.now(),
+  };
+  // Best-effort cache write; failure here is non-fatal.
+  await env.SESSION_KV.put(cacheKey, JSON.stringify(entry), {
+    expirationTtl: ORG_LOOKUP_TTL_SECONDS,
+  }).catch(() => {});
+  return entry;
+}
 
 export interface AuthVars {
   tenant: Tenant;
@@ -96,20 +156,68 @@ export async function requireTenant(
     );
   }
 
-  const orgId = (payload as { org_id?: string }).org_id;
-  const userId = (payload as { sub?: string }).sub;
-  const orgName = (payload as { org_name?: string }).org_name ?? "Unnamed Org";
-
-  if (!orgId || !userId) {
+  const claims = payload as { org_id?: string; sub?: string; org_name?: string };
+  const userId = claims.sub;
+  if (!userId) {
     return c.json(
-      {
-        error: "unauthenticated",
-        code: "missing_org_context",
-        detail:
-          "JWT lacks org_id — force-orgs is enabled, every request must be made in the context of an organization",
-      },
+      { error: "unauthenticated", code: "invalid_token", detail: "JWT missing sub claim" },
       401
     );
+  }
+
+  // 1. Prefer the org_id JWT claim if the legacy template is still
+  //    configured — costs nothing and preserves backwards-compatibility
+  //    with any client that's already minting tokens this way.
+  let orgId = claims.org_id;
+  let orgName = claims.org_name ?? "Unnamed Org";
+
+  // 2. Otherwise fall back to server-side resolution. The dashboard
+  //    sends X-Org-Id when the user has selected an active org via
+  //    Clerk's useAuth().orgId; honor it if the user is a member.
+  if (!orgId) {
+    const explicit = c.req.header("x-org-id") ?? c.req.header("X-Org-Id");
+    const lookup = await lookupUserOrgs(c.env, userId);
+
+    if (lookup.orgIds.length === 0) {
+      return c.json(
+        {
+          error: "no_organization",
+          code: "no_organization",
+          detail:
+            "Authenticated user has no organization memberships. Create or accept an invite to one before retrying.",
+        },
+        403
+      );
+    }
+
+    if (explicit) {
+      if (!lookup.orgIds.includes(explicit)) {
+        return c.json(
+          {
+            error: "forbidden_org",
+            code: "forbidden_org",
+            detail: `User is not a member of organization ${explicit}.`,
+          },
+          403
+        );
+      }
+      orgId = explicit;
+      orgName = lookup.orgNames[explicit] ?? orgName;
+    } else if (lookup.orgIds.length === 1) {
+      orgId = lookup.orgIds[0];
+      orgName = lookup.orgNames[orgId] ?? orgName;
+    } else {
+      return c.json(
+        {
+          error: "ambiguous_org",
+          code: "ambiguous_org",
+          detail:
+            "User belongs to multiple organizations; send X-Org-Id to disambiguate.",
+          orgs: lookup.orgIds.map((id) => ({ id, name: lookup.orgNames[id] })),
+        },
+        409
+      );
+    }
   }
 
   const db = createDbClient(c.env);

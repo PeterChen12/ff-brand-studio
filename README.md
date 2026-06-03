@@ -1,30 +1,39 @@
-# FF Brand Studio — MCP Edition
+# FF Brand Studio — Multi-tenant AI brand-content generation
 
-AI-powered bilingual marketing content generation for Faraday Future.
-Generates EN/ZH hero images, infographics, LinkedIn/Weibo copy, and video assets — scored against brand guidelines — directly inside Claude Desktop.
+Multi-tenant AI service for bilingual EN/ZH marketing content
+generation, scored against per-tenant brand guidelines. Cloudflare
+Worker (MCP + REST) + Next.js dashboard.
 
-> **Status (2026-04-28):** v2 SaaS pivot complete. Phases G–O ✅ live.
-> Multi-tenant, self-serve, machine-callable. See `SESSION_STATE.md`
-> for the current state in 5 minutes.
+> **Status (2026-06-01):** v2 multi-tenant pivot complete. Brand identity
+> is data-driven via `tenants.brand_profile` (Phase 1). Consumable from
+> Claude Desktop (MCP/SSE), from any HTTP client (`/v1/*` REST), and
+> from sibling services like `buyfishingrod-admin` (under
+> `FF_MIGRATE_*` flags — see Phase 2 of `Claude_Code_Context/BFR_ECOSYSTEM_PLAN.md`).
+>
+> The project originated as a 7-day interview deliverable scoped to the
+> Faraday Future brand. That hardcoded constraint has been refactored
+> out: FF lives on as the **default fallback brand profile**, so any
+> tenant without an explicit `brand_profile` row produces FF-flavored
+> output — a deliberately visible regression rather than a silent
+> breakage. See `apps/mcp-server/src/lib/brand-profile.ts` for the
+> shape and resolver.
 
 ---
 
-## What's where
+## Who calls this service
 
-| Folder | Purpose |
-|---|---|
-| `apps/mcp-server/` | Cloudflare Worker — `/v1/*` REST + `/sse` MCP. Phase G–O backend. Hono + Drizzle + zod. |
-| `apps/dashboard/` | Next.js 15 static export deployed to Cloudflare Pages. 10 routes incl. `/library`, `/launch`, `/settings`. |
-| `apps/image-sidecar/` | Node + sharp service on AWS App Runner — kind-aware crops, SVG composites, banner extends, white-bg force. Phase I sidecar (sharp can't run in Workers). |
-| `apps/proxy-worker/` | Tiny edge router — historical. |
-| `packages/types/` | Zod schemas + types. Source-of-truth re-exported by all consumers. |
-| `packages/brand-rules/` | Brand voice + per-platform SEO rubric (Amazon US, Tmall, JD, Shopify). |
-| `packages/seo-clients/` | DataForSEO + Apify wrappers. |
-| `packages/media-clients/` | fal.ai + OpenAI + Anthropic + R2 SDK helpers. |
-| `plans/` | Per-phase plans (`active-plan-saas-G.md` … `-M.md`) + master `saas-iteration-plan.md`. |
-| `docs/adr/` | ADRs. 0003 = image pipeline runtime split. |
-| `docs/RUNBOOK_*.md` | Activation playbooks: Phase I spike, feature flags, secret rotation. |
-| `.github/workflows/` | CI, deploy, sidecar build (ECR), daily Postgres dump, synthetic check. |
+| Caller | Path | Auth |
+|---|---|---|
+| Claude Desktop (MCP) | `/sse` (SSE transport) | `ff_live_*` api_key in header (Phase 1 P1.9 — anonymous calls rejected) |
+| `buyfishingrod-admin` | `/v1/launches`, `/v1/products`, `/v1/integrations`, `/v1/tenants/me/brand-profile` | `FF_STUDIO_API_KEY` (tenant-scoped `ff_live_*`) + `X-Request-ID` for trace correlation (Phase 2 P2.9) |
+| The dashboard (Next.js Pages app) | `/v1/*` REST | Clerk session JWT (preferred) OR `?ff_api_key=ff_live_*` URL fallback |
+| Direct curl / scripts | `/v1/*` REST | `ff_live_*` Bearer token |
+
+The dashboard has a known recurring bug class around Clerk JWT
+templates being mis-configured per Clerk instance — being addressed in
+Phase 7 follow-up by dropping the `org_id` JWT-claim requirement and
+deriving the org server-side from the authenticated `sub`. Until that
+ships, the `?ff_api_key=ff_live_*` URL fallback is a reliable bypass.
 
 ---
 
@@ -32,135 +41,117 @@ Generates EN/ZH hero images, infographics, LinkedIn/Weibo copy, and video assets
 
 ```mermaid
 graph TD
-    A[Claude Desktop] -->|MCP SSE| B[MCP Server\nCloudflare Workers + Hono]
-    B --> C[run_campaign tool]
-    C --> D[Planner Step\nClaude Sonnet 4.6]
-    D --> E[Copy Step\nClaude Sonnet 4.6]
-    E --> F[Translate ZH Step\nClaude Sonnet 4.6]
-    F --> G[Image Step\nFlux Pro + GPT Image 2]
-    G --> H{include_video?}
-    H -->|Yes| I[Video Step\nKling 2.6 via fal.ai]
-    H -->|No| J[Guardian Step\nClaude Opus 4.7 Vision]
-    I --> J
-    J --> K{Score >= 70?}
-    K -->|No| L[HITL Required\nReturn for human review]
-    K -->|Yes| M[Publish Step\nDrizzle → Postgres DAM]
-    M --> N[Dashboard\nNext.js 15 on Amplify]
+    A[Claude Desktop or BFR-admin] -->|MCP SSE or REST| B[Worker: Hono on Cloudflare]
+    B --> Auth[Auth middleware:\nresolve tenant from\napi_key OR Clerk JWT]
+    Auth --> BP[Load tenants.brand_profile\nor FF default]
+    BP --> Pipeline[Campaign workflow]
 
-    B --> O[score_brand_compliance]
-    B --> P[localize_to_zh]
-    B --> Q[generate_brand_hero]
-    B --> R[generate_bilingual_infographic]
-    B --> S[publish_to_dam]
+    Pipeline --> Planner[Planner step\nClaude Sonnet 4.6]
+    Planner --> Copy[Copy step]
+    Copy --> Translate[Translate ZH]
+    Translate --> Image[Image: fal.ai Flux Pro\n+ GPT Image 2]
+    Image --> Video[Video: fal.ai Kling\noptional, polling]
+    Video --> Guardian[Guardian:\nClaude Opus 4.7 vision]
+    Guardian --> Score{score >= profile.pass_threshold?}
+    Score -->|No| HITL[status: hitl_required]
+    Score -->|Yes| Publish[Publish: Drizzle → Postgres DAM]
 
-    G -->|Hero image| T[Cloudflare R2]
-    G -->|Infographic| T
-    I -->|Video| T
-    T -->|Public URL| J
+    Image -->|asset URL| R2[Cloudflare R2]
+    Video --> R2
+    R2 -->|public URL| Guardian
 ```
 
-## Workspace Structure
+Every prompt is rendered from the **tenant's `brand_profile`** —
+guardian system prompt (`formatProfileForGuardian`), hero image prompt
+(`formatProfileForImagePrompt`), video prompt brand line, copy
+planner's tone descriptors and forbidden words. See ADR 0001 in
+`Claude_Code_Context/docs/adr/0001-tenant-brand-profile-jsonb.md`.
 
-```
-FF-Brand-Studio/
-├── packages/
-│   ├── types/          # @ff/types — Zod schemas for all tool I/O
-│   ├── brand-rules/    # @ff/brand-rules — ff-brand-rules.yaml + scoring helpers
-│   └── media-clients/  # @ff/media-clients — fal.ai, OpenAI, R2, Anthropic wrappers
-├── apps/
-│   ├── mcp-server/     # ff-mcp-server — Cloudflare Workers MCP server
-│   │   └── src/
-│   │       ├── tools/          # 6 MCP tools
-│   │       ├── workflows/      # Campaign orchestration pipeline
-│   │       ├── guardian/       # Brand Guardian (Claude Opus 4.7 vision)
-│   │       ├── db/             # Drizzle schema + client
-│   │       └── lib/            # Langfuse singleton
-│   └── dashboard/      # ff-dashboard — Next.js 15 asset + cost dashboard
-├── scripts/
-│   ├── schema.sql      # Postgres DDL — run once manually
-│   └── demo-run.ts     # End-to-end demo (bypasses Claude Desktop)
-└── plans/
-    └── active-plan.md  # Step-by-step build plan with acceptance criteria
-```
+## Repo layout
 
-## MCP Tools
+| Folder | Purpose |
+|---|---|
+| `apps/mcp-server/` | Cloudflare Worker — `/v1/*` REST + `/sse` MCP. Hono + Drizzle + zod. The whole backend. |
+| `apps/dashboard/` | Next.js 15 static export → Cloudflare Pages. Library, launches, settings, brand-profile editor. |
+| `apps/image-sidecar/` | Node + sharp on AWS App Runner — crops, composites, banner extends, white-bg force. Sharp can't run in Workers. |
+| `apps/proxy-worker/` | Tiny edge router — historical, kept for one legacy path. |
+| `packages/types/` | `@ff/types` — zod schemas re-exported by every consumer. |
+| `packages/brand-rules/` | The default FF brand profile (now used only as the fallback for tenants without their own `brand_profile`). |
+| `packages/seo-clients/` | DataForSEO + Apify wrappers. |
+| `packages/media-clients/` | fal.ai + OpenAI + Anthropic + R2 SDK helpers. |
+| `plans/` | Historical per-phase plans (interview-mode phases A–F, then SaaS phases G–O). New work tracked in the top-level `Claude_Code_Context/BFR_ECOSYSTEM_PLAN.md`. |
+| `docs/adr/` | ADRs. 0003 = image pipeline runtime split (Workers vs sidecar). |
+| `docs/RUNBOOK_*.md` | Activation playbooks: secret rotation, feature flags. |
+| `.github/workflows/` | CI, deploy, sidecar build (ECR), nightly Postgres dump, synthetic check. |
 
-| Tool | Description |
-|------|-------------|
-| `run_campaign` | Full pipeline: plan → copy → translate → image → (video) → score → publish |
-| `generate_brand_hero` | Flux Pro photoreal hero image, uploaded to R2 |
-| `generate_bilingual_infographic` | GPT Image 2 bilingual infographic, uploaded to R2 |
-| `localize_to_zh` | Two-pass Claude Sonnet translation (translate + native editor review) |
-| `score_brand_compliance` | Claude Opus 4.7 vision scoring against FF brand guidelines |
-| `publish_to_dam` | Insert asset record to Postgres DAM, return platform preview |
+## REST surface (the parts BFR-admin touches)
 
-## Campaign Pipeline
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/tenants/me/brand-profile` | Read the current tenant's brand profile (or the FF default if unset) |
+| PATCH | `/v1/tenants/me/brand-profile` | Update — onboarding path for a new brand (BFR, CERON, etc.) |
+| POST | `/v1/launches` | Trigger a full campaign workflow (planner → copy → translate → image → guardian → publish) |
+| POST | `/v1/integrations` | Register a webhook destination. SSRF-guarded — non-https / RFC1918 / metadata / private TLDs are rejected (Phase 6 P6.8) |
+| POST | `/v1/products/upload-intent` | Pre-signed R2 upload intent for a product image. **Currently fails on missing `org_id` JWT claim — see Phase 7 follow-up.** |
 
-```
-source_text
-    → Planner (Claude Sonnet) → 3 key points + EN drafts
-    → Copy (Claude Sonnet)    → refined EN LinkedIn/Weibo posts
-    → Translate (Claude Sonnet) → ZH LinkedIn/Weibo posts
-    → Image (Flux + GPT Img2)  → hero image + infographic → R2
-    → Video (Kling, optional)  → video asset → R2
-    → Guardian (Claude Opus)   → brand scorecard per asset
-    → HITL check (score < 70)  → return for human review OR publish
-    → Publish (Drizzle)        → Postgres DAM + platform previews
-```
+MCP-only tools (Claude Desktop):
+- `run_campaign`, `generate_brand_hero`, `generate_bilingual_infographic`, `localize_to_zh`, `score_brand_compliance`, `publish_to_dam`.
 
-## Brand Guardian Scoring
+Some MCP tools (`generate_bilingual_infographic`, `generate_brand_hero`, `localize_to_zh`, `pipeline/composite.ts`) still hardcode FF brand — deferred. The campaign workflow that BFR/Ceron use is fully tenant-aware.
 
-Scores each asset 0-100 across 5 dimensions:
+## Brand Guardian scoring
 
-| Dimension | Weight |
-|-----------|--------|
-| Color compliance (#1C3FAA, #00A8E8, #C9A84C palette) | 20% |
-| Typography (Maison Neue EN, Source Han Sans SC ZH) | 20% |
-| Logo placement (top-left / bottom-center / bottom-right) | 15% |
-| Image quality (studio-grade, no blur/artifacts) | 25% |
-| Copy tone (aspirational, no "cheap/discount/sale") | 20% |
+Per-tenant scoring across 5 dimensions. Weights live in the tenant's
+`brand_profile` (defaults match the FF profile for legacy compatibility):
 
-- **85+**: Auto-approved
-- **70-84**: Passes brand review
-- **< 70**: HITL required — returns `status: "hitl_required"` with full scorecards
+| Dimension | Default weight | Source field |
+|---|---|---|
+| Color compliance | 20% | `palette.primary`, `palette.neutrals`, `palette.accent` |
+| Typography | 20% | `fonts.heading`, `fonts.body` |
+| Logo placement | 15% | (heuristic) |
+| Image quality | 25% | (heuristic) |
+| Copy tone | 20% | `tone`, `forbidden_words`, `exclamation_rule` |
+
+Threshold per-tenant via `brand_profile.pass_threshold` (default 70).
+HITL fires below threshold.
 
 ## Setup
 
 ### Prerequisites
 
-1. Cloudflare account with Workers + R2 + KV access
-2. fal.ai account (Flux Pro + Kling) — get key at fal.ai
+1. Cloudflare account with Workers + R2 + KV
+2. fal.ai account (Flux Pro + Kling)
 3. OpenAI account with org verification for GPT Image 2
-4. Langfuse cloud account (free tier at cloud.langfuse.com)
-5. Postgres 15 on existing server — create database `ff_brand_studio`
+4. Anthropic API key (Claude Sonnet 4.6 + Opus 4.7)
+5. Langfuse cloud (free tier OK)
+6. Postgres 15 — shared host `170.9.252.93:5433`, database `ff_brand_studio`
 
-### 1. Create Postgres database
+### 1. Postgres
 
 ```bash
 psql -h 170.9.252.93 -p 5433 -U postgres -c "CREATE DATABASE ff_brand_studio;"
 psql -h 170.9.252.93 -p 5433 -U postgres -d ff_brand_studio -f scripts/schema.sql
+# Phase 1 migration adds brand_profile JSONB:
+psql -h 170.9.252.93 -p 5433 -U postgres -d ff_brand_studio -f drizzle/0027_tenant_brand_profile.sql
 ```
 
-### 2. Create Cloudflare resources
+### 2. Cloudflare
 
 ```bash
-# R2 bucket
 wrangler r2 bucket create ff-brand-studio-assets
 # Enable public access in Cloudflare dashboard → R2 → ff-brand-studio-assets → Settings → Public Access
-
-# KV namespace
 wrangler kv namespace create SESSION_CACHE
 # Copy the ID into wrangler.toml [[kv_namespaces]] id field
 ```
 
-### 3. Configure environment
+### 3. Env
 
 ```bash
 cp .env.example .env
-# Fill in all values in .env
+# Fill in all values
 ```
 
-### 4. Set Cloudflare secrets
+### 4. Worker secrets
 
 ```bash
 cd apps/mcp-server
@@ -175,9 +166,10 @@ wrangler secret put PGPASSWORD
 wrangler secret put LANGFUSE_PUBLIC_KEY
 wrangler secret put LANGFUSE_SECRET_KEY
 wrangler secret put R2_PUBLIC_URL
+wrangler secret put CLERK_SECRET_KEY     # Phase 7 follow-up — for server-side org resolution
 ```
 
-### 5. Install dependencies and deploy
+### 5. Install + deploy
 
 ```bash
 pnpm install
@@ -185,47 +177,47 @@ pnpm type-check
 pnpm --filter ff-mcp-server run deploy
 ```
 
-### 6. Configure Claude Desktop
+### 6. Claude Desktop (optional, only if you want MCP)
 
-Copy `claude_desktop_config.template.json`, fill in your Workers URL, and place at:
+Copy `claude_desktop_config.template.json`, fill in your Workers URL,
+and place at:
 - **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-### 7. Deploy dashboard
+### 7. Dashboard (Cloudflare Pages)
 
 ```bash
-# In AWS Amplify console:
-# 1. Connect this repo
-# 2. Set build spec: use apps/dashboard/amplify.yml
-# 3. Add environment variables (FF_PGHOST, FF_PGPASSWORD, etc.)
-# 4. Deploy
+wrangler pages deploy apps/dashboard/out --project-name ff-brand-studio
 ```
 
-## Local Development
+Set Pages env vars:
+- `NEXT_PUBLIC_API_BASE` = your Worker URL
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- Optional: `NEXT_PUBLIC_FALLBACK_API_KEY` for `?ff_api_key=` fallback
+
+## Local development
 
 ```bash
-# Start MCP server locally (Wrangler dev)
-pnpm --filter ff-mcp-server dev
-
-# Start dashboard locally
-pnpm --filter ff-dashboard dev
-
-# Run end-to-end demo (requires .env)
-pnpm tsx scripts/demo-run.ts
-
-# Type check all packages
-pnpm type-check
+pnpm --filter ff-mcp-server dev      # wrangler dev on port 8787
+pnpm --filter ff-dashboard dev       # next dev on port 3002
+pnpm tsx scripts/demo-run.ts         # end-to-end without Claude Desktop
+pnpm type-check                      # all packages
 ```
 
-## Decision Log
+## Onboarding a new brand
 
-| Decision | Rationale |
-|----------|-----------|
-| Cloudflare Workers (not Vercel) | Existing CreatoRain account, no cold start for SSE |
-| Postgres at 170.9.252.93 (not new DB) | Reuse existing infra, no new managed DB cost |
-| Claude Sonnet 4.6 for copy/translate | Cost-effective, EN→ZH quality sufficient |
-| Claude Opus 4.7 for guardian | Vision quality essential for brand scoring |
-| Plain TypeScript pipeline (not Mastra DSL) | Mastra's `Workflow` API was too experimental; TS pipeline is type-safe and debuggable |
-| fal.ai polling for Kling video | Kling jobs take 30-90s — polling is the correct async pattern |
-| GPT Image 2 for infographics | Best in class for text-in-image bilingual layouts |
-| HITL at score < 70 | Aligns with FF brand-rules.yaml `pass_threshold: 70` |
+1. POST a tenant row (or use the existing CreatoRain admin onboarding flow).
+2. Authenticate as that tenant.
+3. `PATCH /v1/tenants/me/brand-profile` with the brand's palette, fonts,
+   tone, forbidden words, threshold. See
+   `apps/mcp-server/src/lib/brand-profile.ts` for the typed shape.
+4. Verify by triggering `POST /v1/launches` and inspecting the
+   guardian scorecard — it must reference your palette, not FF blue.
+
+## Cross-references
+
+- Top-level ecosystem plan: `../creatorain/Claude_Code_Context/BFR_ECOSYSTEM_PLAN.md`
+- Architecture overview: `../creatorain/Claude_Code_Context/ARCHITECTURE.md`
+- ADRs: `../creatorain/Claude_Code_Context/docs/adr/` (0001 brand profile, 0002 storefront monorepo, 0003 queue choice, 0004 staff SSO)
+- Handoff doc (env setup, deploy gotchas): `HANDOFF.md` at repo root
+- Working agreement for Claude: `CLAUDE.md` at repo root (still has interview-mode language — refresh in a separate follow-up)

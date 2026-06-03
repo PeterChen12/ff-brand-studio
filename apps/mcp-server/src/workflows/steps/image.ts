@@ -3,10 +3,22 @@ import { generateBilingualInfographic } from "@ff/media-clients/openai";
 import { uploadToR2, uploadBase64ToR2 } from "@ff/media-clients/r2";
 import type { GeneratedAssetType, PlannerOutputType } from "@ff/types";
 import type Langfuse from "langfuse";
+import {
+  type BrandProfile,
+  FF_DEFAULT_PROFILE,
+  brandWordmark,
+  formatProfileForImagePrompt,
+  resolveBrandProfile,
+} from "../../lib/brand-profile.js";
 
 export interface ImageStepOutput {
   assets: GeneratedAssetType[];
 }
+
+// Phase 1 P1.3 / P1.4 — hero + infographic prompts no longer hardcode
+// "Faraday Future FF91 luxury electric vehicle" or the navy/gold
+// palette. Both render from the tenant's brand_profile (or FF default
+// for legacy callers that don't pass one). See lib/brand-profile.ts.
 
 export async function imageStep(params: {
   plannerOutput: PlannerOutputType;
@@ -17,14 +29,25 @@ export async function imageStep(params: {
   openaiKey: string;
   langfuse: Langfuse;
   traceId: string;
+  /** Per-tenant brand profile. Falls back to FF default if omitted. */
+  brandProfile?: BrandProfile | unknown;
 }): Promise<ImageStepOutput> {
   const trace = params.langfuse.trace({ id: params.traceId });
   const span = trace.span({ name: "image-generator" });
   const assets: GeneratedAssetType[] = [];
 
-  // Hero image — use first key point's visual brief
-  const heroBrief = params.plannerOutput.key_points[0]?.visual_brief ?? "Faraday Future FF91 luxury electric vehicle";
-  const heroPrompt = `Faraday Future electric vehicle. ${heroBrief}. Ultra-luxury automotive photography, cinematic lighting, dark moody atmosphere, deep navy #1C3FAA color story. Photorealistic, 8K quality, no text overlay, professional automotive photography.`;
+  const profile: BrandProfile = params.brandProfile
+    ? resolveBrandProfile(params.brandProfile)
+    : FF_DEFAULT_PROFILE;
+  const brandContext = formatProfileForImagePrompt(profile);
+
+  // Hero image — use first key point's visual brief. Fallback brief is
+  // now derived from the brand name + tone rather than hardcoded to FF.
+  const heroBrief =
+    params.plannerOutput.key_points[0]?.visual_brief ??
+    `${profile.name} hero product photography, ${profile.tone.descriptors.slice(0, 2).join(", ")}`;
+  const primaryHex = profile.palette.primary.hex;
+  const heroPrompt = `${brandContext} ${heroBrief}. Studio-grade product photography, cinematic lighting, brand-aligned color story (anchor on ${primaryHex}). Photorealistic, 8K quality, no text overlay, professional photography.`;
 
   try {
     const hero = await generateHeroImage({
@@ -62,14 +85,19 @@ export async function imageStep(params: {
       zh: p.headline_zh,
     }));
 
+    const neutral = profile.palette.neutrals?.[0]?.hex ?? "#0A0A0A";
+    const accent = profile.palette.accent?.hex ?? profile.palette.primary.hex;
+    const secondary = profile.palette.secondary?.hex ?? profile.palette.primary.hex;
+    const wordmark = brandWordmark(profile);
+
     const infographicPrompt = `Create a professional corporate infographic.
-BACKGROUND: Deep navy gradient from #0A0A0A to #1C3FAA.
-TITLE: English "Key Insights" in bold white 48px, Chinese "核心要点" in #00A8E8 32px below.
+BACKGROUND: Gradient from ${neutral} to ${primaryHex}.
+TITLE: English "Key Insights" in bold white 48px, Chinese "核心要点" in ${secondary} 32px below.
 CONTENT BLOCKS:
 ${points.map((p, i) => `Point ${i + 1}: English: "${p.en}" | Chinese: "${p.zh}"`).join("\n")}
-Each block: numbered badge, white English text, #00A8E8 Chinese below.
-FOOTER: Gold accent line #C9A84C, "FARADAY FUTURE" wordmark in small white caps.
-Clean corporate layout, no stock imagery, all text legible.`;
+Each block: numbered badge, white English text, ${secondary} Chinese below.
+FOOTER: Accent line ${accent}, "${wordmark}" wordmark in small white caps.
+Clean corporate layout matching ${profile.name} brand standards. No stock imagery, all text legible.`;
 
     try {
       const infographic = await generateBilingualInfographic({

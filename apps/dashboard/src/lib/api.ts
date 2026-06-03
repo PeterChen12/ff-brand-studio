@@ -11,52 +11,33 @@ export class ApiError extends Error {
   }
 }
 
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = b64 + "===".slice(0, (4 - (b64.length % 4)) % 4);
-    return JSON.parse(atob(padded));
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Phase G — auth-aware fetch wrapper.
+ * Auth-aware fetch wrapper.
  *
- * Source of truth for active org is `useAuth().orgId`. Server-side org
- * activation is owned by `OrgGate` (which calls `setActive` once on
- * mount). Do NOT call `session.touch()` here — it gets rate-limited
- * (429) when fired on every request and the touch failure leaves the
- * mint endpoint with stale state, producing tokens with no `org_id`.
+ * Token precedence:
+ *   1. ff_live_* fallback key from `?ff_api_key=` URL param (escape hatch
+ *      when Clerk is down / mis-configured).
+ *   2. Clerk session JWT via getToken().
+ *
+ * The Worker resolves the active organization from the JWT's `sub`
+ * claim if `org_id` isn't present — so the dashboard no longer depends
+ * on a Clerk JWT template being configured with `org_id: {{org.id}}`.
+ * When the user is in multiple orgs, we send `X-Org-Id` to
+ * disambiguate; the server returns 409 ambiguous_org otherwise.
  */
 export function useApiFetch() {
   const { getToken, isSignedIn, orgId } = useAuth();
   const fallbackKey = useFallbackKey();
   return useCallback(
     async <T = unknown>(path: string, init: RequestInit = {}): Promise<T> => {
-      // Fallback API key takes precedence over Clerk. It exists exactly
-      // because Clerk is failing (rate-limited, wrong instance, down) —
-      // checking Clerk first would defeat the escape hatch.
       let token: string | null = null;
       if (fallbackKey) {
         token = fallbackKey;
       } else if (isSignedIn) {
-        // Wrap getToken so a Clerk-side failure (dev-instance rate limit,
-        // network hiccup, expired session) surfaces as an ApiError with
-        // status 401 instead of bubbling up as a generic Error. Generic
-        // Errors hit the ErrorState "Couldn't load this view" fallback
-        // body, which gives the user no hint that re-signing-in would fix
-        // it. Status-401 path renders the proper "Your session expired"
-        // message + Sign-in CTA.
         try {
           token = await getToken({ skipCache: true, organizationId: orgId ?? undefined });
         } catch (clerkErr) {
           const msg = clerkErr instanceof Error ? clerkErr.message : String(clerkErr);
-          // eslint-disable-next-line no-console
-          console.warn("[clerk-getToken]", path, msg);
           throw new ApiError(
             401,
             { code: "clerk_token_unavailable", detail: msg },
@@ -64,24 +45,12 @@ export function useApiFetch() {
           );
         }
       }
-      if (token && typeof console !== "undefined") {
-        const payload = decodeJwtPayload(token);
-        // Use console.warn so the diagnostic survives filters that hide
-        // info-level logs. The JWT is a transient bearer with a 60s TTL
-        // and is already going to the network anyway — logging the
-        // claims has no marginal exposure. Dump full payload so we can
-        // see if Clerk is putting org context under a different key
-        // (e.g. compact `o.id` instead of `org_id`).
-        // eslint-disable-next-line no-console
-        console.warn("[jwt]", path, {
-          org_id: payload?.org_id,
-          sub: payload?.sub,
-          orgIdFromUseAuth: orgId,
-          allClaims: payload,
-        });
-      }
       const headers = new Headers(init.headers);
       if (token) headers.set("Authorization", `Bearer ${token}`);
+      // Forward the active org for server-side resolution. The Worker
+      // accepts this for any user authenticated via Clerk JWT and
+      // verifies membership before trusting it.
+      if (orgId && !fallbackKey) headers.set("X-Org-Id", orgId);
       if (!headers.has("Content-Type") && init.body) {
         headers.set("Content-Type", "application/json");
       }
@@ -99,10 +68,6 @@ export function useApiFetch() {
         const codePart = b?.code ? ` · ${b.code}` : "";
         const detailPart = b?.detail ? ` (${b.detail})` : "";
         const msg = `${res.status} ${res.statusText}${codePart}${detailPart} — ${path}`;
-        if (typeof console !== "undefined") {
-          // eslint-disable-next-line no-console
-          console.warn("[api]", msg, body);
-        }
         throw new ApiError(res.status, body, msg);
       }
       return body as T;
@@ -128,6 +93,7 @@ export function useApiDownload() {
         : null;
       const headers = new Headers();
       if (token) headers.set("Authorization", `Bearer ${token}`);
+      if (orgId && !fallbackKey) headers.set("X-Org-Id", orgId);
       const res = await fetch(`${MCP_URL}${path}`, { headers });
       if (!res.ok) {
         const text = await res.text().catch(() => "");

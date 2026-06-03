@@ -38,7 +38,12 @@ export function setScoreFn(fn: ScoreFn): void {
 
 export async function runCampaignWorkflow(
   params: RunCampaignInputType,
-  env: CloudflareBindings
+  env: CloudflareBindings,
+  /**
+   * Phase 1 P1.1 — optional tenant brand profile threaded into image
+   * + video + guardian steps. Omit to keep legacy FF-default behavior.
+   */
+  brandProfile?: unknown
 ): Promise<CampaignResult> {
   const campaignId = `camp-${Date.now()}`;
   const langfuse = getLangfuse(env);
@@ -50,6 +55,7 @@ export async function runCampaignWorkflow(
     anthropicKey: env.ANTHROPIC_API_KEY,
     langfuse,
     traceId,
+    brandProfile,
   });
 
   // Step 2: Copy
@@ -59,6 +65,7 @@ export async function runCampaignWorkflow(
     anthropicKey: env.ANTHROPIC_API_KEY,
     langfuse,
     traceId,
+    brandProfile,
   });
 
   // Step 3: Translate to ZH
@@ -79,6 +86,7 @@ export async function runCampaignWorkflow(
     openaiKey: env.OPENAI_API_KEY,
     langfuse,
     traceId,
+    brandProfile,
   });
 
   // Step 4b: Optional video
@@ -91,6 +99,7 @@ export async function runCampaignWorkflow(
       falKey: env.FAL_KEY,
       langfuse,
       traceId,
+      brandProfile,
     });
 
     if (videoOutput.videoAsset) {
@@ -107,6 +116,7 @@ export async function runCampaignWorkflow(
     scoreFn: _scoreFn,
     langfuse,
     traceId,
+    brandProfile,
   });
 
   // Step 6: HITL check — if any score < 70, return early for human review
