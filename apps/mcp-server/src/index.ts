@@ -2264,6 +2264,28 @@ app.post("/v1/integrations", async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400);
   }
   const { provider, accountLabel, config, status } = parsed.data;
+
+  // Phase 6 P6.8 — SSRF guard. If the adapter expects a baseUrl, reject
+  // any value that points at loopback, RFC1918 private space, cloud
+  // metadata service, or non-https. Pre-fix, a tenant could register
+  // an integration with baseUrl=http://169.254.169.254/... and we'd
+  // happily POST signed webhooks there.
+  const baseUrl = (config as Record<string, unknown>)?.baseUrl;
+  if (typeof baseUrl === "string" && baseUrl.length > 0) {
+    const { validateOutboundUrl, UnsafeBaseUrlError } = await import("./lib/ssrf-guard.js");
+    try {
+      validateOutboundUrl(baseUrl);
+    } catch (err) {
+      if (err instanceof UnsafeBaseUrlError) {
+        return c.json(
+          { error: "unsafe_base_url", reason: err.reason, value: err.value },
+          400
+        );
+      }
+      throw err;
+    }
+  }
+
   const db = createDbClient(c.env);
   const { encryptCredentials } = await import("./lib/crypto.js");
   const encryptedCredentials = await encryptCredentials(env.CREDENTIAL_KEK_HEX, config);
