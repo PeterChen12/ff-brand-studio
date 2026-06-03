@@ -36,7 +36,7 @@ import { predictLaunchCost, PRODUCT_ONBOARD_CENTS } from "./orchestrator/cost.js
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { requireTenant, type AuthVars } from "./lib/auth.js";
-import { rateLimitMiddleware } from "./lib/rate-limit.js";
+import { ipRateLimitMiddleware, rateLimitMiddleware } from "./lib/rate-limit.js";
 import { handleClerkWebhook } from "./lib/clerk-webhook.js";
 import { presignPutUrl, verifyR2Object } from "./lib/r2-presign.js";
 import { stageBfrProduct } from "./integrations/buyfishingrod-admin.js";
@@ -470,6 +470,13 @@ app.use("/v1/api-keys/*", rateLimitMiddleware);
 app.use("/v1/webhooks", rateLimitMiddleware);
 app.use("/v1/webhooks/*", rateLimitMiddleware);
 app.use("/v1/promo-codes/*", rateLimitMiddleware);
+
+// Phase 0 P0.6 — /demo/* are unauthenticated routes that still trigger
+// paid pipelines (SEO ~$0.10-0.50/call; launch-sku can run image gen if
+// dry_run=false). The per-tenant limiter above no-ops without auth, so
+// these endpoints were uncapped pre-fix. 10/hr/IP keeps demos working
+// for prospects/marketing while bounding wallet drain + grief risk.
+app.use("/demo/*", ipRateLimitMiddleware("demo", 10));
 
 // Phase A4 — Idempotency-Key on the launch endpoint. Network retries on
 // a 2-min synchronous launch are normal; without this, every retry
