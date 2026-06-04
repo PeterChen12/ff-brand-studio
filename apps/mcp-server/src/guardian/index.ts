@@ -1,31 +1,31 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { BrandScorecard } from "@ff/types";
 import type { BrandScorecardType } from "@ff/types";
+import {
+  type BrandProfile,
+  FF_DEFAULT_PROFILE,
+  formatProfileForGuardian,
+  resolveBrandProfile,
+} from "../lib/brand-profile.js";
 
-const GUARDIAN_SYSTEM = `You are the Faraday Future Brand Guardian — an expert visual compliance reviewer trained on FF brand guidelines.
-
-BRAND STANDARDS:
-- Primary Blue: #1C3FAA | Electric Blue: #00A8E8 | Accent Gold: #C9A84C | FF Black: #0A0A0A | FF White: #FFFFFF
-- Typography: Maison Neue (EN), Source Han Sans SC (ZH). Min H1: 32pt, H2: 24pt, Body: 14pt
-- Logo: min 80px wide, 40px clear space, allowed placements: top-left, bottom-center, bottom-right
-- Imagery: studio-grade or cinematic quality. No blur, compression artifacts, amateur lighting, or stock-photo feel
-- Copy tone: aspirational, precise, investor-grade, future-forward. NO exclamation marks. NEVER use: cheap, affordable, budget, discount, deal, sale, low cost, inexpensive
-- Scoring weights: color 20%, typography 20%, logo 15%, image quality 25%, copy tone 20%
-- Pass threshold: 70/100. Critical violations cap score at 40
-
-You will receive an asset (image URL or copy text) and must return a JSON scorecard ONLY — no prose, no markdown, pure JSON.`;
+// Phase 1 P1.2 — guardian no longer hardcodes Faraday Future brand
+// rules. The system prompt is now rendered per-tenant from
+// `tenants.brand_profile` (or the FF default for legacy/seed tenants).
+// See lib/brand-profile.ts for the shape + resolver logic.
 
 const GUARDIAN_USER_TEMPLATE = (
   assetType: string,
+  brandName: string,
+  passThreshold: number,
   copyEn?: string,
   copyZh?: string
-) => `Score this ${assetType} asset against FF brand guidelines.
+) => `Score this ${assetType} asset against ${brandName} brand guidelines.
 
 ${copyEn ? `ENGLISH COPY:\n${copyEn}\n\n` : ""}${copyZh ? `CHINESE COPY:\n${copyZh}\n\n` : ""}
 Return ONLY this JSON (no markdown fences):
 {
   "overall_score": <0-100 integer>,
-  "pass": <boolean, true if overall_score >= 70>,
+  "pass": <boolean, true if overall_score >= ${passThreshold}>,
   "dimensions": {
     "color_compliance": { "score": <0-100>, "notes": "<one sentence>" },
     "typography_compliance": { "score": <0-100>, "notes": "<one sentence>" },
@@ -49,12 +49,31 @@ export async function scoreBrandCompliance(params: {
   copyEn?: string;
   copyZh?: string;
   apiKey: string;
+  /**
+   * Phase 1 P1.2 — optional per-tenant brand profile. Pass the raw
+   * `tenants.brand_profile` JSONB straight through; the resolver
+   * handles null + malformed by falling back to FF defaults so the
+   * historical (pre-refactor) behavior is preserved for any caller
+   * that doesn't yet pass a profile.
+   */
+  brandProfile?: BrandProfile | unknown;
 }): Promise<BrandScorecardType> {
   const client = new Anthropic({ apiKey: params.apiKey });
 
+  const profile = params.brandProfile
+    ? resolveBrandProfile(params.brandProfile)
+    : FF_DEFAULT_PROFILE;
+  const systemPrompt = formatProfileForGuardian(profile);
+
   const isVideo = params.assetType === "video";
 
-  const userText = GUARDIAN_USER_TEMPLATE(params.assetType, params.copyEn, params.copyZh);
+  const userText = GUARDIAN_USER_TEMPLATE(
+    params.assetType,
+    profile.name,
+    profile.pass_threshold,
+    params.copyEn,
+    params.copyZh
+  );
 
   const contentBlocks: Anthropic.MessageParam["content"] = isVideo
     ? [{ type: "text", text: userText }]
@@ -66,10 +85,23 @@ export async function scoreBrandCompliance(params: {
         { type: "text", text: userText },
       ];
 
+  // Phase 6 P6.7 — Anthropic prompt caching. The guardian system prompt
+  // is the same across every call FOR THE SAME TENANT (resolved from
+  // `tenants.brand_profile`). Wrap in a content block with ephemeral
+  // cache so repeat asset scoring within the cache window hits the
+  // cache instead of paying full input cost. Threshold: only cache if
+  // the prompt is long enough to amortize the 1.25x write cost.
+  const systemParam =
+    systemPrompt.length >= 4096
+      ? ([
+          { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
+        ] as unknown as Anthropic.MessageCreateParams["system"])
+      : systemPrompt;
+
   const response = await client.messages.create({
     model: "claude-opus-4-7",
     max_tokens: 1024,
-    system: GUARDIAN_SYSTEM,
+    system: systemParam,
     messages: [{ role: "user", content: contentBlocks }],
   });
 
@@ -86,25 +118,26 @@ export async function scoreBrandCompliance(params: {
     parsed = JSON.parse(cleaned);
   } catch {
     // Return a fallback scorecard if JSON is malformed
-    return fallbackScorecard(`JSON parse error: ${cleaned.slice(0, 200)}`);
+    return fallbackScorecard(`JSON parse error: ${cleaned.slice(0, 200)}`, profile.pass_threshold);
   }
 
   const result = BrandScorecard.safeParse(parsed);
   if (!result.success) {
-    return fallbackScorecard(`Schema validation failed: ${result.error.message}`);
+    return fallbackScorecard(`Schema validation failed: ${result.error.message}`, profile.pass_threshold);
   }
 
-  // Enforce pass threshold consistency
+  // Enforce pass threshold consistency. Profile-driven threshold means
+  // a brand can be stricter or looser than the default 70.
   const scorecard = result.data;
-  scorecard.pass = scorecard.overall_score >= 70;
+  scorecard.pass = scorecard.overall_score >= profile.pass_threshold;
 
   return scorecard;
 }
 
-function fallbackScorecard(reason: string): BrandScorecardType {
+function fallbackScorecard(reason: string, passThreshold: number = 70): BrandScorecardType {
   return {
     overall_score: 50,
-    pass: false,
+    pass: 50 >= passThreshold,
     dimensions: {
       color_compliance: { score: 50, notes: "Could not assess — guardian error" },
       typography_compliance: { score: 50, notes: "Could not assess — guardian error" },

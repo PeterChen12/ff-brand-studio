@@ -25,6 +25,12 @@ export const tenants = pgTable(
     walletBalanceCents: integer("wallet_balance_cents").notNull().default(500),
     plan: text("plan").notNull().default("free"),
     features: jsonb("features").notNull().default({}),
+    // Phase 1 P1.1 — per-tenant brand standards consumed by guardian,
+    // hero-image prompt, infographic prompt, video prompt, and SEO
+    // planner. NULL falls back to hardcoded Faraday Future defaults
+    // (so legacy tenants see the same outputs as before this migration).
+    // See drizzle/0027_tenant_brand_profile.sql for the shape.
+    brandProfile: jsonb("brand_profile"),
     createdAt: timestamp("created_at").defaultNow(),
     // GDPR right-to-erasure state lives in the dedicated `tenant_deletions`
     // table (migration 0023). The earlier `deletion_*` columns on this

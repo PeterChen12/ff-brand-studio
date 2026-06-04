@@ -1162,6 +1162,38 @@ app.patch("/v1/tenants/me/preferences", async (c) => {
   return c.json({ ok: true, features: merged });
 });
 
+// ── Phase 1 P1.1/P1.7 — per-tenant brand profile ────────────────────────
+// Lets a tenant define the palette, typography, tone, logo rules, and
+// guardian weights consumed by the generation pipeline + guardian.
+// Validation is intentionally loose (jsonb passthrough) — the resolver
+// in lib/brand-profile.ts coerces malformed input back to FF defaults
+// rather than rejecting at the API boundary. This keeps a partial
+// migration from a tenant's UI editor (e.g. only filling in palette)
+// from 400-ing.
+
+app.get("/v1/tenants/me/brand-profile", async (c) => {
+  const tenant = c.get("tenant") as Tenant;
+  return c.json({ brand_profile: tenant.brandProfile ?? null });
+});
+
+app.patch("/v1/tenants/me/brand-profile", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "body must be a JSON object" }, 400);
+  }
+  const tenant = c.get("tenant") as Tenant;
+  const db = createDbClient(c.env);
+  // Deep-merge top-level keys so a tenant can update palette without
+  // re-sending typography. Set a top-level key to null to clear it.
+  const existing = (tenant.brandProfile ?? {}) as Record<string, unknown>;
+  const merged = { ...existing, ...(body as Record<string, unknown>) };
+  await db
+    .update(tenants)
+    .set({ brandProfile: merged })
+    .where(eq(tenants.id, tenant.id));
+  return c.json({ ok: true, brand_profile: merged });
+});
+
 // ── Phase H3 — Stripe top-up checkout session ────────────────────────────
 
 const CheckoutInput = z.object({
@@ -3651,21 +3683,32 @@ app.get("/health", async (c) => {
 // session falls through to legacy read-only sample data.
 app.get("/sse", async (c) => {
   const sessionId = crypto.randomUUID();
+  // Phase 1 P1.9 — MCP transport now requires a valid `ff_live_*` api_key.
+  // Pre-fix, an anonymous session would fall through to sample-tenant
+  // read-only data — but the agent could still drive tools that touched
+  // the DB (and would in Phase L become billable). Returning 401 forces
+  // the caller (Claude Desktop, Cursor, etc.) to provide credentials.
   const apiKey = c.req.query("api_key");
-  if (apiKey && apiKey.startsWith("ff_live_")) {
-    try {
-      const db = createDbClient(c.env);
-      const { verifyApiKey } = await import("./lib/api-keys.js");
-      const resolved = await verifyApiKey(c.env, db, apiKey);
-      if (resolved) {
-        sessionTenants.set(sessionId, {
-          tenantId: resolved.tenantId,
-          apiKeyId: resolved.apiKeyId,
-        });
-      }
-    } catch (err) {
-      console.warn("[/sse api_key resolve]", err);
+  if (!apiKey || !apiKey.startsWith("ff_live_")) {
+    return c.json(
+      { error: "missing_api_key", hint: "Pass ?api_key=ff_live_… to /sse — issue one via POST /v1/api-keys" },
+      401
+    );
+  }
+  try {
+    const db = createDbClient(c.env);
+    const { verifyApiKey } = await import("./lib/api-keys.js");
+    const resolved = await verifyApiKey(c.env, db, apiKey);
+    if (!resolved) {
+      return c.json({ error: "invalid_api_key" }, 401);
     }
+    sessionTenants.set(sessionId, {
+      tenantId: resolved.tenantId,
+      apiKeyId: resolved.apiKeyId,
+    });
+  } catch (err) {
+    console.warn("[/sse api_key resolve]", err);
+    return c.json({ error: "api_key_resolve_failed" }, 500);
   }
   const mcpServer = new McpServer({ name: "ff-brand-studio", version: "0.1.0" });
   registerAllTools(mcpServer, c.env);

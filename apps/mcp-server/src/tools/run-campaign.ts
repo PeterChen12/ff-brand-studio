@@ -4,7 +4,8 @@ import { runCampaignWorkflow, setScoreFn } from "../workflows/campaign.workflow.
 import { scoreBrandCompliance } from "../guardian/index.js";
 
 export function registerRunCampaign(server: McpServer, env: CloudflareBindings): void {
-  // Wire the real Brand Guardian score function into the workflow
+  // Wire the real Brand Guardian score function into the workflow.
+  // Phase 1 P1.2 — forwards brandProfile so guardian renders per-tenant.
   setScoreFn((params) =>
     scoreBrandCompliance({
       assetUrl: params.assetUrl,
@@ -12,6 +13,7 @@ export function registerRunCampaign(server: McpServer, env: CloudflareBindings):
       copyEn: params.copyEn,
       copyZh: params.copyZh,
       apiKey: params.apiKey,
+      brandProfile: params.brandProfile,
     })
   );
 
