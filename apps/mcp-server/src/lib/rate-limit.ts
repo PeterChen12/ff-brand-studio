@@ -144,3 +144,114 @@ export async function rateLimitMiddleware(
 
   await next();
 }
+
+// ── IP-based limiter for unauthenticated routes (e.g. /demo/*) ───────────
+//
+// Phase 0 P0.6 — the per-tenant `rateLimitMiddleware` above no-ops when
+// `c.get("tenant")` is unset (no auth header / no api key), so unauth'd
+// endpoints fell through with no ceiling. Demo routes still trigger paid
+// pipelines (SEO copy ~$0.10-0.50/call), making them a wallet-drain
+// vector even though dry_run defaults to true.
+//
+// SHA-256(ip) is used as the bucket key to avoid storing raw IPs (PII).
+// `scope` parameter lets different unauth'd surfaces have independent
+// budgets — e.g. /demo gets 10/hr while a future public health probe
+// could have a separate budget.
+
+const IP_WINDOW_SECONDS = 60 * 60; // 1-hour fixed window
+const DEFAULT_IP_LIMIT_PER_HOUR = 10;
+
+async function sha256Hex(input: string): Promise<Uint8Array> {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input)
+  );
+  return new Uint8Array(buf);
+}
+
+async function incrementIpWindow(
+  env: CloudflareBindings,
+  ipHash: Uint8Array,
+  scope: string
+): Promise<CounterResult | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const bucketKey = Math.floor(now / IP_WINDOW_SECONDS);
+  const reset = (bucketKey + 1) * IP_WINDOW_SECONDS;
+
+  try {
+    const db = createDbClient(env);
+    const rows = await db.execute(sql`
+      INSERT INTO rate_limit_ip_buckets (ip_hash, scope, bucket_key, count)
+      VALUES (${ipHash}::bytea, ${scope}, ${bucketKey}::bigint, 1)
+      ON CONFLICT (ip_hash, scope, bucket_key)
+      DO UPDATE SET count = rate_limit_ip_buckets.count + 1
+      RETURNING count
+    `);
+    const r = rows as unknown as Array<{ count: number }>;
+    const count = r[0]?.count ?? 1;
+
+    if (Math.random() < CLEANUP_PROBABILITY) {
+      void db
+        .execute(sql`
+          DELETE FROM rate_limit_ip_buckets
+          WHERE bucket_key < ${bucketKey}::bigint
+        `)
+        .catch(() => undefined);
+    }
+    return { count, reset };
+  } catch (err) {
+    console.warn("[rate-limit-ip] postgres increment failed:", err);
+    return null;
+  }
+}
+
+export function ipRateLimitMiddleware(
+  scope: string,
+  limitPerHour: number = DEFAULT_IP_LIMIT_PER_HOUR
+) {
+  return async (
+    c: Context<{ Bindings: CloudflareBindings }>,
+    next: Next
+  ): Promise<Response | void> => {
+    // Cloudflare populates CF-Connecting-IP for every request. Fall back to
+    // X-Forwarded-For (first hop) for local/dev contexts, then to a
+    // constant so we still apply *some* ceiling rather than failing open
+    // to unlimited.
+    const ip =
+      c.req.header("cf-connecting-ip") ||
+      c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
+      "unknown";
+
+    const ipHash = await sha256Hex(ip);
+    const counter = await incrementIpWindow(c.env, ipHash, scope);
+    if (!counter) {
+      // Migration not yet applied or DB unreachable — fail open with a
+      // single warning rather than 500ing the demo flow.
+      await next();
+      return;
+    }
+
+    const remaining = Math.max(0, limitPerHour - counter.count);
+    c.header("X-RateLimit-Limit", String(limitPerHour));
+    c.header("X-RateLimit-Remaining", String(remaining));
+    c.header("X-RateLimit-Reset", String(counter.reset));
+    c.header("X-RateLimit-Scope", scope);
+
+    if (counter.count > limitPerHour) {
+      const retryAfter = Math.max(1, counter.reset - Math.floor(Date.now() / 1000));
+      c.header("Retry-After", String(retryAfter));
+      return c.json(
+        {
+          error: "rate_limited",
+          scope,
+          limit: limitPerHour,
+          remaining: 0,
+          retry_after_seconds: retryAfter,
+        },
+        429
+      );
+    }
+
+    await next();
+  };
+}
