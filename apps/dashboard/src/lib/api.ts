@@ -55,22 +55,60 @@ export function useApiFetch() {
         headers.set("Content-Type", "application/json");
       }
 
-      const res = await fetch(`${MCP_URL}${path}`, { ...init, headers });
-      const text = await res.text();
-      let body: unknown = null;
-      try {
-        body = text ? JSON.parse(text) : null;
-      } catch {
-        body = text;
+      // Resilience: Workers cold-start and the network occasionally drop a
+      // request ("Failed to fetch"), and the worker can return a transient
+      // 5xx/429. Retry those a few times with backoff so a one-off blip
+      // doesn't dead-end the user mid-flow. Deterministic 4xx (auth,
+      // validation, out-of-stock) are NOT retried — they won't change.
+      const MAX_ATTEMPTS = 3;
+      const BACKOFF_MS = [400, 1200];
+      let lastNetworkErr: unknown = null;
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        let res: Response;
+        try {
+          res = await fetch(`${MCP_URL}${path}`, { ...init, headers });
+        } catch (networkErr) {
+          // fetch() itself rejected (TypeError "Failed to fetch"): DNS,
+          // CORS, connection reset, offline. Retry, then surface a clear
+          // network-level ApiError instead of a raw TypeError.
+          lastNetworkErr = networkErr;
+          if (attempt < MAX_ATTEMPTS - 1) {
+            await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+            continue;
+          }
+          const detail =
+            lastNetworkErr instanceof Error ? lastNetworkErr.message : String(lastNetworkErr);
+          throw new ApiError(
+            0,
+            { code: "network_unreachable", detail },
+            `Network unreachable — couldn't reach the service (${detail}). Check your connection and retry. — ${path}`
+          );
+        }
+
+        const text = await res.text();
+        let body: unknown = null;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          body = text;
+        }
+        if (!res.ok) {
+          // Retry transient server states; fail fast on everything else.
+          const transient = res.status === 429 || res.status >= 500;
+          if (transient && attempt < MAX_ATTEMPTS - 1) {
+            await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+            continue;
+          }
+          const b = body as { code?: string; detail?: string } | null;
+          const codePart = b?.code ? ` · ${b.code}` : "";
+          const detailPart = b?.detail ? ` (${b.detail})` : "";
+          const msg = `${res.status} ${res.statusText}${codePart}${detailPart} — ${path}`;
+          throw new ApiError(res.status, body, msg);
+        }
+        return body as T;
       }
-      if (!res.ok) {
-        const b = body as { code?: string; detail?: string } | null;
-        const codePart = b?.code ? ` · ${b.code}` : "";
-        const detailPart = b?.detail ? ` (${b.detail})` : "";
-        const msg = `${res.status} ${res.statusText}${codePart}${detailPart} — ${path}`;
-        throw new ApiError(res.status, body, msg);
-      }
-      return body as T;
+      // Unreachable — the loop either returns or throws — but TS needs it.
+      throw new ApiError(0, { code: "network_unreachable" }, `Network unreachable — ${path}`);
     },
     [getToken, isSignedIn, orgId, fallbackKey]
   );
