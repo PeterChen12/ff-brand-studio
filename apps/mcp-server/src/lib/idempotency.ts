@@ -124,12 +124,36 @@ export function idempotencyMiddleware() {
       );
     }
 
-    await next();
+    // Release the reserved key so a TRANSIENT failure (handler threw, or a
+    // 5xx) is retryable with the same key instead of being locked out with a
+    // 409 in-flight until the 24h sweeper purges it. This is what makes the
+    // "if a request errors the user can just retry" behavior actually work.
+    const releaseKey = () =>
+      db
+        .delete(idempotencyKeys)
+        .where(and(eq(idempotencyKeys.tenantId, tenant.id), eq(idempotencyKeys.keyHash, keyHash)))
+        .then(() => {})
+        .catch((e) => console.warn("[idempotency] key release failed", e));
+
+    try {
+      await next();
+    } catch (err) {
+      await releaseKey();
+      throw err;
+    }
+
+    const resp = c.res;
+    // A 5xx is transient — don't cache it (the client should be able to retry
+    // and succeed); release the key. Cache only deterministic responses
+    // (2xx success + 4xx client errors), so a genuine duplicate replays.
+    if (resp && resp.status >= 500) {
+      await releaseKey();
+      return;
+    }
 
     // Cache the handler's response. Re-read via clone since c.res is
     // already consumed by the time we get here.
     try {
-      const resp = c.res;
       if (resp) {
         const cloned = resp.clone();
         const respBody = await cloned.json().catch(() => null);

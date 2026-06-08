@@ -43,7 +43,7 @@ import { stageBfrProduct } from "./integrations/buyfishingrod-admin.js";
 import { resolveCredentials, requireString } from "./integrations/credentials.js";
 import { upsertDownstreamState } from "./integrations/downstream-state.js";
 import { claimEvent, markProcessed } from "./lib/webhook-inbox.js";
-import { chargeWallet, creditWallet, InsufficientFundsError } from "./lib/wallet.js";
+import { chargeWallet, creditWallet, getBalanceCents, InsufficientFundsError } from "./lib/wallet.js";
 import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
 import { auditEvent } from "./lib/audit.js";
 import { getStripe, priceIdForAmount, checkWebhookIdempotency } from "./lib/stripe.js";
@@ -487,6 +487,12 @@ app.use("/v1/launches", idempotencyMiddleware());
 // endpoint. A flaky network on the customer's side shouldn't double-
 // charge or create two products from the same draft.
 app.use("/v1/products/ingest", idempotencyMiddleware());
+// 2026-06-08 (D1) — the dashboard's bulk uploader auto-retries failed
+// requests, so a /v1/products POST that succeeds on the server but whose
+// response is lost would re-charge + duplicate the product. Idempotency
+// (keyed on the client's Idempotency-Key header) replays the original
+// response instead. No-ops on the GET list (POST-only middleware).
+app.use("/v1/products", idempotencyMiddleware());
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -611,7 +617,16 @@ function intentKey(tenantId: string, intentId: string): string {
 }
 
 const ProductCreateInput = z.object({
-  intent_id: z.string().min(1),
+  // Optional: the structured single/bulk path issues a per-product upload
+  // intent and sends its id (we validate uploaded_keys ⊆ intent.keys). The
+  // AGENTIC bulk path ("loose files → AI grouping") uploads everything under
+  // ONE shared classify intent and never had an id to send per product —
+  // it was POSTing with no intent_id against a required field, so EVERY
+  // agentic product create 400'd (agentic bulk was 100% broken, 2026-06-08
+  // audit). When omitted we validate uploaded_keys by tenant-prefix + the
+  // R2 HEAD existence check below, which is the intent's only real job once
+  // the images are up.
+  intent_id: z.string().min(1).optional(),
   sku: z.string().min(2).max(64).optional(),
   name_en: z.string().min(2).max(200),
   name_zh: z.string().max(200).optional(),
@@ -639,32 +654,47 @@ app.post("/v1/products", async (c) => {
   const tenant = c.get("tenant") as Tenant;
   const actor = c.get("actor") as string | undefined;
 
-  // 1. Verify intent matches tenant. P0-5 — KV key is now tenant-scoped
-  // so an intent ID guessed across tenants returns null instead of a
-  // valid record from someone else's session.
-  const intentRaw = await c.env.SESSION_KV.get(
-    intentKey(tenant.id, p.intent_id)
-  );
-  if (!intentRaw) {
-    throw new ApiError(400, "intent_expired_or_unknown", "Upload intent not found — re-issue from /v1/products/upload-intent.");
-  }
-  // P0-1 — try-parse so a corrupted KV payload returns 400 instead of
-  // crashing the whole request with a JSON.parse stack trace.
-  let intent: { tenant_id: string; keys: string[] };
-  try {
-    intent = JSON.parse(intentRaw) as { tenant_id: string; keys: string[] };
-  } catch (parseErr) {
-    console.error("[v1/products] corrupt intent payload", { intentId: p.intent_id, parseErr });
-    throw new ApiError(400, "intent_corrupt", "Upload intent payload is malformed — re-issue.");
-  }
-  if (intent.tenant_id !== tenant.id) {
-    // Defensive — should never trigger given the tenant-scoped key,
-    // but cheap to keep as a belt-and-braces guard.
-    throw new ApiError(403, "intent_tenant_mismatch", "Upload intent belongs to a different tenant.");
-  }
-  for (const key of p.uploaded_keys) {
-    if (!intent.keys.includes(key)) {
-      throw new ApiError(400, "uploaded_key_not_in_intent", `Key ${key} wasn't issued in the intent.`);
+  // 1. Validate ownership of the uploaded keys.
+  if (p.intent_id) {
+    // Structured path — verify intent matches tenant. P0-5 — KV key is now
+    // tenant-scoped so an intent ID guessed across tenants returns null
+    // instead of a valid record from someone else's session.
+    const intentRaw = await c.env.SESSION_KV.get(
+      intentKey(tenant.id, p.intent_id)
+    );
+    if (!intentRaw) {
+      throw new ApiError(400, "intent_expired_or_unknown", "Upload intent not found — re-issue from /v1/products/upload-intent.");
+    }
+    // P0-1 — try-parse so a corrupted KV payload returns 400 instead of
+    // crashing the whole request with a JSON.parse stack trace.
+    let intent: { tenant_id: string; keys: string[] };
+    try {
+      intent = JSON.parse(intentRaw) as { tenant_id: string; keys: string[] };
+    } catch (parseErr) {
+      console.error("[v1/products] corrupt intent payload", { intentId: p.intent_id, parseErr });
+      throw new ApiError(400, "intent_corrupt", "Upload intent payload is malformed — re-issue.");
+    }
+    if (intent.tenant_id !== tenant.id) {
+      // Defensive — should never trigger given the tenant-scoped key,
+      // but cheap to keep as a belt-and-braces guard.
+      throw new ApiError(403, "intent_tenant_mismatch", "Upload intent belongs to a different tenant.");
+    }
+    for (const key of p.uploaded_keys) {
+      if (!intent.keys.includes(key)) {
+        throw new ApiError(400, "uploaded_key_not_in_intent", `Key ${key} wasn't issued in the intent.`);
+      }
+    }
+  } else {
+    // Agentic path — no per-product intent. Keys are presigned under the
+    // tenant's own prefix (`tenant/<tid>/…`), so a key starting with this
+    // tenant's prefix can only have been PUT via a presigned URL we issued
+    // to this tenant. Reject anything else (prevents claiming another
+    // tenant's objects); the R2 HEAD check below confirms it really exists.
+    const prefix = `tenant/${tenant.id}/`;
+    for (const key of p.uploaded_keys) {
+      if (!key.startsWith(prefix)) {
+        throw new ApiError(403, "uploaded_key_not_owned", `Key ${key} is not in this tenant's namespace.`);
+      }
     }
   }
 
@@ -684,49 +714,20 @@ app.post("/v1/products", async (c) => {
 
   const db = createDbClient(c.env);
 
-  // 3. Charge the wallet (rejects on insufficient funds)
-  try {
-    await chargeWallet(db, {
-      tenantId: tenant.id,
-      cents: PRODUCT_ONBOARD_CENTS,
-      reason: "image_gen", // closest existing reason; "product_onboard" added Phase L
-      referenceType: "product",
-    });
-  } catch (err) {
-    if (err instanceof InsufficientFundsError) {
-      return c.json(
-        { error: "wallet_insufficient", balance_cents: err.balanceCents, required_cents: err.requestedCents },
-        402
-      );
-    }
-    throw err;
+  // 3. Cheap balance pre-check BEFORE the Sonnet call, so a broke tenant
+  //    gets a fast 402 without burning model tokens. The authoritative,
+  //    atomic debit happens inside the transaction below.
+  const balance = await getBalanceCents(db, tenant.id);
+  if (balance < PRODUCT_ONBOARD_CENTS) {
+    return c.json(
+      { error: "wallet_insufficient", balance_cents: balance, required_cents: PRODUCT_ONBOARD_CENTS },
+      402
+    );
   }
 
-  // 4. Ensure seller_profiles row exists for the tenant
-  let sellerId: string;
-  const [existingSeller] = await db
-    .select({ id: sellerProfiles.id })
-    .from(sellerProfiles)
-    .where(eq(sellerProfiles.tenantId, tenant.id))
-    .limit(1);
-
-  if (existingSeller) {
-    sellerId = existingSeller.id;
-  } else {
-    const [newSeller] = await db
-      .insert(sellerProfiles)
-      .values({
-        tenantId: tenant.id,
-        orgNameEn: tenant.name,
-        contactEmail: null,
-      })
-      .returning({ id: sellerProfiles.id });
-    sellerId = newSeller.id;
-  }
-
-  // 5. Derive category + kind via Sonnet when the dashboard didn't
-  //    pass them (Issue 3). Falls back to "other" / "compact_square"
-  //    on missing key or model failure so onboarding never blocks.
+  // 4. Derive category + kind via Sonnet when the dashboard didn't pass
+  //    them (Issue 3). Network call — kept OUTSIDE the transaction so we
+  //    never hold the (max:1) DB connection open across a model round-trip.
   let resolvedCategory = p.category;
   let resolvedKind = p.kind;
   if (!resolvedCategory || !resolvedKind) {
@@ -739,74 +740,119 @@ app.post("/v1/products", async (c) => {
     resolvedKind = resolvedKind ?? derived.kind;
   }
 
-  // 6. Create product + default variant + reference rows in one go
+  // 5. Create the product + default variant + reference rows AND charge the
+  //    wallet in ONE transaction so they commit or roll back together.
+  //    Pre-fix the wallet was charged BEFORE the insert with no transaction
+  //    (D1, 2026-06-08 audit): a failure between charge and insert lost the
+  //    customer's money for no product. Charging LAST inside the tx means an
+  //    insufficient-funds race rolls the product back; any insert failure
+  //    rolls the charge back. (Double-charge on network retry is covered by
+  //    the idempotency middleware on this route.)
   const sku = p.sku ?? `${tenant.id.slice(0, 6).toUpperCase()}-${nanoid(8).toUpperCase()}`;
-
-  const [product] = await db
-    .insert(products)
-    .values({
-      tenantId: tenant.id,
-      sellerId,
-      sku,
-      nameEn: p.name_en,
-      nameZh: p.name_zh ?? null,
-      description: p.description?.trim() || null,
-      category: resolvedCategory,
-      kind: resolvedKind ?? "compact_square",
-      dimensions: p.dimensions ?? null,
-      materials: p.materials ?? null,
-      colorsHex: p.colors_hex ?? null,
-    })
-    .returning();
-
-  const [variant] = await db
-    .insert(productVariants)
-    .values({
-      tenantId: tenant.id,
-      productId: product.id,
-      color: null,
-      pattern: null,
-    })
-    .returning();
-
   const PUBLIC_HOST = "https://pub-db3f39e3386347d58359ba96517eec84.r2.dev";
-  await db.insert(productReferences).values(
-    p.uploaded_keys.map((key) => ({
-      tenantId: tenant.id,
-      productId: product.id,
-      r2Url: `${PUBLIC_HOST}/${key}`,
-      kind: "uploaded",
-      uploadedBy: actor ?? null,
-    }))
-  );
 
-  await auditEvent(db, {
-    tenantId: tenant.id,
-    actor: actor ?? null,
-    action: "product.create",
-    targetType: "product",
-    targetId: product.id,
-    metadata: {
-      sku,
-      reference_count: p.uploaded_keys.length,
-      onboard_cents: PRODUCT_ONBOARD_CENTS,
-    },
-  });
+  try {
+    const { product, variant } = await db.transaction(async (tx) => {
+      // Ensure seller_profiles row exists for the tenant
+      let sellerId: string;
+      const [existingSeller] = await tx
+        .select({ id: sellerProfiles.id })
+        .from(sellerProfiles)
+        .where(eq(sellerProfiles.tenantId, tenant.id))
+        .limit(1);
+      if (existingSeller) {
+        sellerId = existingSeller.id;
+      } else {
+        const [newSeller] = await tx
+          .insert(sellerProfiles)
+          .values({ tenantId: tenant.id, orgNameEn: tenant.name, contactEmail: null })
+          .returning({ id: sellerProfiles.id });
+        sellerId = newSeller.id;
+      }
 
-  // Clean up the intent (best-effort)
-  c.env.SESSION_KV.delete(intentKey(tenant.id, p.intent_id)).catch(() => {});
+      const [createdProduct] = await tx
+        .insert(products)
+        .values({
+          tenantId: tenant.id,
+          sellerId,
+          sku,
+          nameEn: p.name_en,
+          nameZh: p.name_zh ?? null,
+          description: p.description?.trim() || null,
+          category: resolvedCategory,
+          kind: resolvedKind ?? "compact_square",
+          dimensions: p.dimensions ?? null,
+          materials: p.materials ?? null,
+          colorsHex: p.colors_hex ?? null,
+        })
+        .returning();
 
-  return c.json({
-    product_id: product.id,
-    sku: product.sku,
-    variant_id: variant.id,
-    references_created: p.uploaded_keys.length,
-    // Issue 3 — surface derived category/kind so the dashboard can
-    // show them in the next-step UI (e.g. "AI classified this as a
-    // fishing rod"). Operators can override later via product edit.
-    category: product.category,
-    kind: product.kind,
-  });
+      const [createdVariant] = await tx
+        .insert(productVariants)
+        .values({ tenantId: tenant.id, productId: createdProduct.id, color: null, pattern: null })
+        .returning();
+
+      await tx.insert(productReferences).values(
+        p.uploaded_keys.map((key) => ({
+          tenantId: tenant.id,
+          productId: createdProduct.id,
+          r2Url: `${PUBLIC_HOST}/${key}`,
+          kind: "uploaded",
+          uploadedBy: actor ?? null,
+        }))
+      );
+
+      // Charge LAST — InsufficientFunds here rolls back the inserts above.
+      await chargeWallet(tx, {
+        tenantId: tenant.id,
+        cents: PRODUCT_ONBOARD_CENTS,
+        reason: "image_gen", // closest existing reason; "product_onboard" added Phase L
+        referenceType: "product",
+        referenceId: createdProduct.id,
+      });
+
+      return { product: createdProduct, variant: createdVariant };
+    });
+
+    // Audit + intent cleanup — best-effort, outside the tx. A logging hiccup
+    // must never 500 a create whose product + charge already committed.
+    try {
+      await auditEvent(db, {
+        tenantId: tenant.id,
+        actor: actor ?? null,
+        action: "product.create",
+        targetType: "product",
+        targetId: product.id,
+        metadata: { sku, reference_count: p.uploaded_keys.length, onboard_cents: PRODUCT_ONBOARD_CENTS },
+      });
+    } catch (auditErr) {
+      console.warn("[v1/products] audit log failed (non-fatal)", auditErr);
+    }
+    if (p.intent_id) {
+      c.env.SESSION_KV.delete(intentKey(tenant.id, p.intent_id)).catch(() => {});
+    }
+
+    return c.json({
+      product_id: product.id,
+      sku: product.sku,
+      variant_id: variant.id,
+      references_created: p.uploaded_keys.length,
+      // Issue 3 — surface derived category/kind so the dashboard can show
+      // them in the next-step UI. Operators can override later via edit.
+      category: product.category,
+      kind: product.kind,
+    });
+  } catch (err) {
+    // Rare race: balance dropped between the pre-check and the in-tx charge.
+    // The transaction rolled back, so no orphan product exists.
+    if (err instanceof InsufficientFundsError) {
+      return c.json(
+        { error: "wallet_insufficient", balance_cents: err.balanceCents, required_cents: err.requestedCents },
+        402
+      );
+    }
+    throw err;
+  }
 });
 
 // ── Phase B (B1) — inbound ingest from a customer admin ──────────────────
