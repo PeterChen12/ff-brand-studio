@@ -561,18 +561,35 @@ export default function BulkUploadPageInner() {
     });
   }
 
+  // Bounded-concurrency pool (D2, 2026-06-08). The old sequential loop took
+  // ~N × per-product time and timed out the browser/Worker on 20+ products.
+  // Run a few uploads at once instead. Kept modest (3) so we stay well under
+  // the Worker rate limit — paired with the apiFetch 429/5xx auto-retry, this
+  // absorbs bursts without a server-side change. Each create carries a stable
+  // Idempotency-Key, so a retried request can't double-charge.
+  const SUBMIT_CONCURRENCY = 3;
+
   async function submitAll() {
     setSubmitting(true);
     setCompleted(false);
-    for (const p of products) {
-      if (p.blocking) continue;
-      try {
-        await uploadOne(p);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setProductStatus(p.id, { status: "failed", error: msg });
+    // D6-lite: skip rows already created (e.g. a re-submit after a partial
+    // failure) so we never re-charge / duplicate a product within the session.
+    const queue = products.filter((p) => !p.blocking && p.status !== "created");
+    let cursor = 0;
+    const runNext = async (): Promise<void> => {
+      while (cursor < queue.length) {
+        const p = queue[cursor++];
+        try {
+          await uploadOne(p);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setProductStatus(p.id, { status: "failed", error: msg });
+        }
       }
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(SUBMIT_CONCURRENCY, queue.length) }, () => runNext())
+    );
     setSubmitting(false);
     setCompleted(true);
   }
