@@ -14,8 +14,8 @@
  * builds on chargeWallet for Stripe top-ups.
  */
 
-import { eq, sql } from "drizzle-orm";
-import type { DbClient } from "../db/client.js";
+import { and, eq, sql } from "drizzle-orm";
+import type { DbClient, DbOrTx } from "../db/client.js";
 import { tenants, walletLedger, type WalletLedgerEntry } from "../db/schema.js";
 
 export class InsufficientFundsError extends Error {
@@ -53,27 +53,46 @@ export interface WalletChangeResult {
 }
 
 async function applyDelta(
-  db: DbClient,
+  db: DbOrTx,
   input: WalletChangeInput,
   delta: number
 ): Promise<WalletChangeResult> {
-  const [tenant] = await db
-    .select({
-      id: tenants.id,
-      balance: tenants.walletBalanceCents,
-    })
-    .from(tenants)
-    .where(eq(tenants.id, input.tenantId))
-    .limit(1);
+  // Atomic conditional update. The previous read-then-write had a TOCTOU
+  // race: two concurrent charges could both read the same balance, both
+  // pass the projected>=0 check, and together overspend below zero. Doing
+  // the debit as a single `SET balance = balance + delta WHERE … AND
+  // balance + delta >= 0` makes the guard atomic at the row level. For a
+  // credit (delta >= 0) the guard is a no-op so it always applies.
+  const guard =
+    delta < 0
+      ? and(
+          eq(tenants.id, input.tenantId),
+          sql`${tenants.walletBalanceCents} + ${delta} >= 0`
+        )
+      : eq(tenants.id, input.tenantId);
 
-  if (!tenant) {
-    throw new Error(`tenant not found: ${input.tenantId}`);
+  const updated = await db
+    .update(tenants)
+    .set({ walletBalanceCents: sql`${tenants.walletBalanceCents} + ${delta}` })
+    .where(guard)
+    .returning({ balance: tenants.walletBalanceCents });
+
+  if (updated.length === 0) {
+    // No row updated: either the tenant doesn't exist, or (debit) the
+    // balance would have gone negative. Read to distinguish + build a
+    // precise InsufficientFundsError.
+    const [t] = await db
+      .select({ balance: tenants.walletBalanceCents })
+      .from(tenants)
+      .where(eq(tenants.id, input.tenantId))
+      .limit(1);
+    if (!t) {
+      throw new Error(`tenant not found: ${input.tenantId}`);
+    }
+    throw new InsufficientFundsError(t.balance, Math.abs(delta));
   }
 
-  const projected = tenant.balance + delta;
-  if (projected < 0) {
-    throw new InsufficientFundsError(tenant.balance, Math.abs(delta));
-  }
+  const projected = updated[0].balance;
 
   const [ledgerRow] = await db
     .insert(walletLedger)
@@ -87,30 +106,25 @@ async function applyDelta(
     })
     .returning();
 
-  await db
-    .update(tenants)
-    .set({ walletBalanceCents: projected })
-    .where(eq(tenants.id, input.tenantId));
-
   return { balanceAfterCents: projected, ledgerRow };
 }
 
 export function chargeWallet(
-  db: DbClient,
+  db: DbOrTx,
   input: WalletChangeInput
 ): Promise<WalletChangeResult> {
   return applyDelta(db, input, -Math.abs(input.cents));
 }
 
 export function creditWallet(
-  db: DbClient,
+  db: DbOrTx,
   input: WalletChangeInput
 ): Promise<WalletChangeResult> {
   return applyDelta(db, input, Math.abs(input.cents));
 }
 
 export async function getBalanceCents(
-  db: DbClient,
+  db: DbOrTx,
   tenantId: string
 ): Promise<number> {
   const [row] = await db

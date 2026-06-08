@@ -493,12 +493,17 @@ export default function BulkUploadPageInner() {
     const isCjk = /[一-鿿㐀-䶿]/.test(p.name);
 
     // Agentic path — images already in R2; create the product directly.
+    // No intent_id (the shared classify intent isn't per-product); the
+    // server validates the keys by tenant-prefix. The Idempotency-Key
+    // (stable per product, derived from its first R2 key) makes the
+    // apiFetch auto-retry safe — a lost response won't double-charge.
     if (p.uploadedKeys.length > 0) {
       setProductStatus(p.id, { status: "creating" });
       const created = await apiFetch<{ product_id: string; sku: string }>(
         "/v1/products",
         {
           method: "POST",
+          headers: { "Idempotency-Key": `product:${p.uploadedKeys[0]}` },
           body: JSON.stringify({
             name_en: p.name,
             name_zh: isCjk ? p.name : undefined,
@@ -537,6 +542,10 @@ export default function BulkUploadPageInner() {
       "/v1/products",
       {
         method: "POST",
+        // Idempotency-Key keyed on the (unique, per-product) intent id so
+        // the apiFetch auto-retry can't double-charge / duplicate on a
+        // lost response.
+        headers: { "Idempotency-Key": `product:${intent.intent_id}` },
         body: JSON.stringify({
           intent_id: intent.intent_id,
           name_en: p.name,
