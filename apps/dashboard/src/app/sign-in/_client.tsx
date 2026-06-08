@@ -26,19 +26,22 @@ export default function SignInPage() {
           signUpUrl="/sign-up"
           fallbackRedirectUrl="/"
         />
-        {/* Discoverable escape hatch: a user who can't sign in (Clerk down,
-            forgot password, rate-limited, etc.) can hit /backup and paste
-            their ff_live_ key. This link is the only way most users will
-            ever learn the route exists, so keep it visible but not noisy. */}
-        <p className="mt-6 text-center md-typescale-body-small text-on-surface-variant/70">
-          Having trouble?{" "}
+        {/* Prominent escape hatch. Google/Clerk sign-in is fragile (e.g.
+            Google OAuth "Missing client_id" when the prod Clerk instance has
+            no Google app configured), so during internal testing the backup
+            key is the reliable way in. Make it a real button, not a footnote. */}
+        <div className="mt-6 rounded-m3-lg border ff-hairline bg-surface-container-low p-4 text-center">
+          <p className="md-typescale-body-small text-on-surface-variant mb-3">
+            Sign-in not working? (e.g. Google login error) — use a backup
+            access key instead. It works even when Clerk is down.
+          </p>
           <a
             href="/backup"
-            className="text-primary hover:underline font-medium"
+            className="inline-block rounded-m3-full bg-primary px-5 py-2.5 font-medium tracking-wide text-on-primary hover:opacity-90"
           >
-            Use backup access
+            Backup access · 应急通道
           </a>
-        </p>
+        </div>
       </div>
     </div>
   );
