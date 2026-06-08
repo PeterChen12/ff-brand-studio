@@ -40,7 +40,7 @@ export async function compressImage(file: File): Promise<File> {
   });
 }
 
-export async function putToR2(
+function putToR2Once(
   presignedUrl: string,
   file: File,
   onProgress?: (uploaded: number, total: number) => void
@@ -56,11 +56,46 @@ export async function putToR2(
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`R2 PUT ${xhr.status}: ${xhr.responseText.slice(0, 200)}`));
+      else {
+        const err = new Error(`R2 PUT ${xhr.status}: ${xhr.responseText.slice(0, 200)}`);
+        (err as { status?: number }).status = xhr.status;
+        reject(err);
+      }
     };
-    xhr.onerror = () => reject(new Error("R2 PUT network error"));
+    xhr.onerror = () => {
+      const err = new Error("R2 PUT network error");
+      (err as { status?: number }).status = 0;
+      reject(err);
+    };
     xhr.send(file);
   });
+}
+
+export async function putToR2(
+  presignedUrl: string,
+  file: File,
+  onProgress?: (uploaded: number, total: number) => void
+): Promise<void> {
+  // Retry transient R2 failures (network drop / 5xx) with backoff so a flaky
+  // connection mid-bulk doesn't leave a product referencing a missing image
+  // (which the server then rejects after the wallet is charged). Fail FAST on
+  // 4xx — an expired/invalid presigned signature won't succeed on retry of
+  // the same URL (the longer TTL below + a future refresh-on-403 cover that).
+  const MAX_ATTEMPTS = 3;
+  const BACKOFF_MS = [400, 1200];
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      return await putToR2Once(presignedUrl, file, onProgress);
+    } catch (e) {
+      const status = (e as { status?: number }).status ?? 0;
+      const transient = status === 0 || status >= 500;
+      if (transient && attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+        continue;
+      }
+      throw e;
+    }
+  }
 }
 
 export function extractExt(file: File): "jpg" | "jpeg" | "png" | "webp" | null {
