@@ -490,9 +490,13 @@ app.use("/v1/products/ingest", idempotencyMiddleware());
 // 2026-06-08 (D1) — the dashboard's bulk uploader auto-retries failed
 // requests, so a /v1/products POST that succeeds on the server but whose
 // response is lost would re-charge + duplicate the product. Idempotency
-// (keyed on the client's Idempotency-Key header) replays the original
-// response instead. No-ops on the GET list (POST-only middleware).
-app.use("/v1/products", idempotencyMiddleware());
+// (keyed on the client's Idempotency-Key header) replays the original 2xx
+// instead. releaseOnFailure is SAFE here ONLY because the wallet debit is
+// the last op inside the insert transaction and nothing throws after it
+// commits, so any non-2xx ⇒ no charge ⇒ the key can be dropped for retry.
+// (Keep that invariant — see the post-transaction section of the handler.)
+// No-ops on the GET list (POST-only middleware).
+app.use("/v1/products", idempotencyMiddleware({ releaseOnFailure: true }));
 
 // ── Phase H1 — self-serve product upload ─────────────────────────────────
 
@@ -816,6 +820,10 @@ app.post("/v1/products", async (c) => {
 
     // Audit + intent cleanup — best-effort, outside the tx. A logging hiccup
     // must never 500 a create whose product + charge already committed.
+    // INVARIANT (do not break): nothing below may throw. The idempotency
+    // middleware on this route uses releaseOnFailure, which is only safe
+    // because a thrown handler ⇒ no committed charge. Keep post-commit work
+    // wrapped/best-effort so the charge↔2xx-response coupling holds.
     try {
       await auditEvent(db, {
         tenantId: tenant.id,

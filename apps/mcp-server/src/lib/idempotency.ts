@@ -30,7 +30,20 @@ async function sha256Hex(text: string): Promise<string> {
   return hex;
 }
 
-export function idempotencyMiddleware() {
+/**
+ * @param options.releaseOnFailure  When true, a non-2xx response (or a thrown
+ *   handler) DROPS the reserved key so the client can retry with the same key
+ *   instead of being locked out (a cached error / 24h tombstone). ONLY safe on
+ *   routes where a non-success provably means NO charge committed — i.e. the
+ *   wallet debit is the LAST op inside the insert transaction and nothing can
+ *   throw after the transaction commits (POST /v1/products). Do NOT enable it
+ *   on charge-before-insert routes (e.g. /v1/products/ingest) — there a 5xx
+ *   after the charge would release the key and a retry would double-charge.
+ *   Default false = Stripe-style tombstone (cache every response, never
+ *   re-charge), which is the safe choice for /launches and /ingest.
+ */
+export function idempotencyMiddleware(options: { releaseOnFailure?: boolean } = {}) {
+  const releaseOnFailure = options.releaseOnFailure === true;
   return async function (c: Context, next: Next): Promise<Response | void> {
     if (c.req.method !== "POST") {
       await next();
@@ -124,10 +137,9 @@ export function idempotencyMiddleware() {
       );
     }
 
-    // Release the reserved key so a TRANSIENT failure (handler threw, or a
-    // 5xx) is retryable with the same key instead of being locked out with a
-    // 409 in-flight until the 24h sweeper purges it. This is what makes the
-    // "if a request errors the user can just retry" behavior actually work.
+    // Drop the reserved key so the client can retry with the SAME key rather
+    // than being locked out. Only used when releaseOnFailure is enabled (a
+    // money-safe route where a non-success means no charge committed).
     const releaseKey = () =>
       db
         .delete(idempotencyKeys)
@@ -138,21 +150,30 @@ export function idempotencyMiddleware() {
     try {
       await next();
     } catch (err) {
-      await releaseKey();
+      // A throw means the handler errored. On a releaseOnFailure route the
+      // charge can only commit on the success path, so a throw ⇒ no charge ⇒
+      // safe to release for retry. On a default (tombstone) route we leave the
+      // in-flight row so a retry can't re-run a possibly-charged handler.
+      if (releaseOnFailure) await releaseKey();
       throw err;
     }
 
     const resp = c.res;
-    // A 5xx is transient — don't cache it (the client should be able to retry
-    // and succeed); release the key. Cache only deterministic responses
-    // (2xx success + 4xx client errors), so a genuine duplicate replays.
-    if (resp && resp.status >= 500) {
+    const is2xx = !!resp && resp.status >= 200 && resp.status < 300;
+
+    if (releaseOnFailure && resp && !is2xx) {
+      // Non-2xx on a money-safe route: the handler did NOT commit a charge
+      // (debit is the last op in the tx; insufficient-funds rolls back to a
+      // 402; nothing throws after commit). Drop the key so the client can
+      // retry — including a 402 that becomes payable after a top-up — with
+      // zero double-charge risk.
       await releaseKey();
       return;
     }
 
-    // Cache the handler's response. Re-read via clone since c.res is
-    // already consumed by the time we get here.
+    // Cache the handler's response so a genuine duplicate (e.g. the auto-retry
+    // of a request whose 2xx response was lost in transit) REPLAYS it instead
+    // of re-charging. Re-read via clone since c.res is already consumed.
     try {
       if (resp) {
         const cloned = resp.clone();
