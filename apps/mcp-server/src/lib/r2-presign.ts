@@ -45,7 +45,11 @@ const CONTENT_TYPE_FOR: Record<string, string> = {
 export async function presignPutUrl(input: PresignInput): Promise<PresignedUrl> {
   const ext = input.ext;
   const key = `tenant/${input.tenantId}/uploads/${input.intentId}/${input.index}.${ext}`;
-  const expires = input.expiresInSeconds ?? 600; // 10 min
+  // 30 min (was 10). Bulk uploads (many products × many images, sequential)
+  // routinely exceed 10 min on slower connections, so the earliest-signed
+  // URLs were expiring (403) mid-batch. Still well inside the 3600s intent
+  // TTL. Pairs with the client-side R2 PUT retry.
+  const expires = input.expiresInSeconds ?? 1800;
   const contentType = input.contentType ?? CONTENT_TYPE_FOR[ext];
 
   const client = new AwsClient({
