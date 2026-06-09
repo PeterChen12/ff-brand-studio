@@ -235,17 +235,43 @@ export function LaunchWizard({ mcpUrl: _mcpUrl }: { mcpUrl: string }) {
   );
 
   // ── Load products ─────────────────────────────────────────────────────
+  // Page through ALL products via the endpoint's cursor — the old `?limit=50`
+  // (consumer ignored hasMore/nextCursor) silently hid every product past the
+  // 50th from the SKU picker, so a tenant with >50 SKUs couldn't launch the
+  // older ones. (Surfaced by the qa `unpaginated-list` runner.)
   useEffect(() => {
-    apiFetch<{ products: ProductRow[] }>("/v1/products?limit=50")
-      .then((d) => {
-        setProducts(d.products ?? []);
-        if ((d.products?.length ?? 0) > 0 && !productId) {
-          setProductId(d.products[0].id);
+    let cancelled = false;
+    (async () => {
+      try {
+        const all: ProductRow[] = [];
+        let cursor: string | undefined;
+        for (let guard = 0; guard < 50; guard++) {
+          const qs = cursor
+            ? `?limit=100&cursor=${encodeURIComponent(cursor)}`
+            : "?limit=100";
+          const d = await apiFetch<{
+            products: ProductRow[];
+            hasMore?: boolean;
+            nextCursor?: string | null;
+          }>(`/v1/products${qs}`);
+          all.push(...(d.products ?? []));
+          if (!d.hasMore || !d.nextCursor) break;
+          cursor = d.nextCursor;
         }
-      })
-      .catch((err) =>
-        setProductErr(err instanceof Error ? err.message : String(err))
-      );
+        if (cancelled) return;
+        setProducts(all);
+        if (all.length > 0 && !productId) {
+          setProductId(all[0].id);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setProductErr(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [apiFetch, productId]);
 
   // ── Validate seed product_id against loaded list ─────────────────────

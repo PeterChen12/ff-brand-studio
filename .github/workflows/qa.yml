@@ -67,6 +67,32 @@ jobs:
         working-directory: qa
         run: npx playwright install --with-deps chromium
 
+      # Runner suite (run-qa-v2) — the central QA framework's static + deployed
+      # checks. Previously FF ONLY ran the Playwright journey project, so the
+      # 25+ runners never touched it; that's why the X-Org-Id CORS "Failed to
+      # fetch" and the silent-cap "NO ASSETS YET" classes shipped to a client
+      # despite green CI. These checks close that gap:
+      #   - deploy-health  → asserts the worker's Access-Control-Allow-Headers
+      #                      covers X-Org-Id/Idempotency-Key (the CORS class)
+      #   - unpaginated-list → flags hardcoded list caps with no pagination
+      #                        (the silent-cap class)
+      #   - cors / code-smell / secrets → static + deployed hygiene
+      # FF_DASHBOARD_DIR points sites.config at the source checked out above so
+      # the source-scanning runners see the real tree. Default exit semantics
+      # (error/critical fail the PR; warnings report) — so a CORS regression
+      # BLOCKS merge while heuristic warnings just surface.
+      - name: Run QA runner suite against FF (deploy-health + silent-cap + hygiene)
+        working-directory: qa
+        env:
+          QA_ENV: staging
+          CI: "true"
+          FF_DASHBOARD_DIR: ${{ github.workspace }}/ff-brand-studio/apps/dashboard
+        run: >
+          npx tsx scripts/run-qa-v2.ts --site ff-brand-studio
+          --check deploy-health --check unpaginated-list --check cors
+          --check code-smell --check secrets
+          --env staging --gh-summary
+
       - name: Run FF Brand Studio journey tests against staging
         working-directory: qa
         env:
