@@ -1026,20 +1026,15 @@ app.post("/v1/products/ingest", async (c) => {
     );
   }
 
-  // 2. Charge wallet upfront (rejects on insufficient funds).
-  try {
-    await chargeWallet(db, {
-      tenantId: tenant.id,
-      cents: PRODUCT_ONBOARD_CENTS,
-      reason: "image_gen",
-      referenceType: "product",
-    });
-  } catch (err) {
-    if (err instanceof InsufficientFundsError) {
-      const { walletInsufficient } = await import("./lib/api-error.js");
-      throw walletInsufficient(err.requestedCents, err.balanceCents);
-    }
-    throw err;
+  // 2. Cheap balance pre-check (the authoritative ATOMIC debit happens in the
+  //    transaction below, AFTER the insert — D1 money-safety, 2026-06-08).
+  //    Pre-fix this charged the wallet UPFRONT, before the network image fetch
+  //    and the insert, so a fetch/insert failure lost the customer's money for
+  //    no product. Now the charge is the last op inside the insert transaction.
+  const balance = await getBalanceCents(db, tenant.id);
+  if (balance < PRODUCT_ONBOARD_CENTS) {
+    const { walletInsufficient } = await import("./lib/api-error.js");
+    throw walletInsufficient(PRODUCT_ONBOARD_CENTS, balance);
   }
 
   // 3. Fetch each reference URL into R2 (sequential — most customers
@@ -1096,46 +1091,77 @@ app.post("/v1/products/ingest", async (c) => {
     resolvedKind = resolvedKind ?? derived.kind;
   }
 
-  // 6. Create product + variant + references rows.
+  // 6. Create product + variant + reference rows AND charge the wallet in ONE
+  //    transaction so insert + charge commit or roll back together (D1 money-
+  //    safety). Charging LAST means insufficient-funds rolls the product back;
+  //    an insert failure rolls the charge back. The network image fetch above
+  //    is deliberately OUTSIDE the tx (never hold a DB tx across a network call).
   const sku = p.sku ?? `${tenant.id.slice(0, 6).toUpperCase()}-${nanoid(8).toUpperCase()}`;
-  const [product] = await db
-    .insert(products)
-    .values({
-      tenantId: tenant.id,
-      sellerId,
-      sku,
-      nameEn: p.name_en,
-      nameZh: p.name_zh ?? null,
-      description: p.description?.trim() || null,
-      category: resolvedCategory!,
-      kind: resolvedKind ?? "compact_square",
-      dimensions: p.dimensions ?? null,
-      materials: p.materials ?? null,
-      colorsHex: p.colors_hex ?? null,
-      externalId: p.external_id,
-      externalSource: p.external_source,
-    })
-    .returning();
+  let product!: typeof products.$inferSelect;
+  let variant!: typeof productVariants.$inferSelect;
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [createdProduct] = await tx
+        .insert(products)
+        .values({
+          tenantId: tenant.id,
+          sellerId,
+          sku,
+          nameEn: p.name_en,
+          nameZh: p.name_zh ?? null,
+          description: p.description?.trim() || null,
+          category: resolvedCategory!,
+          kind: resolvedKind ?? "compact_square",
+          dimensions: p.dimensions ?? null,
+          materials: p.materials ?? null,
+          colorsHex: p.colors_hex ?? null,
+          externalId: p.external_id,
+          externalSource: p.external_source,
+        })
+        .returning();
 
-  const [variant] = await db
-    .insert(productVariants)
-    .values({
-      tenantId: tenant.id,
-      productId: product.id,
-      color: null,
-      pattern: null,
-    })
-    .returning();
+      const [createdVariant] = await tx
+        .insert(productVariants)
+        .values({
+          tenantId: tenant.id,
+          productId: createdProduct.id,
+          color: null,
+          pattern: null,
+        })
+        .returning();
 
-  await db.insert(productReferences).values(
-    uploaded.map((u) => ({
-      tenantId: tenant.id,
-      productId: product.id,
-      r2Url: u.publicUrl,
-      kind: u.kind,
-      uploadedBy: actor ?? `ingest:${p.external_source}`,
-    }))
-  );
+      await tx.insert(productReferences).values(
+        uploaded.map((u) => ({
+          tenantId: tenant.id,
+          productId: createdProduct.id,
+          r2Url: u.publicUrl,
+          kind: u.kind,
+          uploadedBy: actor ?? `ingest:${p.external_source}`,
+        }))
+      );
+
+      // Charge LAST — InsufficientFunds rolls back the inserts above.
+      await chargeWallet(tx, {
+        tenantId: tenant.id,
+        cents: PRODUCT_ONBOARD_CENTS,
+        reason: "image_gen",
+        referenceType: "product",
+        referenceId: createdProduct.id,
+      });
+
+      return { product: createdProduct, variant: createdVariant };
+    });
+    product = result.product;
+    variant = result.variant;
+  } catch (err) {
+    // Rare race: balance dropped between the pre-check and the in-tx charge.
+    // The transaction rolled back, so no orphan product exists.
+    if (err instanceof InsufficientFundsError) {
+      const { walletInsufficient } = await import("./lib/api-error.js");
+      throw walletInsufficient(err.requestedCents, err.balanceCents);
+    }
+    throw err;
+  }
 
   // 7. Audit + emit product.ingested webhook (B3). The audit event
   //    auto-fans-out to subscribers because product.ingested is in
