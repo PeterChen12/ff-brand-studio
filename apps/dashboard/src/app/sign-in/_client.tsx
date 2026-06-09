@@ -1,8 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { SignIn } from "@clerk/react";
 
 export default function SignInPage() {
+  // Backup access stays hidden until the user explicitly asks for it — it's a
+  // last-resort escape hatch (Clerk down / Google OAuth misconfig), not a
+  // primary path, so it shouldn't compete with the real sign-in box.
+  const [showBackup, setShowBackup] = useState(false);
+
   return (
     <div className="min-h-screen md-surface flex items-center justify-center px-6 py-16">
       <div className="w-full max-w-md">
@@ -26,21 +32,29 @@ export default function SignInPage() {
           signUpUrl="/sign-up"
           fallbackRedirectUrl="/"
         />
-        {/* Prominent escape hatch. Google/Clerk sign-in is fragile (e.g.
-            Google OAuth "Missing client_id" when the prod Clerk instance has
-            no Google app configured), so during internal testing the backup
-            key is the reliable way in. Make it a real button, not a footnote. */}
-        <div className="mt-6 rounded-m3-lg border ff-hairline bg-surface-container-low p-4 text-center">
-          <p className="md-typescale-body-small text-on-surface-variant mb-3">
-            Sign-in not working? (e.g. Google login error) — use a backup
-            access key instead. It works even when Clerk is down.
-          </p>
-          <a
-            href="/backup"
-            className="inline-block rounded-m3-full bg-primary px-5 py-2.5 font-medium tracking-wide text-on-primary hover:opacity-90"
-          >
-            Backup access · 应急通道
-          </a>
+        {/* Subtle, collapsed-by-default escape hatch. Revealed only on click so
+            the backup key path is discoverable without cluttering the page. */}
+        <div className="mt-5 text-center">
+          {!showBackup ? (
+            <button
+              type="button"
+              onClick={() => setShowBackup(true)}
+              className="md-typescale-body-small text-on-surface-variant/70 hover:text-on-surface underline underline-offset-4 decoration-dotted transition-colors"
+            >
+              Trouble signing in?
+            </button>
+          ) : (
+            <p className="md-typescale-body-small text-on-surface-variant/80">
+              Use a{" "}
+              <a
+                href="/backup"
+                className="text-primary hover:underline font-medium"
+              >
+                backup access key
+              </a>{" "}
+              instead — works even when Clerk is down.
+            </p>
+          )}
         </div>
       </div>
     </div>
