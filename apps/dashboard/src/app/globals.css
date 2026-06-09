@@ -361,3 +361,30 @@ h1, h2, h3, h4, h5, h6 {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Hide Clerk's "Sign in with Google" button (+ the "or" divider).
+
+   WHY: this is a Clerk PRODUCTION instance (clerk.buyfishingrod.com). Google
+   was enabled as a social connection but production Clerk requires CUSTOM
+   Google OAuth credentials (Clerk's shared dev creds only work on dev
+   instances). After the 2026-05-26 dev→live cutover no custom creds were
+   added, so clicking Google throws "Missing required parameter: client_id".
+   Rather than show a broken button, we hide the social block entirely. The
+   working sign-in path is email + emailed one-time code (the only enabled
+   first factor), which renders fine without the social block.
+
+   Targets Clerk's stable `cl-` themable classnames so it's independent of
+   the @clerk/react SDK version. Google is currently the ONLY social provider,
+   so hiding `.cl-socialButtons` removes just the broken option.
+
+   TO REVERT (once Google OAuth is properly configured in the Clerk Dashboard
+   with custom credentials, OR if a working social provider is added): delete
+   this block.
+   --------------------------------------------------------------------------- */
+.cl-socialButtons,
+.cl-socialButtonsBlockButton,
+.cl-socialButtonsIconButton,
+.cl-dividerRow {
+  display: none !important;
+}
