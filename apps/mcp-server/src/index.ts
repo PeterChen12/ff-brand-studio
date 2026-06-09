@@ -44,7 +44,7 @@ import { resolveCredentials, requireString } from "./integrations/credentials.js
 import { upsertDownstreamState } from "./integrations/downstream-state.js";
 import { claimEvent, markProcessed } from "./lib/webhook-inbox.js";
 import { chargeWallet, creditWallet, getBalanceCents, InsufficientFundsError } from "./lib/wallet.js";
-import { deriveProductMetadata } from "./lib/derive-product-metadata.js";
+import { deriveProductMetadata, PRODUCT_CATEGORIES } from "./lib/derive-product-metadata.js";
 import { auditEvent } from "./lib/audit.js";
 import { getStripe, priceIdForAmount, checkWebhookIdempotency } from "./lib/stripe.js";
 import {
@@ -739,7 +739,16 @@ app.post("/v1/products", async (c) => {
   // 4. Derive category + kind via Sonnet when the dashboard didn't pass
   //    them (Issue 3). Network call — kept OUTSIDE the transaction so we
   //    never hold the (max:1) DB connection open across a model round-trip.
-  let resolvedCategory = p.category;
+  // Clamp an operator/client-supplied category to the known set. A stray
+  // value (or app↔DB enum drift) would otherwise violate the
+  // products_category_chk constraint and 500 the insert — the 2026-06-08 root
+  // cause was the AI category "fishing-rod" not being in the DB constraint. An
+  // out-of-set value falls through to AI derivation (itself clamped to
+  // PRODUCT_CATEGORIES), so resolvedCategory is always a constraint-valid value.
+  let resolvedCategory =
+    p.category && (PRODUCT_CATEGORIES as readonly string[]).includes(p.category)
+      ? p.category
+      : undefined;
   let resolvedKind = p.kind;
   if (!resolvedCategory || !resolvedKind) {
     const derived = await deriveProductMetadata({
@@ -1066,7 +1075,16 @@ app.post("/v1/products/ingest", async (c) => {
   }
 
   // 5. Derive category/kind via Sonnet if the customer didn't pass them.
-  let resolvedCategory = p.category;
+  // Clamp an operator/client-supplied category to the known set. A stray
+  // value (or app↔DB enum drift) would otherwise violate the
+  // products_category_chk constraint and 500 the insert — the 2026-06-08 root
+  // cause was the AI category "fishing-rod" not being in the DB constraint. An
+  // out-of-set value falls through to AI derivation (itself clamped to
+  // PRODUCT_CATEGORIES), so resolvedCategory is always a constraint-valid value.
+  let resolvedCategory =
+    p.category && (PRODUCT_CATEGORIES as readonly string[]).includes(p.category)
+      ? p.category
+      : undefined;
   let resolvedKind = p.kind;
   if (!resolvedCategory || !resolvedKind) {
     const derived = await deriveProductMetadata({
