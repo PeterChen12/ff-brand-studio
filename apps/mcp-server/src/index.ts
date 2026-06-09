@@ -1928,6 +1928,46 @@ app.get("/v1/listings", async (c) => {
     const tids = visibleTenantIds(tenant);
     const variantId = c.req.query("variant_id");
     const sku = c.req.query("sku");
+    const productId = c.req.query("product_id");
+
+    // Product-scoped, UNCAPPED listings — used by the storefront drawer so it
+    // gets the focused product's full copy regardless of the tenant-wide 100
+    // cap below. (A single product's listing count is bounded by
+    // surfaces × languages, so no pagination is needed here.)
+    if (productId) {
+      const rows = await db
+        .select({
+          id: platformListings.id,
+          variantId: platformListings.variantId,
+          surface: platformListings.surface,
+          language: platformListings.language,
+          copy: platformListings.copy,
+          rating: platformListings.rating,
+          iterations: platformListings.iterations,
+          costCents: platformListings.costCents,
+          status: platformListings.status,
+          updatedAt: platformListings.updatedAt,
+          productId: products.id,
+          sku: products.sku,
+          productNameEn: products.nameEn,
+          productNameZh: products.nameZh,
+          category: products.category,
+          tenantId: platformListings.tenantId,
+        })
+        .from(platformListings)
+        .leftJoin(productVariants, eq(platformListings.variantId, productVariants.id))
+        .leftJoin(products, eq(productVariants.productId, products.id))
+        .where(
+          and(
+            eq(products.id, productId),
+            inArray(platformListings.tenantId, tids)
+          )
+        )
+        .orderBy(desc(platformListings.updatedAt));
+      return c.json({
+        listings: rows.map((r) => ({ ...r, isSample: r.tenantId === SAMPLE_TENANT_ID })),
+      });
+    }
 
     if (variantId) {
       const rows = await db
@@ -3879,7 +3919,17 @@ app.get("/api/assets", async (c) => {
     const db = createDbClient(c.env);
     const tenant = c.get("tenant") as Tenant;
     const tids = visibleTenantIds(tenant);
-    const v2Rows = await db
+    // Optional product scope — when present, return ALL of that product's
+    // assets UNCAPPED. The storefront drawer passes this so a product's
+    // preview never depends on whether its assets fall inside the tenant-wide
+    // 100-row recency window (the bug that showed "NO ASSETS YET" for products
+    // that have approved images). A single product's asset count is bounded by
+    // variants × platforms × slots, so no pagination is needed.
+    const productId = c.req.query("product_id");
+    const whereClause = productId
+      ? and(inArray(platformAssets.tenantId, tids), eq(products.id, productId))
+      : inArray(platformAssets.tenantId, tids);
+    const baseQuery = db
       .select({
         id: platformAssets.id,
         variantId: platformAssets.variantId,
@@ -3911,9 +3961,11 @@ app.get("/api/assets", async (c) => {
       .leftJoin(productVariants, eq(platformAssets.variantId, productVariants.id))
       .leftJoin(products, eq(productVariants.productId, products.id))
       .leftJoin(sellerProfiles, eq(products.sellerId, sellerProfiles.id))
-      .where(inArray(platformAssets.tenantId, tids))
-      .orderBy(desc(platformAssets.createdAt))
-      .limit(100);
+      .where(whereClause)
+      .orderBy(desc(platformAssets.createdAt));
+    // Product-scoped requests are uncapped; the tenant-wide feed keeps the
+    // 100-row recency cap (grid pagination is a separate follow-up).
+    const v2Rows = productId ? await baseQuery : await baseQuery.limit(100);
 
     // Phase J4 — derive a 250×250 thumb URL when a CF-zone-bound R2 host
     // is configured (R2_THUMB_HOST). Falls back to the original r2Url so
