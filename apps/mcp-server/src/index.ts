@@ -121,6 +121,13 @@ app.use("*", (c, next) =>
     allowHeaders: [
       "Authorization",
       "Content-Type",
+      // The dashboard sends X-Org-Id on every Clerk-org request and an
+      // Idempotency-Key on product create. They were NOT in this list, so the
+      // browser's CORS preflight failed and the request never fired — surfaced
+      // to the user as "Network unreachable / Failed to fetch" (which looked
+      // like a China/WiFi problem for weeks). Both must be allowed here.
+      "X-Org-Id",
+      "Idempotency-Key",
       "svix-id",
       "svix-timestamp",
       "svix-signature",
