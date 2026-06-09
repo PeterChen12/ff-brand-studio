@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { useApiQuery } from "@/lib/api-query";
+import { useApiQueryAllPages } from "@/lib/api-query";
 import {
   formatCents,
   formatDurationMs,
@@ -43,10 +43,15 @@ interface LaunchRow {
 export default function OverviewPage() {
   const now = useNow();
 
-  const launchesQ = useApiQuery<{ launches: LaunchRow[] }>("/api/launches");
-  const assetsQ = useApiQuery<{
+  // Page through all launches + assets so the KPI ribbon counts the full set
+  // (both endpoints were capped → counts under-reported once a tenant grew).
+  const launchesQ = useApiQueryAllPages<{ launches: LaunchRow[] }>(
+    "/api/launches",
+    "launches",
+  );
+  const assetsQ = useApiQueryAllPages<{
     platformAssets?: Array<{ sku?: string | null }>;
-  }>("/api/assets");
+  }>("/api/assets", "platformAssets");
 
   const launches = launchesQ.data?.launches ?? null;
   const v2Assets = assetsQ.data?.platformAssets ?? null;

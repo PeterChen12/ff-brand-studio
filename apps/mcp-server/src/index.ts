@@ -1361,15 +1361,28 @@ app.post("/v1/billing/checkout-session", async (c) => {
 app.get("/v1/billing/ledger", async (c) => {
   const tenant = c.get("tenant") as Tenant;
   const db = createDbClient(c.env);
+  // Offset pagination so the full transaction history is reachable (the old
+  // unconditional .limit(100) silently truncated older entries).
+  const rawLimit = Number.parseInt(c.req.query("limit") ?? "100", 10);
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(Math.max(rawLimit, 1), 200)
+    : 100;
+  const rawOffset = Number.parseInt(c.req.query("offset") ?? "0", 10);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
   const rows = await db
     .select()
     .from(walletLedger)
     .where(eq(walletLedger.tenantId, tenant.id))
     .orderBy(desc(walletLedger.at))
-    .limit(100);
+    .limit(limit + 1)
+    .offset(offset);
+  const hasMore = rows.length > limit;
+  const ledger = hasMore ? rows.slice(0, limit) : rows;
   return c.json({
-    ledger: rows,
+    ledger,
     balance_cents: tenant.walletBalanceCents,
+    hasMore,
+    nextOffset: offset + ledger.length,
   });
 });
 
@@ -4049,9 +4062,26 @@ app.get("/api/assets", async (c) => {
       .leftJoin(sellerProfiles, eq(products.sellerId, sellerProfiles.id))
       .where(whereClause)
       .orderBy(desc(platformAssets.createdAt));
-    // Product-scoped requests are uncapped; the tenant-wide feed keeps the
-    // 100-row recency cap (grid pagination is a separate follow-up).
-    const v2Rows = productId ? await baseQuery : await baseQuery.limit(100);
+    // Product-scoped requests are uncapped; the tenant-wide feed is offset-
+    // paginated so the library grid + overview KPIs page through the full set
+    // instead of silently truncating at the 100 most-recent assets.
+    let v2Rows: Awaited<typeof baseQuery>;
+    let hasMore = false;
+    let nextOffset = 0;
+    if (productId) {
+      v2Rows = await baseQuery;
+    } else {
+      const rawLimit = Number.parseInt(c.req.query("limit") ?? "100", 10);
+      const limit = Number.isFinite(rawLimit)
+        ? Math.min(Math.max(rawLimit, 1), 200)
+        : 100;
+      const rawOffset = Number.parseInt(c.req.query("offset") ?? "0", 10);
+      const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+      const rows = await baseQuery.limit(limit + 1).offset(offset);
+      hasMore = rows.length > limit;
+      v2Rows = hasMore ? rows.slice(0, limit) : rows;
+      nextOffset = offset + v2Rows.length;
+    }
 
     // Phase J4 — derive a 250×250 thumb URL when a CF-zone-bound R2 host
     // is configured (R2_THUMB_HOST). Falls back to the original r2Url so
@@ -4073,10 +4103,10 @@ app.get("/api/assets", async (c) => {
       const isSample = row.tenantId === SAMPLE_TENANT_ID;
       return { ...row, thumbUrl, isSample };
     });
-    return c.json({ legacy: [], platformAssets: withThumbs });
+    return c.json({ legacy: [], platformAssets: withThumbs, hasMore, nextOffset });
   } catch (err) {
     console.error("[/api/assets]", err);
-    return c.json({ legacy: [], platformAssets: [] });
+    return c.json({ legacy: [], platformAssets: [], hasMore: false, nextOffset: 0 });
   }
 });
 
@@ -4134,6 +4164,15 @@ app.get("/api/launches", async (c) => {
     const db = createDbClient(c.env);
     const tenant = c.get("tenant") as Tenant;
     const tids = visibleTenantIds(tenant);
+    // Offset pagination — the costs dashboard pages through ALL launches so its
+    // "Total spend" / launch counts / ledger reflect the full history (the old
+    // unconditional .limit(20) silently under-reported once a tenant had >20).
+    const rawLimit = Number.parseInt(c.req.query("limit") ?? "100", 10);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(Math.max(rawLimit, 1), 200)
+      : 100;
+    const rawOffset = Number.parseInt(c.req.query("offset") ?? "0", 10);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
     const rows = await db
       .select({
         id: launchRuns.id,
@@ -4153,11 +4192,14 @@ app.get("/api/launches", async (c) => {
       .leftJoin(products, eq(launchRuns.productId, products.id))
       .where(inArray(launchRuns.tenantId, tids))
       .orderBy(desc(launchRuns.createdAt))
-      .limit(20);
-    return c.json({ launches: rows });
+      .limit(limit + 1)
+      .offset(offset);
+    const hasMore = rows.length > limit;
+    const launches = hasMore ? rows.slice(0, limit) : rows;
+    return c.json({ launches, hasMore, nextOffset: offset + launches.length });
   } catch (err) {
     console.error("[/api/launches]", err);
-    return c.json({ launches: [] });
+    return c.json({ launches: [], hasMore: false, nextOffset: 0 });
   }
 });
 
