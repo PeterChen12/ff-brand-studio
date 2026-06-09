@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import dynamic from "next/dynamic";
-import { useApiQuery } from "@/lib/api-query";
+import { useApiQueryAllPages } from "@/lib/api-query";
 import { formatCents, formatDurationMs, formatTimestamp } from "@/lib/format";
 import { useNow } from "@/lib/use-now";
 import { PageHeader } from "@/components/layout/page-header";
@@ -40,9 +40,11 @@ interface LaunchRow {
 
 export default function CostsPage() {
   const now = useNow();
-  const { data, error, isLoading, mutate } = useApiQuery<{
+  // Pages through ALL launches so Total spend / counts / ledger are complete
+  // (was capped at the 20 most-recent → silent under-reporting).
+  const { data, error, isLoading, mutate } = useApiQueryAllPages<{
     launches: LaunchRow[];
-  }>("/api/launches");
+  }>("/api/launches", "launches");
   const launches = data?.launches ?? null;
 
   const chartData = useMemo(() => {

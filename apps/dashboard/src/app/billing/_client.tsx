@@ -12,7 +12,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
-import { useApiQuery } from "@/lib/api-query";
+import { useApiQueryAllPages } from "@/lib/api-query";
 import { formatCents, formatTimestamp } from "@/lib/format";
 import { useNow } from "@/lib/use-now";
 import { PageHeader } from "@/components/layout/page-header";
@@ -49,10 +49,12 @@ const TOPUP_AMOUNTS = [
 export default function BillingPageInner() {
   const apiFetch = useApiFetch();
   const now = useNow();
-  const { data, error, isLoading, mutate } = useApiQuery<{
+  // Pages through the full ledger so transaction history isn't silently
+  // truncated (was capped at 100). balance_cents comes from the first page.
+  const { data, error, isLoading, mutate } = useApiQueryAllPages<{
     ledger: LedgerRow[];
     balance_cents: number;
-  }>("/v1/billing/ledger");
+  }>("/v1/billing/ledger", "ledger");
   const ledger = data?.ledger ?? null;
   const balance = data?.balance_cents ?? null;
 

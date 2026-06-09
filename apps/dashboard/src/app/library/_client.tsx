@@ -30,7 +30,7 @@ import { Card, CardEyebrow, CardHeader, CardTitle } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PlatformAssetRow } from "@/db/schema";
-import { useApiQuery } from "@/lib/api-query";
+import { useApiQuery, useApiQueryAllPages } from "@/lib/api-query";
 import { formatCents } from "@/lib/format";
 import { useEffect, useMemo, useState } from "react";
 
@@ -117,8 +117,12 @@ export default function LibraryPage() {
   // ?focus=<product_id> (e.g. right after a quick-launch in /products/new).
   const [focusProductId, setFocusProductId] = useState<string | null>(null);
 
-  // Assets fetch — always-on (cheap; user lands here by default).
-  const assetsQ = useApiQuery<LibraryResponse>("/api/assets");
+  // Assets fetch — pages through ALL assets so the SKU grid and counts are
+  // complete (was capped at the 100 most-recent → older SKUs silently absent).
+  const assetsQ = useApiQueryAllPages<LibraryResponse>(
+    "/api/assets",
+    "platformAssets",
+  );
   const items = assetsQ.data?.platformAssets ?? null;
   const itemsError = assetsQ.error;
 
