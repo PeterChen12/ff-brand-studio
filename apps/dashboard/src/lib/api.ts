@@ -80,8 +80,12 @@ export function useApiFetch() {
             lastNetworkErr instanceof Error ? lastNetworkErr.message : String(lastNetworkErr);
           throw new ApiError(
             0,
-            { code: "network_unreachable", detail },
-            `Network unreachable — couldn't reach the service (${detail}). Check your connection and retry. — ${path}`
+            { code: "request_blocked", detail },
+            // A failed fetch is opaque — it can be a network drop, OR the
+            // browser blocking the response (CORS), OR a service hiccup. Don't
+            // blame the user's connection outright (that mis-led a China-based
+            // client for weeks when the real cause was a CORS allow-list gap).
+            `Couldn't reach the service (${detail}). This is usually temporary — please retry. If it keeps happening, it's on our side, not your network. — ${path}`
           );
         }
 
