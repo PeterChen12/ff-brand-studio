@@ -44,6 +44,8 @@ interface InboxRun {
 
 interface InboxResponse {
   runs: InboxRun[];
+  hasMore?: boolean;
+  nextOffset?: number;
 }
 
 interface AssetsResponse {
@@ -77,9 +79,25 @@ export default function InboxClient() {
 
   const loadRuns = useCallback(() => {
     setError(null);
-    apiFetch<InboxResponse>("/v1/inbox")
-      .then((r) => setRuns(r.runs))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    (async () => {
+      try {
+        // Page through the whole queue so no pending run is hidden by the
+        // server-side cap. The guard bounds worst-case pages (50×100 = 5000).
+        const all: InboxRun[] = [];
+        let offset = 0;
+        for (let guard = 0; guard < 50; guard++) {
+          const r = await apiFetch<InboxResponse>(
+            `/v1/inbox?limit=100&offset=${offset}`
+          );
+          all.push(...r.runs);
+          if (!r.hasMore || r.runs.length === 0) break;
+          offset = r.nextOffset ?? offset + r.runs.length;
+        }
+        setRuns(all);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
   }, [apiFetch]);
 
   useEffect(() => {
@@ -91,10 +109,19 @@ export default function InboxClient() {
       setSelected(run);
       setAssets(null);
       setSelectedAssetIds(new Set());
-      apiFetch<AssetsResponse>("/api/assets")
+      // Scope the fetch to this run's product (uncapped) instead of pulling the
+      // capped global asset feed — older runs' pending assets were being
+      // dropped past the 100-row window so they never appeared for review.
+      const path = run.productId
+        ? `/api/assets?product_id=${encodeURIComponent(run.productId)}`
+        : "/api/assets";
+      apiFetch<AssetsResponse>(path)
         .then((r) => {
           const inReview = r.platformAssets.filter(
-            (a) => a.status !== "approved" && a.status !== "rejected"
+            (a) =>
+              a.status !== "approved" &&
+              a.status !== "rejected" &&
+              a.status !== "reference"
           );
           setAssets(inReview);
         })
@@ -314,7 +341,11 @@ export default function InboxClient() {
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <Button
-              onClick={() => setSelected(null)}
+              onClick={() => {
+                setSelected(null);
+                // Refresh so runs cleared to 'reviewed' drop out of the queue.
+                loadRuns();
+              }}
               variant="outline"
               size="sm"
             >
