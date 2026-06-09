@@ -311,10 +311,13 @@ export default function LibraryPage() {
         onClose={() => setLightbox((l) => ({ ...l, open: false }))}
       />
 
-      {focusProductId && focusedAssets && (
+      {focusProductId && (
         <StorefrontDrawer
           productId={focusProductId}
-          assets={focusedAssets}
+          // Seed with whatever the (capped) grid payload already has for an
+          // instant first paint; the drawer self-fetches the product's full,
+          // uncapped asset set so it no longer depends on the 100-row window.
+          assets={focusedAssets ?? []}
           onClose={closeFocus}
         />
       )}

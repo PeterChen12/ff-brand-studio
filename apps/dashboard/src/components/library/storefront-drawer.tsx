@@ -56,11 +56,25 @@ export function StorefrontDrawer({
   assets,
   onClose,
 }: StorefrontDrawerProps) {
-  const listingsQ = useApiQuery<{ listings: ListingRow[] }>("/v1/listings");
-  const listings = useMemo(() => {
-    const all = listingsQ.data?.listings ?? [];
-    return all.filter((l) => l.productId === productId);
-  }, [listingsQ.data, productId]);
+  // Fetch this product's assets + listings DIRECTLY, scoped by product_id and
+  // UNCAPPED. Previously the drawer relied on the `assets` prop sliced from the
+  // tenant-wide /api/assets payload (hard-capped at 100 by recency), so a
+  // product whose assets fell outside the newest 100 showed "NO ASSETS YET"
+  // even though it had approved images. Scoping the fetch removes that cap
+  // dependency entirely. The `assets` prop is kept as instant seed data so the
+  // gallery renders immediately while the scoped fetch resolves.
+  const assetsQ = useApiQuery<{ platformAssets: PlatformAssetRow[] }>(
+    `/api/assets?product_id=${encodeURIComponent(productId)}`,
+  );
+  const productAssets = assetsQ.data?.platformAssets ?? assets;
+
+  const listingsQ = useApiQuery<{ listings: ListingRow[] }>(
+    `/v1/listings?product_id=${encodeURIComponent(productId)}`,
+  );
+  const listings = useMemo(
+    () => listingsQ.data?.listings ?? [],
+    [listingsQ.data],
+  );
 
   // Pick the "primary" listing for the headline copy. Prefer Amazon
   // English (the operator's default surface) when present; fall back
@@ -90,11 +104,11 @@ export function StorefrontDrawer({
       if (slot.includes("banner") || slot.includes("hero")) return 3;
       return 4;
     };
-    return assets
+    return productAssets
       .filter(isImage)
       .filter((a) => a.status !== "reference")
       .sort((a, b) => slotPriority(a.slot) - slotPriority(b.slot));
-  }, [assets]);
+  }, [productAssets]);
 
   const [activeImageIdx, setActiveImageIdx] = useState(0);
   const activeImage = galleryAssets[activeImageIdx] ?? null;
@@ -114,17 +128,19 @@ export function StorefrontDrawer({
   }, [onClose]);
 
   const productName =
-    assets[0]?.productNameEn ??
+    productAssets[0]?.productNameEn ??
     primaryListing?.productNameEn ??
     "(unnamed product)";
   const productNameZh =
-    assets[0]?.productNameZh ?? primaryListing?.productNameZh ?? null;
-  const productSku = assets[0]?.sku ?? primaryListing?.sku ?? null;
+    productAssets[0]?.productNameZh ?? primaryListing?.productNameZh ?? null;
+  const productSku = productAssets[0]?.sku ?? primaryListing?.sku ?? null;
 
-  // If the product has no assets at all (e.g. HITL-blocked or failed
-  // launches that wrote 0 files), surface a friendly empty state so
-  // the user understands why the storefront preview is empty.
   const hasAnyAssets = galleryAssets.length > 0;
+  // Only show the "no assets" empty state once the scoped fetch has actually
+  // resolved with zero images — otherwise we'd flash a misleading dead-end
+  // while the (uncapped) per-product asset fetch is still in flight.
+  const assetsLoading = assetsQ.isLoading && !assetsQ.data;
+  const showEmpty = !hasAnyAssets && !assetsLoading;
 
   return (
     <div
@@ -160,7 +176,9 @@ export function StorefrontDrawer({
           </button>
         </div>
 
-        {!hasAnyAssets ? (
+        {assetsLoading ? (
+          <DrawerLoading />
+        ) : showEmpty ? (
           <EmptyAssets onClose={onClose} />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 px-6 md:px-10 py-8">
@@ -221,7 +239,7 @@ export function StorefrontDrawer({
             <div className="flex flex-col gap-5">
               <div>
                 <div className="ff-stamp-label mb-1.5">
-                  {primaryListing?.category ?? assets[0]?.category ?? "—"}
+                  {primaryListing?.category ?? productAssets[0]?.category ?? "—"}
                 </div>
                 <h1 className="md-typescale-headline-large mb-1">
                   {primaryListing && primaryListing.copy
@@ -255,8 +273,25 @@ export function StorefrontDrawer({
                   Couldn't load listing copy.
                 </div>
               ) : listings.length === 0 && !listingsQ.isLoading ? (
-                <div className="rounded-m3-md border border-dashed ff-hairline px-4 py-6 text-center md-typescale-body-medium text-on-surface-variant">
-                  Copy is still being generated. Refresh in a moment.
+                <div className="rounded-m3-md border border-dashed ff-hairline px-4 py-6 text-center">
+                  <p className="md-typescale-body-medium text-on-surface-variant mb-1">
+                    No marketplace copy for this product yet.
+                  </p>
+                  <p className="md-typescale-body-small text-on-surface-variant/80 mb-4">
+                    If the launch is still running, copy will appear here — tap
+                    Refresh. If it was held for review or hit a budget cap, the
+                    copy step may not have run; check the Audit log.
+                  </p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      listingsQ.mutate();
+                      assetsQ.mutate();
+                    }}
+                  >
+                    ↻ Refresh
+                  </Button>
                 </div>
               ) : (
                 <ListingSkeleton />
@@ -521,20 +556,42 @@ function ListingSkeleton() {
   );
 }
 
+function DrawerLoading() {
+  return (
+    <div className="px-6 md:px-10 py-20 text-center">
+      <div className="ff-stamp-label mb-3 animate-pulse">
+        Loading preview · 加载中
+      </div>
+      <div className="mx-auto h-1 w-40 overflow-hidden rounded-full bg-surface-container">
+        <div className="h-full w-1/2 bg-primary/60 ff-shimmer" />
+      </div>
+    </div>
+  );
+}
+
 function EmptyAssets({ onClose }: { onClose: () => void }) {
   return (
     <div className="px-6 md:px-10 py-16 text-center">
-      <div className="ff-stamp-label mb-3">No assets yet</div>
+      <div className="ff-stamp-label mb-3">No images yet</div>
       <h2 className="md-typescale-headline-medium text-on-surface mb-2">
         Storefront preview not ready
       </h2>
       <p className="md-typescale-body-medium text-on-surface-variant max-w-md mx-auto mb-6">
-        This product hasn't produced any approved images yet. If the launch
-        failed or got blocked at HITL, open the Audit log to see what happened.
+        This product hasn't produced any images yet. If a launch is still
+        running, they'll appear here shortly. If it failed or was held for
+        review at HITL, open the Audit log to see what happened.
       </p>
-      <Button onClick={onClose} variant="ghost">
-        Back to library
-      </Button>
+      <div className="flex items-center justify-center gap-2">
+        <a
+          href="/library?tab=audit"
+          className="px-4 h-9 inline-flex items-center rounded-m3-full bg-surface-container border ff-hairline md-typescale-label-medium hover:bg-surface-container-high"
+        >
+          Open Audit log
+        </a>
+        <Button onClick={onClose} variant="ghost">
+          Back to library
+        </Button>
+      </div>
     </div>
   );
 }
