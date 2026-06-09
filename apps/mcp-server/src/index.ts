@@ -2799,6 +2799,56 @@ app.delete("/v1/api-keys/:id", async (c) => {
   }
 });
 
+// HITL run lifecycle — keep the inbox review queue meaningful.
+//
+// The inbox lists launch_runs with status='hitl_blocked'. Approving/rejecting
+// assets historically never touched launch_runs.status, so runs accumulated in
+// the queue forever; combined with the list cap, genuinely-unreviewed runs
+// could be pushed off by already-handled ones (operators silently miss
+// approvals). This helper flips a run to 'reviewed' once none of its product's
+// assets are still pending review, and flips it back to 'hitl_blocked' if a
+// pending asset reappears (e.g. un-approve). "Pending" excludes 'reference'
+// (uploaded inputs the operator never approves/rejects) — otherwise a run could
+// never clear.
+async function refreshRunReviewState(
+  db: ReturnType<typeof createDbClient>,
+  productId: string | null | undefined
+): Promise<void> {
+  if (!productId) return;
+  const [row] = await db
+    .select({ pending: sql<number>`count(*)::int` })
+    .from(platformAssets)
+    .innerJoin(productVariants, eq(productVariants.id, platformAssets.variantId))
+    .where(
+      and(
+        eq(productVariants.productId, productId),
+        sql`${platformAssets.status} not in ('approved','rejected','reference')`
+      )
+    );
+  const pending = row?.pending ?? 0;
+  if (pending === 0) {
+    await db
+      .update(launchRuns)
+      .set({ status: "reviewed" })
+      .where(
+        and(
+          eq(launchRuns.productId, productId),
+          eq(launchRuns.status, "hitl_blocked")
+        )
+      );
+  } else {
+    await db
+      .update(launchRuns)
+      .set({ status: "hitl_blocked" })
+      .where(
+        and(
+          eq(launchRuns.productId, productId),
+          eq(launchRuns.status, "reviewed")
+        )
+      );
+  }
+}
+
 // Phase K3 — approve all assets + listings for a SKU.
 // ── Phase B (F4) — operator HITL inbox endpoints ────────────────────────
 //
@@ -2883,6 +2933,9 @@ app.post("/v1/assets/:id/approve", async (c) => {
     },
   });
 
+  // Clear the run from the inbox queue if this was the last pending asset.
+  await refreshRunReviewState(db, variantRow?.productId);
+
   return c.json({ ok: true, asset_id: assetId, approved_at: now.toISOString() });
 });
 
@@ -2928,6 +2981,14 @@ app.post("/v1/assets/:id/reject", async (c) => {
     },
   });
 
+  // Clear the run from the inbox queue if this was the last pending asset.
+  const [rejVariant] = await db
+    .select({ productId: productVariants.productId })
+    .from(productVariants)
+    .where(eq(productVariants.id, asset.variantId))
+    .limit(1);
+  await refreshRunReviewState(db, rejVariant?.productId);
+
   return c.json({ ok: true, asset_id: assetId, status: "rejected", reason });
 });
 
@@ -2939,7 +3000,18 @@ app.get("/v1/inbox", async (c) => {
   const tenant = c.get("tenant") as Tenant;
   const visibleIds = visibleTenantIds(tenant);
 
-  const runs = await db
+  // Offset pagination so the review queue is NEVER silently truncated (the old
+  // unconditional .limit(50) could hide unreviewed runs once a tenant
+  // accumulated >50). The client pages until hasMore=false. A limit+1 probe
+  // detects whether more rows exist without a second COUNT query.
+  const rawLimit = Number.parseInt(c.req.query("limit") ?? "100", 10);
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(Math.max(rawLimit, 1), 200)
+    : 100;
+  const rawOffset = Number.parseInt(c.req.query("offset") ?? "0", 10);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+
+  const rows = await db
     .select({
       id: launchRuns.id,
       tenantId: launchRuns.tenantId,
@@ -2961,9 +3033,12 @@ app.get("/v1/inbox", async (c) => {
       )
     )
     .orderBy(desc(launchRuns.createdAt))
-    .limit(50);
+    .limit(limit + 1)
+    .offset(offset);
 
-  return c.json({ runs });
+  const hasMore = rows.length > limit;
+  const runs = hasMore ? rows.slice(0, limit) : rows;
+  return c.json({ runs, hasMore, nextOffset: offset + runs.length });
 });
 
 // Phase C · Iter 06 — bulk approve. Cap 50 per request to keep webhook
@@ -3036,6 +3111,15 @@ app.post("/v1/assets/:id/un-approve", async (c) => {
       undone_at: new Date().toISOString(),
     },
   });
+
+  // The asset is pending again — re-open its run in the inbox if it had been
+  // cleared to 'reviewed'.
+  const [unapVariant] = await db
+    .select({ productId: productVariants.productId })
+    .from(productVariants)
+    .where(eq(productVariants.id, asset.variantId))
+    .limit(1);
+  await refreshRunReviewState(db, unapVariant?.productId);
 
   return c.json({ ok: true, asset_id: assetId, status: "draft" });
 });
@@ -3169,6 +3253,8 @@ app.post("/v1/inbox/bulk-approve", async (c) => {
           status: "staged",
           bumpSyncedAt: true,
         });
+        // Clear the run from the inbox queue once its assets are all resolved.
+        await refreshRunReviewState(db, pid);
       }
 
       // Synchronous push to the BFR admin. Replaces the previous
