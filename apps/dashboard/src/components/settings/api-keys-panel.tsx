@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
+import { MCP_URL } from "@/lib/config";
 import { useApiQuery } from "@/lib/api-query";
 import { formatTimestamp } from "@/lib/format";
 import { useNow } from "@/lib/use-now";
@@ -162,7 +163,7 @@ export function ApiKeysPanel() {
             <div className="mt-4">
               <CardEyebrow>Quick test</CardEyebrow>
               <pre className="rounded-m3-md bg-surface-container px-4 py-3 mt-2 overflow-x-auto md-typescale-body-small font-mono text-[0.75rem] leading-relaxed">{`curl -H "Authorization: Bearer ${issued.key}" \\
-     https://ff-brand-studio-mcp.creatorain.workers.dev/v1/products`}</pre>
+     ${MCP_URL}/v1/products`}</pre>
             </div>
           </CardContent>
         </Card>

@@ -3,6 +3,18 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Custom domain — the API MUST be served from a buyfishingrod.com host, not
+# the default *.workers.dev. workers.dev is blocked/throttled by the GFW and
+# some corporate networks, so China-based sellers (our primary user base)
+# could load the dashboard (image-generation.buyfishingrod.com, a proxied
+# Pages custom domain on Cloudflare's main edge) but EVERY API call + the
+# /health probe silently failed — surfacing as "API · error" + permanently
+# stuck KPI skeletons for "only some users". This binds the same worker to a
+# reachable custom domain. (cert: advanced pack covering this exact host.)
+[[routes]]
+pattern = "mcp.image-generation.buyfishingrod.com"
+custom_domain = true
+
 # sharp is a native libvips binding — it can't run inside Workers, but its
 # transitive imports (`detect-libc.familySync` -> `process.report.getReport`)
 # crash deploy bundle validation (error 10021). Alias the bare `sharp`
