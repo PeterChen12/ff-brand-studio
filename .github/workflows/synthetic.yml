@@ -44,7 +44,13 @@ jobs:
           # one, not just the BFR vanity domain. The 2026-05-27 CORS bug went
           # undetected here because we only probed image-generation.bfr.com.
           DASHBOARD_URLS: ${{ vars.DASHBOARD_URLS || 'https://image-generation.buyfishingrod.com,https://ff-brand-studio.pages.dev' }}
-          WORKER_URL: ${{ vars.WORKER_URL || 'https://ff-brand-studio-mcp.creatorain.workers.dev' }}
+          # Probe the CUSTOM DOMAIN the dashboard actually calls, not the raw
+          # *.workers.dev host. workers.dev is blocked from mainland China (our
+          # user base) so users hit mcp.image-generation.buyfishingrod.com; a
+          # cert-expiry or custom-domain unbind there is the exact outage that
+          # showed "API · error" + stuck KPIs for "only some users" — monitor
+          # the host that can actually break for them.
+          WORKER_URL: ${{ vars.WORKER_URL || 'https://mcp.image-generation.buyfishingrod.com' }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           set -e
