@@ -1,15 +1,25 @@
 "use client";
 
 /**
- * Phase H1.1 — client-side image compression + direct-to-R2 PUT.
+ * Phase H1.1 — client-side image downscale (only when needed) + direct-to-R2 PUT.
  *
- * Compress every accepted file to ≤2MB / ≤2000px before sending so we
- * never blow the Worker request budget. The PUT bypasses the Worker
- * entirely — straight to the R2 endpoint that the upload-intent
+ * Quality-first: a file that already fits the upload cap is sent UNTOUCHED —
+ * re-encoding an in-spec HD photo only throws away detail, and that loss showed
+ * up as low compliance-grader scores. We only downscale files that exceed the
+ * worker's 15 MB per-object cap, and we do it at high resolution/quality. The
+ * PUT bypasses the Worker — straight to the R2 endpoint the upload-intent
  * endpoint signed for us.
+ *
+ * Prior behavior crushed EVERY file to ≤2 MB / ≤2000 px, which (a) degraded
+ * ordinary HD references and tanked their scores, and (b) combined with a 5 MB
+ * worker cap that the UI didn't advertise, made 5-6 MB photos fail outright.
  */
 
 import imageCompression from "browser-image-compression";
+
+// Keep in sync with the worker's per-object cap in apps/mcp-server/src/index.ts
+// (uploaded_object_too_large). Downscale targets land safely under it.
+export const UPLOAD_CAP_BYTES = 15_000_000;
 
 export type UploadStage =
   | "idle"
@@ -28,14 +38,16 @@ export interface UploadProgressEvent {
 }
 
 export async function compressImage(file: File): Promise<File> {
-  // Skip compression if already tiny — saves a few hundred ms on
-  // already-optimized assets.
-  if (file.size < 500_000) return file;
+  // Already within the cap → upload the original byte-for-byte (no re-encode,
+  // no quality loss). This is the common case for HD phone/camera photos.
+  if (file.size <= UPLOAD_CAP_BYTES) return file;
+  // Oversized → downscale just enough to fit, keeping resolution + quality high
+  // so the compliance grader still sees a crisp image.
   return imageCompression(file, {
-    maxSizeMB: 2,
-    maxWidthOrHeight: 2000,
+    maxSizeMB: 14, // land just under the 15 MB worker cap
+    maxWidthOrHeight: 4000, // preserve HD detail
     useWebWorker: true,
-    initialQuality: 0.85,
+    initialQuality: 0.92,
     fileType: file.type === "image/png" ? "image/png" : "image/jpeg",
   });
 }

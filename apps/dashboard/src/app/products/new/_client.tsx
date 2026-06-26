@@ -623,7 +623,7 @@ export default function NewProductPageInner() {
                     : "Drag images, or click to pick · 拖入或点击"}
                 </div>
                 <div className="md-typescale-body-small text-on-surface-variant/70 mt-2 font-mono">
-                  JPG · PNG · WEBP · ≤20MB each · 1-10 files
+                  JPG · PNG · WEBP · up to 20MB each (HD kept crisp) · 1-10 files
                 </div>
               </div>
 

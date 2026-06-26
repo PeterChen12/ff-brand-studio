@@ -50,7 +50,10 @@ import { toast } from "sonner";
 const MAX_PRODUCTS = 50;
 const MAX_IMAGES_PER_PRODUCT = 10;
 const MAX_TOTAL_BYTES = 100 * 1024 * 1024;
-const MAX_PER_IMAGE_BYTES = 5 * 1024 * 1024;
+// 15 MB per image (was 5 MB) — matches the worker's per-object cap and stops
+// rejecting ordinary 5-6 MB HD photos. compressImage() downscales anything
+// larger before the R2 PUT, so this is the validation gate, not a quality knob.
+const MAX_PER_IMAGE_BYTES = 15 * 1024 * 1024;
 const ONBOARD_FEE_CENTS = 50;
 
 type ProductStatus = "queued" | "uploading" | "creating" | "created" | "failed";
@@ -399,7 +402,7 @@ export default function BulkUploadPageInner() {
           totalBytes += f.size;
           if (isImageFile(f) && f.size > MAX_PER_IMAGE_BYTES) {
             errors.push(
-              `${f.name}: ${(f.size / 1_048_576).toFixed(1)} MB exceeds 5 MB cap`,
+              `${f.name}: ${(f.size / 1_048_576).toFixed(1)} MB exceeds the 15 MB per-image cap`,
             );
           }
         }
