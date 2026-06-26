@@ -57,8 +57,9 @@ describe("stageBfrProduct", () => {
     expect(url).toBe("https://staging.example.com/api/integrations/ff-brand-studio/stage-product");
   });
 
-  it("throws ApiError on BFR 5xx", async () => {
-    fetchMock.mockResolvedValueOnce({
+  it("retries transient 5xx then throws ApiError when they persist", async () => {
+    // 5xx is transient → signedPost retries (3 attempts) before giving up.
+    fetchMock.mockResolvedValue({
       ok: false,
       status: 502,
       text: async () => "bad gateway",
@@ -72,6 +73,37 @@ describe("stageBfrProduct", () => {
       // baseUrl default, not the error label.
       code: "tenant_stage_failed",
     });
+    // Exhausted all 3 attempts before surfacing the failure.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a transient 503 then succeeds (idempotent: same event id)", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "cold start" })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
+    const result = await stageBfrProduct({
+      envelope: baseEnvelope,
+      signingSecret: "whsec_retry",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.detail).toEqual({ ok: true });
+    // Same x-ff-event-id across the retry so the receiver dedupes.
+    const id1 = (fetchMock.mock.calls[0][1].headers as Record<string, string>)["x-ff-event-id"];
+    const id2 = (fetchMock.mock.calls[1][1].headers as Record<string, string>)["x-ff-event-id"];
+    expect(id1).toBe(id2);
+  });
+
+  it("does NOT retry a deterministic 4xx", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => "bad signature",
+    });
+    await expect(
+      stageBfrProduct({ envelope: baseEnvelope, signingSecret: "whsec_4xx" })
+    ).rejects.toMatchObject({ status: 502, code: "tenant_stage_failed" });
+    // 4xx is deterministic — surfaced on the first attempt, no retry.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("succeeds even when BFR returns non-JSON body", async () => {
