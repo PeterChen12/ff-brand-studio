@@ -64,8 +64,15 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build @ff/types
-        run: pnpm --filter @ff/types build
+      # The integration test imports the FULL launch pipeline, which pulls in
+      # @ff/brand-rules and @ff/media-clients in addition to @ff/types. All
+      # three resolve via dist/index.js (gitignored), so vitest can't import
+      # them until they're built. (@ff/seo-clients resolves via src — no build
+      # needed.) Building only @ff/types here is why the suite failed to
+      # collect with "Failed to resolve entry for package @ff/brand-rules"
+      # once PGPASSWORD was set and the suite started actually running.
+      - name: Build workspace libs
+        run: pnpm --filter @ff/types --filter @ff/brand-rules --filter @ff/media-clients build
 
       - name: Integration tests
         env:
