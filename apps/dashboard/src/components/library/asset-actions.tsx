@@ -112,8 +112,13 @@ export function BundleSkuButton({
           "bg-primary text-primary-on shadow-m3-1 hover:shadow-m3-2",
           busy ? "opacity-60 cursor-not-allowed" : "",
         ].join(" ")}
+        // Bilingual + explicit "all": Chinese operators didn't recognize the
+        // English-only "Download bundle" as "download every image at once" and
+        // kept clicking the per-asset ↓ Download. This is the download-all.
+        title="Download every image for this product as a single ZIP"
+        aria-label="Download all images for this product as a ZIP"
       >
-        {busy ? "Bundling…" : "Download bundle"}
+        {busy ? "Bundling… · 打包中" : "↓ Download all · 全部下载"}
       </button>
       {error && (
         <span className="md-typescale-body-small text-error font-medium">
