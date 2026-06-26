@@ -715,9 +715,15 @@ app.post("/v1/products", async (c) => {
     if (!v.exists) {
       return c.json({ error: "uploaded_object_missing", key }, 400);
     }
-    if (v.contentLength !== null && v.contentLength > 5_000_000) {
+    // 15 MB per object. The prior 5 MB cap silently rejected ordinary 5-6 MB
+    // HD phone/camera photos (the dashboard advertised a higher limit), which
+    // forced sellers to crush images to KB in WeChat before re-uploading — and
+    // the low-res result then scored badly in the compliance grader. 15 MB
+    // comfortably fits HD references; the client also downscales anything over
+    // this before upload (apps/dashboard/src/lib/uploader.ts).
+    if (v.contentLength !== null && v.contentLength > 15_000_000) {
       return c.json(
-        { error: "uploaded_object_too_large", key, size: v.contentLength },
+        { error: "uploaded_object_too_large", key, size: v.contentLength, cap: 15_000_000 },
         413
       );
     }
