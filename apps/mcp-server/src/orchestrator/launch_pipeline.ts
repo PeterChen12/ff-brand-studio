@@ -539,6 +539,44 @@ export async function runLaunchPipeline(
         ],
       };
     }
+
+    // ── 5.6 env present but production_pipeline OFF — fail honestly ─────────
+    // Historically this fell through to the legacy Phase-3 stub workers
+    // (section 6 + adapters), which persist platform_assets rows whose
+    // r2Url is `${R2_PUBLIC}/_phase3_stub/...` — objects that were NEVER
+    // uploaded to R2. The dashboard renders those as <img src> and every
+    // "generated" image is a 404 (broken thumbnail) even though the run
+    // reports success. Because the deployed worker ALWAYS passes env, the
+    // only way to reach the stub path in production is a tenant that isn't
+    // enabled for real generation. Fail with a clear message and zero cost
+    // instead of shipping dead images that masquerade as a successful launch.
+    // (The env-less unit-test path below still exercises the stub workers.)
+    const generationDisabledMsg =
+      "Image generation isn't enabled for this account yet. " +
+      "No images were produced and you were not charged. " +
+      "Ask an admin to enable production_pipeline for this tenant.";
+    await db
+      .update(launchRuns)
+      .set({
+        status: "failed",
+        totalCostCents: 0,
+        durationMs: Date.now() - startedAt,
+        lastError: generationDisabledMsg,
+      })
+      .where(eq(launchRuns.id, runId));
+    return {
+      run_id: runId,
+      product_id: product.id,
+      product_sku: product.sku,
+      status: "failed",
+      duration_ms: Date.now() - startedAt,
+      total_cost_cents: 0,
+      plan,
+      canonicals: [],
+      adapter_results: [],
+      hitl_count: 0,
+      notes: [...notes, generationDisabledMsg],
+    };
   }
 
   // ── 6. Evaluator-optimizer per adapter target ──────────────────────────
