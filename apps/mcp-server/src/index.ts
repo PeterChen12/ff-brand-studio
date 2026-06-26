@@ -31,6 +31,7 @@ import {
 import { and, desc, sql, eq, inArray, isNull } from "drizzle-orm";
 import { runSeoPipeline, type SeoSurfaceSpec } from "./orchestrator/seo_pipeline.js";
 import { runLaunchPipeline } from "./orchestrator/launch_pipeline.js";
+import { handleLaunchQueue } from "./lib/launch-queue.js";
 import type { LaunchPlatform } from "./orchestrator/planner.js";
 import { predictLaunchCost, PRODUCT_ONBOARD_CENTS } from "./orchestrator/cost.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -1718,68 +1719,67 @@ app.post("/v1/launches", async (c) => {
   } as const;
 
   if (asyncMode) {
-    // Background-run the pipeline. waitUntil keeps the worker alive
-    // past the HTTP response so the launch actually executes; without
-    // it Cloudflare would terminate the isolate when the response
-    // returns and the launch would never complete.
-    c.executionCtx.waitUntil(
-      (async () => {
-        try {
-          await db
-            .update(launchRuns)
-            .set({ currentPhase: "creating" })
-            .where(eq(launchRuns.id, runId))
-            .catch(() => {});
-          const result = await runLaunchPipeline(db, pipelineInput);
-          if (!p.dry_run) {
-            const actualCents = result.total_cost_cents;
-            const billedDelta = prediction.total_cents - actualCents;
-            if (billedDelta > 0) {
-              await creditWallet(db, {
-                tenantId: tenant.id,
-                cents: billedDelta,
-                reason: "refund",
-                referenceType: "launch_run",
-                referenceId: result.run_id,
-              });
-            }
-          }
-          await auditEvent(db, {
-            tenantId: tenant.id,
-            actor: actor ?? null,
-            action: result.status === "succeeded" ? "launch.complete" : "launch.failed",
-            targetType: "launch_run",
-            targetId: result.run_id,
-            metadata: {
-              status: result.status,
-              actual_cents: result.total_cost_cents,
-              duration_ms: result.duration_ms,
-              hitl_count: result.hitl_count,
-            },
-          });
-        } catch (bgErr) {
-          console.error(
-            "[launch:async] pipeline threw:",
-            bgErr instanceof Error ? `${bgErr.name}: ${bgErr.message}` : String(bgErr)
-          );
-          await db
-            .update(launchRuns)
-            .set({
-              status: "failed",
-              durationMs: 0,
-              lastError: `Pipeline threw: ${bgErr instanceof Error ? `${bgErr.name}: ${bgErr.message}`.slice(0, 1000) : String(bgErr).slice(0, 1000)}`,
-            })
-            .where(eq(launchRuns.id, runId))
-            .catch(() => {});
-        }
-      })()
-    );
+    // Enqueue the pipeline onto the launch queue and return immediately. We
+    // do NOT run it in executionCtx.waitUntil() — the pipeline takes 3-5 min
+    // and Cloudflare cancels waitUntil work shortly after the response is
+    // sent ("waitUntil() tasks did not complete within the allowed time after
+    // invocation end and have been cancelled"), which silently killed every
+    // multi-minute generation mid-flight and left the run stuck 'running'
+    // until the zombie-sweeper cron failed it. The queue consumer
+    // (handleLaunchQueue) runs the pipeline in its own invocation, which is
+    // not bound by this request's waitUntil window. See lib/launch-queue.ts.
+    const message: LaunchQueueMessage = {
+      runId,
+      tenantId: tenant.id,
+      productId: p.product_id,
+      platforms: p.platforms,
+      dryRun: p.dry_run,
+      predictedCents: prediction.total_cents,
+      includeSeo:
+        surfaceCount !== undefined ? surfaceCount > 0 : p.include_seo,
+      seoSurfaces: p.surfaces,
+      seoCostCapCents: p.seo_cost_cap_cents,
+      costCapCents: p.cost_cap_cents,
+      actor: actor ?? null,
+    };
+    try {
+      await c.env.LAUNCH_QUEUE.send(message);
+    } catch (enqueueErr) {
+      // If enqueue fails, the up-front charge would otherwise strand a
+      // 'pending' run forever. Refund + fail the run so the operator can
+      // retry, and surface the error.
+      console.error(
+        "[launch:async] enqueue failed:",
+        enqueueErr instanceof Error ? `${enqueueErr.name}: ${enqueueErr.message}` : String(enqueueErr)
+      );
+      await db
+        .update(launchRuns)
+        .set({
+          status: "failed",
+          durationMs: 0,
+          lastError: "Could not queue the launch — please retry.",
+        })
+        .where(eq(launchRuns.id, runId))
+        .catch(() => {});
+      if (!p.dry_run) {
+        await creditWallet(db, {
+          tenantId: tenant.id,
+          cents: prediction.total_cents,
+          reason: "refund",
+          referenceType: "launch_failure",
+          referenceId: runId,
+        }).catch((refundErr) =>
+          console.error("[launch:async] refund after enqueue failure FAILED", refundErr)
+        );
+      }
+      throw new ApiError(503, "launch_enqueue_failed", "Could not queue the launch. Please retry.");
+    }
     return c.json(
       {
         run_id: runId,
         status: "pending",
         async: true,
-        message: "Pipeline running in background. Poll GET /v1/launches/:run_id for progress.",
+        message: "Pipeline queued. Poll GET /v1/launches/:run_id for progress.",
       },
       202
     );
@@ -4467,4 +4467,7 @@ async function handleScheduled(
 export default {
   fetch: app.fetch,
   scheduled: handleScheduled,
+  // Durable launch execution — runs the multi-minute image pipeline outside
+  // the request's waitUntil window. See lib/launch-queue.ts.
+  queue: handleLaunchQueue,
 };

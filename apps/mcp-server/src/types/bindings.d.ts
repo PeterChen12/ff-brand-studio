@@ -3,6 +3,13 @@ interface CloudflareBindings {
   R2: R2Bucket;
   SESSION_KV: KVNamespace;
   AI: Ai;
+  // Phase: durable launch execution. The image pipeline runs 3-5 min, which
+  // exceeds the grace window Cloudflare allows for executionCtx.waitUntil()
+  // after the HTTP response returns ("waitUntil() tasks did not complete
+  // within the allowed time after invocation end and have been cancelled").
+  // The launch handler enqueues here; the queue consumer runs the pipeline in
+  // its own invocation (not bound by the request's waitUntil window).
+  LAUNCH_QUEUE: Queue<LaunchQueueMessage>;
 
   // Env vars (set as wrangler secrets)
   ENVIRONMENT: string;
@@ -64,4 +71,22 @@ interface CloudflareBindings {
   // P0-2 (backend audit) — comma-separated extra origins for CORS
   // beyond the static prod + localhost set. Used for preview deploys.
   CORS_EXTRA_ORIGINS?: string;
+}
+
+// Message enqueued by POST /v1/launches (async) and consumed by the queue
+// handler. Carries only serializable launch params — secrets/bindings are
+// read from the consumer's own env, never sent through the queue.
+interface LaunchQueueMessage {
+  runId: string;
+  tenantId: string;
+  productId: string;
+  platforms: string[];
+  dryRun: boolean;
+  predictedCents: number;
+  includeSeo: boolean;
+  seoSurfaces?: unknown;
+  seoCostCapCents?: number;
+  costCapCents?: number;
+  // Audit actor — a plain serializable shape (or null).
+  actor: unknown;
 }

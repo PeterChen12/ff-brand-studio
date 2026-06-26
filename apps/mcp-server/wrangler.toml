@@ -3,6 +3,37 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# The image pipeline (cleanup gpt-image-2 + derive + refine + lifestyle +
+# composites) is long-running. Raise the CPU ceiling from the 30s default to
+# the 5-min max so the queue consumer that runs it isn't CPU-killed. Most of
+# the wall-clock is external-API I/O (which doesn't count against CPU), but
+# image decode/encode across steps can exceed 30s of actual CPU.
+[limits]
+cpu_ms = 300000
+
+# Durable launch execution. POST /v1/launches (async) enqueues here instead of
+# running the pipeline in executionCtx.waitUntil() — Cloudflare cancels
+# waitUntil work shortly after the HTTP response returns, which silently
+# killed every multi-minute generation mid-flight ("waitUntil() tasks did not
+# complete within the allowed time after invocation end and have been
+# cancelled") and left runs stuck 'running' until the zombie-sweeper cron
+# failed them. The consumer runs each launch in its own invocation.
+[[queues.producers]]
+queue = "ff-launch-queue"
+binding = "LAUNCH_QUEUE"
+
+[[queues.consumers]]
+queue = "ff-launch-queue"
+# One launch per invocation — never batch two multi-minute pipelines into a
+# single consumer invocation (that WOULD blow the time budget).
+max_batch_size = 1
+max_batch_timeout = 0
+# A launch is expensive (real FAL/OpenAI spend); don't retry-storm. One retry
+# covers a transient blip; beyond that the run is marked failed and refunded.
+max_retries = 1
+# Process a few concurrent launches without unbounded fan-out.
+max_concurrency = 3
+
 # Custom domain — the API MUST be served from a buyfishingrod.com host, not
 # the default *.workers.dev. workers.dev is blocked/throttled by the GFW and
 # some corporate networks, so China-based sellers (our primary user base)
