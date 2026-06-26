@@ -3,13 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
-# The image pipeline (cleanup gpt-image-2 + derive + refine + lifestyle +
-# composites) is long-running. Raise the CPU ceiling from the 30s default to
-# the 5-min max so the queue consumer that runs it isn't CPU-killed. Most of
-# the wall-clock is external-API I/O (which doesn't count against CPU), but
-# image decode/encode across steps can exceed 30s of actual CPU.
-[limits]
-cpu_ms = 300000
+# NOTE: this Worker is on the Cloudflare FREE plan, which rejects a
+# [limits] cpu_ms override (error 100328). The pipeline is dominated by
+# external-API I/O (gpt-image-2, fal, sidecar) — fetch wait does NOT count
+# against CPU time — so the default CPU budget is fine; the failure mode was
+# waitUntil cancellation, not CPU. If this Worker is moved to a paid plan,
+# add `[limits]\ncpu_ms = 300000` for extra headroom on the image-decode steps.
 
 # Durable launch execution. POST /v1/launches (async) enqueues here instead of
 # running the pipeline in executionCtx.waitUntil() — Cloudflare cancels
