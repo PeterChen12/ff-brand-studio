@@ -76,18 +76,54 @@ export async function signedPost(args: {
 }): Promise<Response> {
   const url = `${args.baseUrl.replace(/\/$/, "")}${args.path}`;
   const body = JSON.stringify(args.body);
-  const t = Math.floor(Date.now() / 1000);
-  const sig = await hmacHex(args.signingSecret, `${t}.${body}`);
-  return fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-ff-signature": `t=${t},v1=${sig}`,
-      "x-ff-event-id": args.eventId,
-    },
-    body,
-    signal: AbortSignal.timeout(args.timeoutMs ?? 15_000),
-  });
+
+  // Retry transient failures with backoff. The one-click BFR push used to be a
+  // single fetch, so any cold start / 502-503 / timeout / network blip on the
+  // receiver failed the whole push and the operator had to click again — which
+  // read as "the upload to BFR admin is unreliable". Retrying is SAFE because
+  // the push is idempotent: x-ff-event-id is constant across attempts and the
+  // receiver dedupes on it (BFR webhook_inbox), so a retry of a request that
+  // actually landed is a no-op on their side.
+  const MAX_ATTEMPTS = 3;
+  const BACKOFF_MS = [500, 1500];
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    // Re-sign every attempt: the HMAC is timestamped and receivers enforce a
+    // freshness window, so a retry must carry a current `t`. Only `t`/sig
+    // change — the event id is constant so dedup still works.
+    const t = Math.floor(Date.now() / 1000);
+    const sig = await hmacHex(args.signingSecret, `${t}.${body}`);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-ff-signature": `t=${t},v1=${sig}`,
+          "x-ff-event-id": args.eventId,
+        },
+        body,
+        signal: AbortSignal.timeout(args.timeoutMs ?? 15_000),
+      });
+    } catch (err) {
+      // fetch() itself rejected (timeout / connection reset / DNS) — retry.
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+        continue;
+      }
+      throw err;
+    }
+    // Retry only transient server states; return 2xx AND deterministic 4xx
+    // (auth/validation) to the caller — those won't change on retry.
+    if ((res.status === 429 || res.status >= 500) && attempt < MAX_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+      continue;
+    }
+    return res;
+  }
+  // Unreachable — the loop returns or throws — but TS needs a terminal.
+  throw lastErr ?? new Error("signedPost: retries exhausted");
 }
 
 export async function signedGet(args: {
