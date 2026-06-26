@@ -2,11 +2,12 @@
  * Phase K2 — feedback-driven asset regeneration.
  *
  * Looks up an existing platform_assets row, charges 30¢ to the wallet
- * (refund-on-failure), and re-runs FAL Nano Banana Pro with the
- * existing studio reference + the user's feedback amended to the
- * deriver's standard refine prompt. Result is appended to the
- * asset's refinement_history and the row's r2Url + iter counter
- * are updated.
+ * (refund-on-failure), and re-runs the FAL image-edit model with the
+ * current image as the reference and the OPERATOR'S feedback as the lead
+ * directive (slot-aware: Amazon MAIN keeps its mandatory white background,
+ * every other slot honors scene/background/composition changes; feedback in
+ * Chinese is honored). Result is appended to the asset's refinement_history
+ * and the row's r2Url + iter counter are updated.
  *
  * Behind tenant.features.feedback_regen — caller checks before
  * invoking. We trust the caller.
@@ -20,7 +21,6 @@ import {
   products,
   imageQaJudgments,
   type PlatformAsset,
-  type Product,
 } from "../db/schema.js";
 import { sql } from "drizzle-orm";
 import { auditEvent } from "./audit.js";
@@ -29,7 +29,6 @@ import {
   creditWallet,
   InsufficientFundsError,
 } from "./wallet.js";
-import { getDeriver } from "../pipeline/derivers/index.js";
 import { publicUrl } from "../pipeline/cache.js";
 
 export const REGEN_COST_CENTS = 30;
@@ -146,24 +145,57 @@ export async function regenerateAsset(
     throw err;
   }
 
-  const deriver = getDeriver((product as Product).kind as ReturnType<typeof getDeriver>["kind"]);
-  const basePrompt = deriver.refinePrompt({
-    productName: product.nameEn,
-    productNameZh: product.nameZh,
-    category: product.category,
-  });
-  const chipBlock = input.chips.length
-    ? "\nFix these issues called out by the operator:\n" + input.chips.map((c) => `  - ${c}`).join("\n")
-    : "";
-  const fbBlock = input.feedback.trim()
-    ? `\nOperator feedback: ${input.feedback.trim().slice(0, 600)}`
-    : "";
-  const prompt = basePrompt + chipBlock + fbBlock;
+  // Operator feedback is the LEAD directive — not appended subordinate to a
+  // generic studio-refine prompt. The old code built the prompt as
+  // deriver.refinePrompt() (which hardcodes "Pure white seamless background")
+  // for EVERY slot and tacked the operator's request on the end, so "change
+  // the background" requests (frequently written in Chinese) were overridden
+  // and the image came back unchanged. Now we make the request authoritative.
+  //
+  // Amazon's MAIN image must stay on a pure white background (Amazon TOS), so
+  // that single slot keeps the white-bg lock and applies only non-background
+  // feedback. Every other slot (lifestyle, A+, close-up, banner, all Shopify
+  // slots) is free to honor scene / background / composition changes.
+  const platform = (asset.platform ?? "").toLowerCase();
+  const slot = (asset.slot ?? "").toLowerCase();
+  const lockWhiteBg = platform === "amazon" && slot === "main";
 
-  // Use the asset itself as both refs — refresh in-place. Production
-  // pipeline's iter loop already proved [studio, crop] dual-ref is best;
-  // for a regen-from-current we reference the current image twice and
-  // trust the prompt amendments to drive the change.
+  const instructionLines: string[] = [];
+  if (input.chips.length) instructionLines.push(...input.chips.map((c) => `- ${c}`));
+  if (input.feedback.trim()) instructionLines.push(input.feedback.trim().slice(0, 600));
+  const operatorInstruction =
+    instructionLines.join("\n") ||
+    "- Improve overall quality; remove any halo, artifacts, or distortion.";
+
+  const identityLine =
+    "Keep the product's real identity — exact shape, color, pattern, finish, and hardware — matching the reference image. Do not invent a different product.";
+  const langLine =
+    "The operator may write in English or Chinese; follow their intent exactly.";
+
+  const prompt = lockWhiteBg
+    ? [
+        `Edit this Amazon MAIN product image of ${product.nameEn} (${product.category}).`,
+        `Apply the operator's requested changes below. ${langLine}`,
+        `HARD CONSTRAINT: this is an Amazon MAIN image — the background MUST stay a pure white seamless studio backdrop (#FFFFFF). Do NOT change the background or add any scene, even if asked. Apply every OTHER requested change (color, angle, lighting, framing, sharpness, defects/artifacts).`,
+        identityLine,
+        ``,
+        `Operator's requested changes:`,
+        operatorInstruction,
+      ].join("\n")
+    : [
+        `Edit this product photo of ${product.nameEn} (${product.category}).`,
+        `Apply the operator's requested changes below as the TOP priority — this may include changing the background, scene, setting, lighting, angle, or composition.`,
+        langLine,
+        identityLine,
+        ``,
+        `Operator's requested changes:`,
+        operatorInstruction,
+      ].join("\n");
+
+  // Single reference to the current image: it anchors the product's identity
+  // while leaving the model free to act on the operator's instruction. (The
+  // prior dual self-reference over-anchored the composition, which contributed
+  // to "nothing changed" on background/scene requests.)
   const currentUrl = asset.r2Url;
   let res: Response;
   try {
@@ -175,7 +207,7 @@ export async function regenerateAsset(
       },
       body: JSON.stringify({
         prompt,
-        image_urls: [currentUrl, currentUrl],
+        image_urls: [currentUrl],
         num_images: 1,
         output_format: "png",
       }),
