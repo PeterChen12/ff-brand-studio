@@ -70,7 +70,28 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  if (raw) await raw.end();
+  // Clean up the test fixture so it doesn't linger in the SHARED production
+  // ff_brand_studio DB. This test runs the legacy stub pipeline (no env), which
+  // writes platform_assets with dead `_phase3_stub` r2Urls under the sample
+  // tenant — and those surface as BROKEN images in the dashboard's sample
+  // catalog for every sample-access tenant. beforeAll only reset state before a
+  // run, so the artifacts from the LAST run sat in prod until the next CI run.
+  // Tear them down here (afterAll runs even if assertions fail).
+  if (raw) {
+    try {
+      if (productId) {
+        await raw`DELETE FROM platform_assets WHERE variant_id IN (SELECT id FROM product_variants WHERE product_id = ${productId}::uuid)`;
+        await raw`DELETE FROM product_variants WHERE product_id = ${productId}::uuid`;
+        await raw`DELETE FROM products WHERE id = ${productId}::uuid`;
+      }
+      if (sellerId) {
+        await raw`DELETE FROM seller_profiles WHERE id = ${sellerId}::uuid`;
+      }
+    } catch {
+      // Best-effort cleanup — never fail the suite on teardown.
+    }
+    await raw.end();
+  }
 });
 
 describe.skipIf(skipReason)("full v2 pipeline integration", () => {
