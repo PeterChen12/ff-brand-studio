@@ -20,6 +20,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
 import { formatCents } from "@/lib/format";
 import type { PlatformAssetRow } from "@/db/schema";
@@ -1261,10 +1262,17 @@ function TweakImagePanel({
         if (detail) {
           setIterations((prev) => ({ ...prev, [selectedId]: detail }));
         }
+        toast.error("You've hit the regeneration cap for this image.");
+      } else if (apiErr?.status === 403) {
+        // feedback_regen not enabled for this tenant.
+        toast.error(
+          "Regeneration isn't enabled on your plan — contact support to turn it on.",
+        );
+      } else {
+        // This is a direct apiFetch (not SWR) so nothing else surfaces it —
+        // a swallowed error left the spinner stopping with no explanation.
+        toast.error(`Regeneration failed: ${msg}`);
       }
-      // Surface via console; the global ErrorState/Toaster catches the
-      // ApiError if it bubbles via SWR; here it's a direct apiFetch
-      // call so we just log and reset.
       // eslint-disable-next-line no-console
       console.error("[regen]", msg);
     } finally {

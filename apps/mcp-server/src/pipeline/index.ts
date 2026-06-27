@@ -158,6 +158,10 @@ export async function runProductionPipeline(
       errors: ["no reference image attached to product"],
     };
   }
+  // Advance the phase off "creating" (set by the queue) as soon as real
+  // server work begins — best-of-input scoring + the quality gate below are
+  // the slow opening stretch a polling client would otherwise see pinned.
+  await setPhase("passthrough");
   const sourceR2Key = await pickBestReference(env, ctx.referenceR2Keys).catch(
     (err) => {
       // If best-of scoring fails (R2 read error, decoder crash) we fall

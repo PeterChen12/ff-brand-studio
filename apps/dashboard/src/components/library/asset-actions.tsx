@@ -9,6 +9,7 @@ import {
   type BundleSku,
 } from "@/lib/zip-bundler";
 import { RegenModal } from "@/components/library/regen-modal";
+import { useTenant } from "@/lib/tenant-context";
 
 const baseBtn =
   "inline-flex items-center gap-1.5 px-3 h-8 rounded-m3-full md-typescale-label-medium transition-colors duration-m3-short3";
@@ -43,6 +44,27 @@ export function RegenAssetButton({
   onRegenerated?: (newR2Url: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const tenant = useTenant();
+  // Regenerate is operator-gated (worker returns 403 feature_disabled unless
+  // tenant.features.feedback_regen). Render an explanatory disabled control
+  // rather than a button that opens a modal only to 403 on submit. `null`
+  // tenant = still loading → keep it enabled rather than block the UI.
+  const regenEnabled = tenant === null || tenant.features.feedback_regen === true;
+
+  if (!regenEnabled) {
+    return (
+      <button
+        type="button"
+        disabled
+        className={`${baseBtn} bg-surface-container text-on-surface-variant/60 border ff-hairline cursor-not-allowed`}
+        title="Regeneration isn't enabled on your plan — contact support to turn it on."
+        aria-label="Regenerate (not enabled on your plan)"
+      >
+        ↻ Regenerate
+      </button>
+    );
+  }
+
   return (
     <>
       <button

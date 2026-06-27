@@ -280,6 +280,7 @@ export default function LibraryPage() {
                       setTab("listings");
                     }}
                     onStaged={() => assetsQ.mutate()}
+                    onMutate={() => assetsQ.mutate()}
                   />
                 )}
               />
@@ -591,12 +592,16 @@ function SkuGroup({
   onOpenAt,
   onShowListings,
   onStaged,
+  onMutate,
 }: {
   group: SkuGroupShape;
   delay: number;
   onOpenAt: (idx: number) => void;
   onShowListings?: (sku: string) => void;
   onStaged?: () => void;
+  // Re-fetch the asset list after a per-asset mutation (e.g. regenerate) so
+  // the grid shows the new image instead of the stale one until a page reload.
+  onMutate?: () => void;
 }) {
   return (
     <Card className="md-fade-in" style={{ animationDelay: `${delay}ms` }}>
@@ -649,6 +654,7 @@ function SkuGroup({
             item={item}
             sku={group.sku}
             onOpen={() => onOpenAt(idx)}
+            onMutate={onMutate}
           />
         ))}
       </div>
@@ -660,10 +666,12 @@ function PlatformAssetTile({
   item,
   sku,
   onOpen,
+  onMutate,
 }: {
   item: PlatformAssetRow;
   sku: string;
   onOpen: () => void;
+  onMutate?: () => void;
 }) {
   const isImage = isImageFormat(item.format);
   const ratingVariant = scoreToVariant(item.complianceScore);
@@ -711,7 +719,7 @@ function PlatformAssetTile({
         {isImage && (
           <div className="pt-1 flex gap-2 flex-wrap">
             <DownloadAssetButton item={item} sku={sku} />
-            <RegenAssetButton item={item} />
+            <RegenAssetButton item={item} onRegenerated={onMutate} />
           </div>
         )}
       </div>

@@ -197,7 +197,10 @@ export function StorefrontDrawer({
                       <div className="rounded-m3-full bg-surface/85 backdrop-blur-sm border ff-hairline px-3 py-1 md-typescale-label-small text-on-surface-variant">
                         {activeImage.platform} · {activeImage.slot}
                       </div>
-                      <RegenAssetButton item={activeImage} />
+                      <RegenAssetButton
+                        item={activeImage}
+                        onRegenerated={() => assetsQ.mutate()}
+                      />
                     </div>
                   </>
                 ) : (

@@ -98,7 +98,7 @@ export function RegenModal({ asset, open, onClose, onRegenerated }: Props) {
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}
           rows={4}
-          placeholder="Add specifics — angle, lighting, what to preserve, what to change…"
+          placeholder="Optional — angle, lighting, what to preserve, what to change. Leave blank for a fresh take."
           className="w-full px-3 py-2 rounded-m3-md bg-surface-container-low border ff-hairline focus:outline-none focus:ring-2 focus:ring-primary md-typescale-body-medium"
           maxLength={600}
         />
@@ -123,7 +123,7 @@ export function RegenModal({ asset, open, onClose, onRegenerated }: Props) {
             <button
               type="button"
               onClick={submit}
-              disabled={busy || overCap || (chips.length === 0 && feedback.trim().length === 0)}
+              disabled={busy || overCap}
               className="px-4 h-9 rounded-m3-full bg-primary text-primary-on md-typescale-label-medium disabled:opacity-50"
             >
               {busy ? "Generating…" : overCap ? "Cap reached" : "Regenerate ($0.30)"}

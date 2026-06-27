@@ -836,9 +836,31 @@ function LaunchProgressButton({
     return Math.round(minPercent + frac * (maxPercent - minPercent));
   }
 
+  // The server holds current_phase at "creating" through a long opening
+  // stretch (the queue sets it once; the pipeline's first real phase write is
+  // cleanup/derive), and "refine_all_crops" is a single multi-minute phase.
+  // Mapping phase→percent alone therefore PINS the bar — the reported "stuck
+  // at 10%". Drive the bar by elapsed time instead, using the phase's mapped
+  // percent only as a FLOOR so it never sits below a phase we've demonstrably
+  // reached. Both inputs are monotonic, so the bar never jumps backward.
+  // Terminal phases complete the bar; everything else caps at 95 so only a
+  // terminal state hits 100.
+  function launchPercent(phase: string, elapsedMs: number): number {
+    if (
+      phase === "succeeded" ||
+      phase === "hitl_blocked" ||
+      phase === "cost_capped" ||
+      phase === "failed"
+    ) {
+      return 100;
+    }
+    const floor = PHASE_PERCENT[phase] ?? PHASE_PERCENT.creating;
+    return Math.min(95, Math.max(floor, interpolatePercent(elapsedMs)));
+  }
+
   const percent =
     stage.kind === "launching"
-      ? (PHASE_PERCENT[stage.phase] ?? interpolatePercent(stage.elapsedMs))
+      ? launchPercent(stage.phase, stage.elapsedMs)
       : stage.kind === "creating"
         ? PHASE_PERCENT.creating
         : 5;
