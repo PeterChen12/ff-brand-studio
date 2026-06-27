@@ -95,13 +95,32 @@ export function TenantPanel() {
     setError(null);
     setSuccess(null);
     try {
+      // Listing-default prefs (output langs / quality / display) live on a
+      // SEPARATE endpoint. /v1/tenant's Zod schema silently strips these three
+      // keys, so sending them there was a no-op — they have to go to
+      // /v1/tenants/me/preferences (which validates exactly these keys).
+      //
+      // Run the two PATCHes SEQUENTIALLY, not in parallel: both endpoints
+      // read-merge-write the same tenants.features jsonb from a per-request
+      // tenant snapshot, so concurrent calls would clobber each other's keys
+      // (last write wins). Preferences first, then /v1/tenant — so the second
+      // request's snapshot already includes the freshly-saved prefs.
+      await apiFetch<{ ok: boolean; features: Record<string, unknown> }>(
+        "/v1/tenants/me/preferences",
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            default_output_langs: defaultLangs,
+            default_quality_preset: defaultQuality,
+            language_display: langDisplay,
+          }),
+        },
+      );
+
       const patch: Record<string, unknown> = {
         brand_hex: brandHex,
         default_platforms: defaultPlatforms,
         amazon_a_plus_grid: amazonAPlusGrid,
-        default_output_langs: defaultLangs,
-        default_quality_preset: defaultQuality,
-        language_display: langDisplay,
       };
       if (rateLimit.trim()) {
         const n = parseInt(rateLimit.trim(), 10);

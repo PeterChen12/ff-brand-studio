@@ -49,6 +49,10 @@ interface CloudflareBindings {
 
   // Stripe (Phase H — wallet top-ups)
   STRIPE_SECRET_KEY: string;
+  // pk_* publishable key — NOT secret, surfaced to the static dashboard via
+  // GET /v1/billing/config so embedded checkout can mount without a build-time
+  // NEXT_PUBLIC_* (and so the UI can show an honest "not enabled" state).
+  STRIPE_PUBLISHABLE_KEY?: string;
   STRIPE_WEBHOOK_SECRET: string;
   STRIPE_PRICE_TOPUP_10: string;
   STRIPE_PRICE_TOPUP_25: string;

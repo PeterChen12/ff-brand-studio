@@ -3,16 +3,24 @@
 /**
  * Phase H3 — wallet + billing surface.
  *
- * Shows current balance, recent ledger rows, and quick top-up
- * buttons. Top-up calls /v1/billing/checkout-session and embeds the
- * Stripe-returned client secret. If Stripe isn't yet configured (no
- * STRIPE_SECRET_KEY), shows a setup banner instead of failing.
+ * Shows current balance, recent ledger rows, and quick top-up buttons.
+ * Top-up calls /v1/billing/checkout-session and mounts Stripe Embedded
+ * Checkout from the returned client_secret in a modal. Whether top-ups are
+ * available (and the publishable key needed to mount the embed) is read at
+ * runtime from /v1/billing/config — so the static export needs no build-time
+ * NEXT_PUBLIC_STRIPE_* and, when Stripe isn't configured, the UI shows an
+ * honest "not enabled yet" state instead of a button that opens a dead toast.
  */
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { loadStripe, type Stripe } from "@stripe/stripe-js";
+import {
+  EmbeddedCheckout,
+  EmbeddedCheckoutProvider,
+} from "@stripe/react-stripe-js";
 import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
-import { useApiQueryAllPages } from "@/lib/api-query";
+import { useApiQuery, useApiQueryAllPages } from "@/lib/api-query";
 import { formatCents, formatTimestamp } from "@/lib/format";
 import { useNow } from "@/lib/use-now";
 import { PageHeader } from "@/components/layout/page-header";
@@ -58,7 +66,43 @@ export default function BillingPageInner() {
   const ledger = data?.ledger ?? null;
   const balance = data?.balance_cents ?? null;
 
+  // Whether wallet top-ups are wired + the publishable key to mount the embed.
+  // Read at runtime so the static build needs no NEXT_PUBLIC_STRIPE_* and the
+  // UI can render an honest disabled state when Stripe isn't configured.
+  const { data: billingConfig, isLoading: configLoading } = useApiQuery<{
+    configured: boolean;
+    publishable_key: string | null;
+  }>("/v1/billing/config");
+  const stripeConfigured = billingConfig?.configured ?? false;
+  const publishableKey = billingConfig?.publishable_key ?? null;
+
+  // loadStripe once per publishable key — a stable promise the
+  // EmbeddedCheckoutProvider consumes; null until we know the key.
+  const stripePromise = useMemo<Promise<Stripe | null> | null>(
+    () => (publishableKey ? loadStripe(publishableKey) : null),
+    [publishableKey],
+  );
+
   const [topUpInflight, setTopUpInflight] = useState<number | null>(null);
+  // When set, the embedded-checkout modal is open for this client_secret.
+  const [checkoutSecret, setCheckoutSecret] = useState<string | null>(null);
+
+  // After Stripe redirects back to /billing?session_id=… the payment has been
+  // submitted. The wallet is credited asynchronously by the stripe-webhook, so
+  // confirm + refresh the ledger, then strip the param so a reload doesn't
+  // re-toast.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get("session_id")) return;
+    toast.success(
+      "Payment received — your balance updates within a few seconds.",
+    );
+    void mutate();
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session_id");
+    window.history.replaceState({}, "", url.toString());
+  }, [mutate]);
 
   async function handleTopUp(amountCents: number) {
     setTopUpInflight(amountCents);
@@ -68,20 +112,20 @@ export default function BillingPageInner() {
         {
           method: "POST",
           body: JSON.stringify({ amount_cents: amountCents }),
-        }
+        },
       );
-      if ("error" in res) {
-        toast.error(`Stripe not configured yet: ${res.error}`);
+      if ("client_secret" in res && res.client_secret) {
+        setCheckoutSecret(res.client_secret);
       } else {
-        toast.info(
-          "Stripe checkout is being prepared — embed UI activates once Price IDs are configured. Contact support to enable top-ups."
+        toast.error(
+          "Top-ups aren't enabled yet. Ask the operator to finish Stripe setup.",
         );
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("503") || msg.includes("not_configured")) {
         toast.error(
-          "Stripe is not yet configured for this tenant. Ask the operator to set STRIPE_SECRET_KEY + STRIPE_PRICE_TOPUP_*."
+          "Top-ups aren't enabled yet (Stripe isn't configured for this environment).",
         );
       } else {
         toast.error(msg);
@@ -156,13 +200,21 @@ export default function BillingPageInner() {
               </div>
             </CardHeader>
             <CardContent>
+              {!configLoading && !stripeConfigured && (
+                <div className="mb-3 rounded-m3-md border ff-hairline bg-surface-container px-4 py-3 md-typescale-body-small text-on-surface-variant">
+                  Top-ups aren&apos;t enabled in this environment yet. Once
+                  Stripe is configured, these buttons open secure checkout here.
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 {TOPUP_AMOUNTS.map((t) => (
                   <button
                     key={t.cents}
                     type="button"
                     onClick={() => handleTopUp(t.cents)}
-                    disabled={topUpInflight !== null}
+                    disabled={
+                      topUpInflight !== null || configLoading || !stripeConfigured
+                    }
                     className={cn(
                       "rounded-m3-md border ff-hairline px-5 py-4 text-left",
                       "transition-colors hover:bg-surface-container-high",
@@ -176,21 +228,23 @@ export default function BillingPageInner() {
                       {t.label}
                     </div>
                     <div className="md-typescale-body-small text-on-surface-variant/70 mt-0.5 font-mono">
-                      {topUpInflight === t.cents ? "Opening Stripe…" : t.sub}
+                      {topUpInflight === t.cents ? "Opening checkout…" : t.sub}
                     </div>
                   </button>
                 ))}
               </div>
               {topUpInflight !== null && (
                 <div className="md-typescale-body-small text-on-surface-variant/70 text-center mt-3 font-mono">
-                  Opening Stripe checkout — other amounts disabled until this completes.
+                  Opening secure checkout — other amounts disabled until this
+                  completes.
                 </div>
               )}
             </CardContent>
             <CardFooter>
-              <span className="md-typescale-label-small">Stripe · test mode</span>
+              <span className="md-typescale-label-small">Secured by Stripe</span>
               <span className="md-typescale-label-small text-on-surface-variant/60">
-                Card ending in any number with future expiry works in test mode
+                Checkout opens in-page · credits land within a few seconds of
+                payment
               </span>
             </CardFooter>
           </Card>
@@ -236,6 +290,39 @@ export default function BillingPageInner() {
           </Card>
         </div>
       </section>
+
+      {checkoutSecret && stripePromise && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 md:p-8"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Secure checkout"
+        >
+          <div className="my-auto w-full max-w-xl rounded-m3-lg bg-surface shadow-m3-3">
+            <div className="flex items-center justify-between border-b ff-hairline px-5 py-3">
+              <span className="md-typescale-title-medium">
+                Add credits · 充值
+              </span>
+              <button
+                type="button"
+                onClick={() => setCheckoutSecret(null)}
+                className="h-8 w-8 rounded-m3-full hover:bg-surface-container-high md-typescale-label-large"
+                aria-label="Close checkout"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-2">
+              <EmbeddedCheckoutProvider
+                stripe={stripePromise}
+                options={{ clientSecret: checkoutSecret }}
+              >
+                <EmbeddedCheckout />
+              </EmbeddedCheckoutProvider>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

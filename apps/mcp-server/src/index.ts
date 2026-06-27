@@ -1316,6 +1316,19 @@ const CheckoutInput = z.object({
     .max(50_000), // $500 max per call
 });
 
+// Surfaces whether wallet top-ups are wired + the (non-secret) publishable
+// key, so the static-export dashboard can mount embedded checkout at runtime
+// and otherwise render an honest "top-ups not enabled yet" state instead of a
+// button that opens a dead toast. `configured` requires BOTH the secret key
+// (for /v1/billing/checkout-session) and the publishable key (for the client).
+app.get("/v1/billing/config", async (c) => {
+  const pk = c.env.STRIPE_PUBLISHABLE_KEY ?? null;
+  return c.json({
+    configured: !!c.env.STRIPE_SECRET_KEY && !!pk,
+    publishable_key: pk,
+  });
+});
+
 app.post("/v1/billing/checkout-session", async (c) => {
   const body = await c.req.json();
   const parsed = CheckoutInput.safeParse(body);
@@ -1337,9 +1350,11 @@ app.post("/v1/billing/checkout-session", async (c) => {
   const priceId = priceIdForAmount(c.env, parsed.data.amount_cents);
 
   const session = await stripe.checkout.sessions.create({
-    // Stripe SDK v22+ renamed "embedded" → "embedded_page" but the
-    // dashboard's <EmbeddedCheckout /> component still consumes the
-    // returned client_secret identically.
+    // Embedded checkout — the dashboard mounts <EmbeddedCheckout /> from the
+    // returned client_secret. This pinned Stripe SDK (22.1.0) types the
+    // embedded client-secret mode as "embedded_page" (UiMode = 'elements' |
+    // 'embedded_page' | 'form' | 'hosted_page'); that's the value that both
+    // compiles and yields a client_secret.
     ui_mode: "embedded_page",
     mode: "payment",
     line_items: priceId
