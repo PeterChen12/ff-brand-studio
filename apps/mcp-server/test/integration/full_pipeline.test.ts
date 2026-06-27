@@ -36,18 +36,42 @@ const PG = {
 let raw: ReturnType<typeof postgres>;
 let productId: string;
 let sellerId: string;
+let tenantId: string;
+
+// Dedicated, isolated tenant for this fixture. It deliberately is NOT the
+// sample tenant (whose assets render in every sample-access user's dashboard
+// catalog) and NOT the QA tenant (whose own assets the qa loadable-image gate
+// inspects) — the stub pipeline this test exercises writes dead _phase3_stub
+// r2Urls, and we don't want those surfacing anywhere user-facing. afterAll
+// tears the fixture down regardless.
+const INT_TEST_CLERK_ORG = "org_v2_int_test";
 
 beforeAll(async () => {
   if (skipReason) return;
   raw = postgres(PG);
+
+  // tenant_id is NOT NULL on seller_profiles + products (constraint added after
+  // this fixture was first seeded — the old rows predated it). Get-or-create a
+  // dedicated tenant so the INSERTs below always have a valid tenant_id.
+  const tenants = await raw`SELECT id::text AS id FROM tenants WHERE clerk_org_id = ${INT_TEST_CLERK_ORG} LIMIT 1`;
+  if (tenants.length > 0) {
+    tenantId = tenants[0].id;
+  } else {
+    const ins = await raw`
+      INSERT INTO tenants (clerk_org_id, name, plan)
+      VALUES (${INT_TEST_CLERK_ORG}, 'V2 Integration Test', 'free')
+      RETURNING id::text AS id
+    `;
+    tenantId = ins[0].id;
+  }
 
   const sellers = await raw`SELECT id::text AS id FROM seller_profiles WHERE org_name_en = 'V2_INT_TEST' LIMIT 1`;
   if (sellers.length > 0) {
     sellerId = sellers[0].id;
   } else {
     const ins = await raw`
-      INSERT INTO seller_profiles (org_name_en, contact_email, amazon_seller_id)
-      VALUES ('V2_INT_TEST', 'int@test', 'A-INT-1')
+      INSERT INTO seller_profiles (tenant_id, org_name_en, contact_email, amazon_seller_id)
+      VALUES (${tenantId}::uuid, 'V2_INT_TEST', 'int@test', 'A-INT-1')
       RETURNING id::text AS id
     `;
     sellerId = ins[0].id;
@@ -61,8 +85,8 @@ beforeAll(async () => {
     await raw`DELETE FROM product_variants WHERE product_id = ${productId}::uuid`;
   } else {
     const ins = await raw`
-      INSERT INTO products (seller_id, sku, name_en, category, colors_hex)
-      VALUES (${sellerId}::uuid, 'V2-INT-DRINKWARE', 'Int Test Tumbler', 'drinkware', ARRAY['#0a1f44']::text[])
+      INSERT INTO products (tenant_id, seller_id, sku, name_en, category, colors_hex)
+      VALUES (${tenantId}::uuid, ${sellerId}::uuid, 'V2-INT-DRINKWARE', 'Int Test Tumbler', 'drinkware', ARRAY['#0a1f44']::text[])
       RETURNING id::text AS id
     `;
     productId = ins[0].id;
