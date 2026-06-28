@@ -22,7 +22,11 @@
 import type JSZipNS from "jszip";
 
 const MAX_ZIP_DEPTH = 2;
-const SUPPORTED_FILE_EXT = /\.(jpe?g|png|webp|json|txt|md)$/i;
+// Include .docx so vendor description docs inside a zip reach the bulk parser
+// (it extracts text from .docx via JSZip). Note: a .docx is itself a zip, but
+// walkZip only RECURSES on entries ending in ".zip", so a .docx entry is
+// carried through as a single binary file rather than being unpacked.
+const SUPPORTED_FILE_EXT = /\.(jpe?g|png|webp|json|txt|md|docx)$/i;
 
 interface UnpackedFile {
   /** Synthetic File the bulk-form's parseFolders() can consume. */
@@ -98,7 +102,9 @@ async function walkZip(
               ? "image/webp"
               : ext === "json"
                 ? "application/json"
-                : "text/plain";
+                : ext === "docx"
+                  ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  : "text/plain";
       const baseName = entryPath.split("/").pop() ?? entryPath;
       const file = new File([buf], baseName, { type: mime });
       // The bulk form reads `webkitRelativePath` to bucket files by

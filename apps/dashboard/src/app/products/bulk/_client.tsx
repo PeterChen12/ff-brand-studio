@@ -122,6 +122,171 @@ async function readTextFile(file: File): Promise<string> {
   });
 }
 
+// A .docx is a zip with the body text in word/document.xml. Vendors almost
+// always send product descriptions as Word docs, so reading them is the
+// difference between "No description" on every row and grounded listing copy.
+// We strip the OOXML tags, turning </w:p> + <w:br> into line breaks so the
+// text stays readable, and decode the handful of XML entities Word emits.
+async function readDocxText(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(buf);
+  const doc = zip.file("word/document.xml");
+  if (!doc) return "";
+  const xml = await doc.async("string");
+  return xml
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<w:br\b[^>]*\/?>/g, "\n")
+    .replace(/<w:tab\b[^>]*\/?>/g, "\t")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+const DESC_TEXT_EXT = /\.(txt|md|markdown|text)$/i;
+const DESC_DOCX_EXT = /\.docx$/i;
+// Keywords (EN + zh) that mark a file as "this is the description". Vendor
+// batches name them all sorts of ways — description.txt, 产品描述.docx,
+// <folder name>.md, 说明.txt — so we score candidates instead of demanding an
+// exact filename.
+const DESC_KEYWORDS =
+  /(description|descr|desc|detail|readme|about|copy|文案|描述|说明|详情|介绍|产品)/i;
+
+function isDescriptionCandidate(file: File): boolean {
+  const b = basenameOf(file);
+  return DESC_TEXT_EXT.test(b) || DESC_DOCX_EXT.test(b);
+}
+
+// Resolve a product description from whatever text/Word file the operator
+// dropped in the folder — not just a literal `description.txt`. Order:
+// keyword-named files first, then a file named like the folder, then a docx
+// (vendors default to Word), then the largest remaining candidate. Reads in
+// score order and returns the first non-empty body.
+async function resolveDescriptionFromFolder(
+  group: File[],
+  folder: string,
+): Promise<string | null> {
+  const candidates = group.filter(isDescriptionCandidate);
+  if (candidates.length === 0) return null;
+
+  const folderSlug = folder.toLowerCase().replace(/[\s_-]+/g, "");
+  const score = (f: File): number => {
+    const b = basenameOf(f);
+    const stem = b.replace(/\.[^.]+$/, "");
+    let s = 0;
+    if (DESC_KEYWORDS.test(stem)) s += 100;
+    if (stem.replace(/[\s_-]+/g, "") === folderSlug) s += 60;
+    if (DESC_DOCX_EXT.test(b)) s += 10; // vendor descriptions are usually Word
+    s += Math.min(f.size, 50_000) / 50_000; // tie-break toward more content
+    return s;
+  };
+  candidates.sort((a, b) => score(b) - score(a));
+
+  for (const c of candidates) {
+    try {
+      const text = DESC_DOCX_EXT.test(basenameOf(c))
+        ? await readDocxText(c)
+        : await readTextFile(c);
+      const trimmed = text.trim();
+      if (trimmed) return trimmed;
+    } catch {
+      // Unreadable candidate (corrupt docx, encoding) — try the next one.
+    }
+  }
+  return null;
+}
+
+// Recursively materialise the files from a drag-and-drop. Folder drops arrive
+// as FileSystemEntry trees (NOT a flat FileList), and the resulting File
+// objects have no webkitRelativePath — so we synthesize one that mirrors what
+// the <input webkitdirectory> picker produces (Root/subfolder/file), letting
+// the SAME parseStructured() bucketing work for dropped folders.
+function walkDropEntry(
+  entry: FileSystemEntry,
+  prefix: string,
+  out: File[],
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      (entry as FileSystemFileEntry).file(
+        (file) => {
+          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+          try {
+            Object.defineProperty(file, "webkitRelativePath", {
+              value: rel,
+              writable: false,
+            });
+          } catch {
+            // Some browsers make the prop non-configurable; the original
+            // (empty) value just routes this file agentic — acceptable.
+          }
+          out.push(file);
+          resolve();
+        },
+        () => resolve(),
+      );
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      const all: FileSystemEntry[] = [];
+      const dirPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const readBatch = () => {
+        // readEntries returns at most 100 entries per call — loop until empty.
+        reader.readEntries(
+          async (batch) => {
+            if (batch.length === 0) {
+              for (const child of all) await walkDropEntry(child, dirPrefix, out);
+              resolve();
+            } else {
+              all.push(...batch);
+              readBatch();
+            }
+          },
+          () => resolve(),
+        );
+      };
+      readBatch();
+    } else {
+      resolve();
+    }
+  });
+}
+
+async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
+  // webkitGetAsEntry() MUST be called synchronously before any await — the
+  // DataTransferItemList is emptied once the drop handler yields. Capture all
+  // entries first, then traverse.
+  const entries: FileSystemEntry[] = [];
+  const items = dt.items;
+  if (items && items.length && typeof items[0].webkitGetAsEntry === "function") {
+    for (let i = 0; i < items.length; i++) {
+      const e = items[i].webkitGetAsEntry?.();
+      if (e) entries.push(e);
+    }
+  }
+  if (entries.length === 0) {
+    // No entry API (or plain file drop) — fall back to the flat file list.
+    return dt.files ? Array.from(dt.files) : [];
+  }
+  const out: File[] = [];
+  const onlyDir =
+    entries.length === 1 && entries[0].isDirectory ? entries[0] : null;
+  if (onlyDir) {
+    // One folder dropped → its name is the root, children are products
+    // (mirrors picking the parent folder in the file dialog).
+    await walkDropEntry(onlyDir, "", out);
+  } else {
+    // Multiple folders / loose files → wrap under a synthetic root so each
+    // top-level folder becomes a product bucket.
+    for (const e of entries) await walkDropEntry(e, "DroppedBatch", out);
+  }
+  return out;
+}
+
 function detectMode(files: File[]): RoutingMode {
   const images = files.filter(isImageFile);
   if (images.length === 0) return "agentic";
@@ -203,7 +368,6 @@ async function parseStructured(files: File[]): Promise<ParseResult> {
   for (const [folder, group] of buckets) {
     const images = group.filter(isImageFile).slice(0, MAX_IMAGES_PER_PRODUCT);
     const meta = group.find((f) => basenameOf(f) === "meta.json");
-    const descTxt = group.find((f) => basenameOf(f) === "description.txt");
     const nameTxt = group.find((f) => basenameOf(f) === "name.txt");
 
     let resolvedName = folder.replace(/[-_]+/g, " ");
@@ -224,11 +388,13 @@ async function parseStructured(files: File[]): Promise<ParseResult> {
           resolvedDesc = parsed.description.trim();
         }
       } catch {
-        // ignore — fall through to txt files
+        // ignore — fall through to description files
       }
     }
-    if (!resolvedDesc && descTxt) {
-      resolvedDesc = (await readTextFile(descTxt)).trim() || null;
+    // Fall back to any description file in the folder — .txt, .md, .docx, or a
+    // file named after the product — not just a literal description.txt.
+    if (!resolvedDesc) {
+      resolvedDesc = await resolveDescriptionFromFolder(group, folder);
     }
     if (resolvedName === folder.replace(/[-_]+/g, " ") && nameTxt) {
       const t = (await readTextFile(nameTxt)).trim();
@@ -364,6 +530,7 @@ export default function BulkUploadPageInner() {
   const [submitting, setSubmitting] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   const blockingCount = useMemo(
     () => products.filter((p) => p.blocking).length,
@@ -376,23 +543,25 @@ export default function BulkUploadPageInner() {
   const eligibleCount = products.length - blockingCount;
   const estimatedFeeCents = eligibleCount * ONBOARD_FEE_CENTS;
 
-  const onPick = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const fileList = e.target.files;
-      if (!fileList || fileList.length === 0) return;
+  // Shared ingest path for BOTH the file pickers and drag-and-drop. Takes a
+  // flat File[] (drop traversal + picker both produce this) and runs the same
+  // unzip → validate → route → annotate pipeline.
+  const ingest = useCallback(
+    async (input: File[]) => {
+      if (input.length === 0) return;
       setParsing(true);
       setCompleted(false);
       setParsingNote("Reading files…");
       try {
         // Step 1 — unpack zip if a single .zip is dropped
         let files: File[];
-        const onlyFile = fileList.length === 1 ? fileList[0] : null;
+        const onlyFile = input.length === 1 ? input[0] : null;
         if (onlyFile && /\.zip$/i.test(onlyFile.name)) {
           setParsingNote("Unpacking zip…");
           const unpacked = await unpackZip(onlyFile);
           files = unpacked.files.map((u) => u.file);
         } else {
-          files = Array.from(fileList);
+          files = input;
         }
 
         // Step 2 — batch-level validation
@@ -467,6 +636,34 @@ export default function BulkUploadPageInner() {
       }
     },
     [apiFetch],
+  );
+
+  const onPick = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const fileList = e.target.files;
+      if (!fileList || fileList.length === 0) return;
+      void ingest(Array.from(fileList));
+    },
+    [ingest],
+  );
+
+  const onDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      if (parsing) return;
+      // Must read the entries synchronously (filesFromDrop captures them before
+      // its first await) — the DataTransfer is emptied once the handler yields.
+      const files = await filesFromDrop(e.dataTransfer);
+      if (files.length === 0) {
+        toast.error(
+          "Couldn't read the dropped item. Try the pickers below, or drop a folder / .zip.",
+        );
+        return;
+      }
+      void ingest(files);
+    },
+    [ingest, parsing],
   );
 
   function reset() {
@@ -620,28 +817,56 @@ export default function BulkUploadPageInner() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <PickerCard
-                htmlFor="bulk-folder-input"
-                icon="🗂"
-                title="Folder"
-                subtitle="Subfolder = product"
-                disabled={parsing}
-              />
-              <PickerCard
-                htmlFor="bulk-zip-input"
-                icon="📦"
-                title=".zip"
-                subtitle="Same layout, zipped"
-                disabled={parsing}
-              />
-              <PickerCard
-                htmlFor="bulk-loose-input"
-                icon="✨"
-                title="Loose files"
-                subtitle="Let AI organize"
-                disabled={parsing}
-              />
+            {/* Drop zone — drag a product folder or .zip anywhere in here.
+                Folder drops are traversed via the FileSystem entry API so
+                nested subfolders + their description files come through. */}
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (!parsing) setDragOver(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+              }}
+              onDrop={onDrop}
+              className={cn(
+                "rounded-m3-md border-2 border-dashed transition-colors p-4",
+                dragOver
+                  ? "border-primary bg-primary-container/20"
+                  : "border-outline-variant",
+              )}
+            >
+              <div className="text-center mb-3 md-typescale-body-small text-on-surface-variant">
+                <span aria-hidden className="mr-1">
+                  ⬇
+                </span>
+                Drag &amp; drop a product folder or a <code>.zip</code> here — or
+                choose below
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <PickerCard
+                  htmlFor="bulk-folder-input"
+                  icon="🗂"
+                  title="Folder"
+                  subtitle="Subfolder = product"
+                  disabled={parsing}
+                />
+                <PickerCard
+                  htmlFor="bulk-zip-input"
+                  icon="📦"
+                  title=".zip"
+                  subtitle="Same layout, zipped"
+                  disabled={parsing}
+                />
+                <PickerCard
+                  htmlFor="bulk-loose-input"
+                  icon="✨"
+                  title="Loose files"
+                  subtitle="Let AI organize"
+                  disabled={parsing}
+                />
+              </div>
             </div>
             <input
               ref={folderInputRef}
@@ -684,19 +909,20 @@ export default function BulkUploadPageInner() {
                 Folder layout reference (for Folder + .zip modes)
               </summary>
               <pre className="px-4 pb-3 pt-1 font-mono text-[0.6875rem] text-on-surface-variant whitespace-pre overflow-x-auto">
-                {`MyBatch/                 ← pick this folder
+                {`MyBatch/                 ← pick this folder (or drag it in)
 ├─ sku-001/
 │  ├─ hero.jpg           ← image (required, ≤10/product)
 │  ├─ side.jpg
-│  ├─ description.txt    ← optional product description
+│  ├─ description.docx   ← optional description (.docx / .txt / .md)
 │  └─ meta.json          ← optional: {"name": "...", "description": "..."}
 ├─ sku-002/
 │  ├─ front.png
-│  └─ name.txt           ← optional fallback name
+│  └─ 产品说明.md        ← any .txt/.md/.docx works (incl. folder-named)
 └─ ...
 
 Resolution order for name: meta.json > name.txt > folder name
-Resolution order for description: meta.json > description.txt > none
+Description: meta.json > any .txt/.md/.docx in the folder (keyword- or
+folder-named files win) > none
 
 Loose-files mode skips this — Sonnet groups files by filename + visual cues.`}
               </pre>
