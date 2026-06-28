@@ -158,48 +158,76 @@ export async function refineWithIteration(
     const threshold =
       ctx.features.clip_threshold_overrides?.[ctx.kind] ?? deriver.clipThreshold;
     const clipPassed = score !== null && score >= threshold;
+    const visionAvailable =
+      !!env.ANTHROPIC_API_KEY && budget >= VISION_COST_CENTS;
 
-    // Identity verification against the seller's REAL product photo(s). CLIP is
-    // only a cheap proxy, and this judge previously compared the output against
-    // the cleanup re-draw — so wrong-color / wrong-detail renders that matched
-    // the cleanup shipped as "accurate". Now: judge once per crop against the
-    // ORIGINALS, and a CLIP pass alone is NOT sufficient to ship. When vision
-    // is genuinely unavailable we fall back to trusting CLIP rather than
-    // blocking the launch.
-    if (lastVerdict === null && env.ANTHROPIC_API_KEY && budget >= VISION_COST_CENTS) {
+    // Run the identity judge against the seller's REAL product photo(s) — NOT
+    // the cleanup re-draw this used to compare against (which let wrong-color /
+    // wrong-detail renders that merely matched the laundered cleanup ship as
+    // "accurate"). A small wrapper so both the CLIP-pass confirmation and the
+    // CLIP-fail escalation share identical infra-failure handling.
+    const runJudge = async () => {
       const dual = await judgeImage({
         generated_image_url: r2KeyToPublicUrl(env, stepRes.outputR2Key),
         reference_image_urls: originalRefUrls,
         slot_label: input.cropTag,
         category: ctx.category,
-        api_key: env.ANTHROPIC_API_KEY,
+        api_key: env.ANTHROPIC_API_KEY as string,
       });
       // Differentiate infra failure (don't poison the next prompt with error
       // strings) from a real rejection with usable visual critique.
       const infraFailure =
         ("fetch_error" in (dual.metrics ?? {})) ||
         dual.reasons.some((r) => r.includes("crashed:"));
-      if (infraFailure) {
-        // Vision down — trust CLIP if it passed, else ship best as FAIR.
-        if (clipPassed) return shipOutput(stepRes.outputR2Key, iter, score, null, false);
-        break;
-      }
+      if (infraFailure) return { infra: true as const };
       totalCost += dual.cost_cents;
       budget -= dual.cost_cents;
-      lastVerdict = {
+      const verdict: Verdict = {
         verdict: dual.approved ? "pass" : "fail",
         reasons: dual.reasons,
         details: {},
       };
-      history[history.length - 1].verdict = lastVerdict;
-      if (lastVerdict.verdict === "pass") {
-        return shipOutput(stepRes.outputR2Key, iter, score, lastVerdict, false);
+      // NB: lastVerdict is assigned by the CALLER (not here) — assigning it
+      // inside this closure defeats TS control-flow narrowing of lastVerdict
+      // below. We still record the per-iter verdict on history here.
+      history[history.length - 1].verdict = verdict;
+      return { infra: false as const, verdict };
+    };
+
+    if (clipPassed) {
+      // CLIP says good — but it's a weak proxy and previously shipped here with
+      // NO identity check. Confirm against the originals, and re-judge every
+      // CLIP-pass candidate (so a later iter that fixed identity can still ship
+      // clean). When vision is unavailable, fall back to trusting CLIP rather
+      // than blocking the launch.
+      if (!visionAvailable) {
+        return shipOutput(stepRes.outputR2Key, iter, score, lastVerdict ?? null, false);
       }
-      // Identity rejected — fall through to the specialist re-refine below.
-    } else if (clipPassed && lastVerdict?.verdict !== "fail") {
-      // No vision available (no key / no budget) and CLIP passed — ship on the
-      // cheap signal rather than blocking the launch.
-      return shipOutput(stepRes.outputR2Key, iter, score, lastVerdict ?? null, false);
+      const res = await runJudge();
+      if (res.infra) {
+        return shipOutput(stepRes.outputR2Key, iter, score, null, false);
+      }
+      lastVerdict = res.verdict;
+      if (res.verdict.verdict === "pass") {
+        return shipOutput(stepRes.outputR2Key, iter, score, res.verdict, false);
+      }
+      // Identity rejected despite a CLIP pass — fall through to re-refine.
+    } else {
+      // CLIP failed — escalate to the judge once per crop to catch CLIP false
+      // negatives (the cheap signal can under-score a perfectly good render).
+      if (lastVerdict === null && visionAvailable) {
+        const res = await runJudge();
+        if (res.infra) break; // vision down + CLIP fail → ship best as FAIR
+        lastVerdict = res.verdict;
+        if (res.verdict.verdict === "pass") {
+          return shipOutput(stepRes.outputR2Key, iter, score, res.verdict, false);
+        }
+      } else if (lastVerdict === null && !env.ANTHROPIC_API_KEY) {
+        // No judge configured at all and CLIP failed — can't verify; ship the
+        // best-so-far as FAIR at the cap (matches the prior no-key behavior).
+        break;
+      }
+      // Fall through to re-refine.
     }
 
     // Re-refine — route the rejection reasons to a specialist prompt prefix
