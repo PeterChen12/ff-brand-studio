@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useApiFetch } from "@/lib/api";
+import { MCP_URL } from "@/lib/config";
 import {
   Card,
   CardContent,
@@ -173,7 +174,7 @@ export function IntegrationsPanel() {
           secret. See{" "}
           <a
             className="underline-offset-2 hover:underline"
-            href="/v1/tenant-api.yaml"
+            href={`${MCP_URL}/v1/tenant-api.yaml`}
             target="_blank"
             rel="noopener noreferrer"
           >

@@ -85,27 +85,37 @@ export function StageProductButton({
     }
     setBusy(true);
     try {
-      const res = await apiFetch<{ approved: number; failed: number }>(
-        "/v1/inbox/bulk-approve",
-        {
-          method: "POST",
-          body: JSON.stringify({ asset_ids: stageable.map((a) => a.id) }),
-        }
-      );
-      if (res.approved > 0 && res.failed === 0) {
-        setJustStagedCount(res.approved);
-        toast.success(
-          `Staged ${res.approved} asset${res.approved === 1 ? "" : "s"} for ${productLabel}. → admin.buyfishingrod.com`
+      // Worker caps bulk-approve at 50 ids/request — chunk so a product with
+      // >50 stageable assets doesn't 400. Aggregate results.
+      const ids = stageable.map((a) => a.id);
+      const CHUNK = 50;
+      let approved = 0;
+      let failed = 0;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const res = await apiFetch<{ approved: number; failed: number }>(
+          "/v1/inbox/bulk-approve",
+          {
+            method: "POST",
+            body: JSON.stringify({ asset_ids: ids.slice(i, i + CHUNK) }),
+          }
         );
-      } else if (res.approved > 0) {
-        setJustStagedCount(res.approved);
+        approved += res.approved;
+        failed += res.failed;
+      }
+      if (approved > 0 && failed === 0) {
+        setJustStagedCount(approved);
+        toast.success(
+          `Staged ${approved} asset${approved === 1 ? "" : "s"} for ${productLabel}. → admin.buyfishingrod.com`
+        );
+      } else if (approved > 0) {
+        setJustStagedCount(approved);
         toast.warning(
-          `Staged ${res.approved} of ${stageable.length} — ${res.failed} failed.`
+          `Staged ${approved} of ${stageable.length} — ${failed} failed.`
         );
       } else {
         toast.error("Nothing was staged — see console for details.");
       }
-      onStaged?.(res.approved);
+      onStaged?.(approved);
     } catch (err) {
       toast.error(
         err instanceof Error ? `Stage failed: ${err.message}` : "Stage failed"

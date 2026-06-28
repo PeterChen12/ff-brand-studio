@@ -25,6 +25,12 @@ interface Subscription {
 const ALL_EVENTS = [
   "launch.complete",
   "launch.failed",
+  // Asset review events the staging/publish integration fans out — without
+  // these in the picker a user couldn't subscribe a downstream admin to
+  // approved/rejected assets even though the worker emits them.
+  "asset.approved",
+  "asset.rejected",
+  "asset.unapproved",
   "listing.publish",
   "listing.unpublish",
   "billing.stripe_topup",

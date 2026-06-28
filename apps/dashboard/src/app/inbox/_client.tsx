@@ -211,19 +211,28 @@ export default function InboxClient() {
     setBulkBusy(true);
     const ids = Array.from(selectedAssetIds);
     try {
-      const res = await apiFetch<{ approved: number; failed: number }>(
-        "/v1/inbox/bulk-approve",
-        {
-          method: "POST",
-          body: JSON.stringify({ asset_ids: ids }),
-        }
-      );
+      // The worker caps bulk-approve at 50 ids/request, so "select all" on a
+      // run with >50 reviewable assets used to 400. Chunk and aggregate.
+      const CHUNK = 50;
+      let approved = 0;
+      let failed = 0;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const res = await apiFetch<{ approved: number; failed: number }>(
+          "/v1/inbox/bulk-approve",
+          {
+            method: "POST",
+            body: JSON.stringify({ asset_ids: ids.slice(i, i + CHUNK) }),
+          }
+        );
+        approved += res.approved;
+        failed += res.failed;
+      }
       setAssets((prev) =>
         prev ? prev.filter((a) => !selectedAssetIds.has(a.id)) : prev
       );
       setSelectedAssetIds(new Set());
-      if (res.failed > 0) {
-        setError(`${res.failed} of ${ids.length} approves failed.`);
+      if (failed > 0) {
+        setError(`${failed} of ${ids.length} approves failed.`);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

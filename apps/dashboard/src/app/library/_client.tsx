@@ -127,9 +127,12 @@ export default function LibraryPage() {
   const itemsError = assetsQ.error;
 
   // Issue C — lazy-load listings the first time the tab is opened by
-  // passing `null` to useApiQuery as the SWR conditional-fetch pattern.
-  const listingsQ = useApiQuery<{ listings: ListingRow[] }>(
+  // passing `null` as the SWR conditional-fetch pattern. Pages through every
+  // listing (was silently capped at 100) so the tab + its count aren't
+  // truncated once a tenant grows past one page.
+  const listingsQ = useApiQueryAllPages<{ listings: ListingRow[] }>(
     tab === "listings" ? "/v1/listings" : null,
+    "listings",
   );
   const listings = listingsQ.data?.listings ?? null;
   const listingsError = listingsQ.error;

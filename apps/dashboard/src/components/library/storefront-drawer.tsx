@@ -391,6 +391,11 @@ function EditableListing({
         if (title !== initialTitle) patch.h1 = title;
         if (description !== initialDescription)
           patch.description_md = description;
+        // Shopify stores the bullet list under `features` (see extractBullets).
+        // Map edits back so bullet changes aren't silently dropped on save.
+        if (JSON.stringify(bullets) !== JSON.stringify(initialBullets)) {
+          patch.features = bullets;
+        }
       }
       if (Object.keys(patch).length === 0) {
         toast.info("No changes to save.");

@@ -2045,10 +2045,16 @@ app.get("/v1/listings", async (c) => {
     }
 
     // Issue C — tenant-wide listings feed for the dashboard Listings tab.
-    // Joins through product_variants → products so each row carries the
-    // SKU and product name the UI needs to group/filter without a second
-    // round-trip. Capped at 100; if a tenant ever exceeds this, swap in
-    // cursor pagination on updated_at.
+    // Joins through product_variants → products so each row carries the SKU and
+    // product name the UI needs to group/filter without a second round-trip.
+    // Offset-paginated (limit/offset + hasMore) so the tab never silently
+    // truncates — the dashboard pages through via useApiQueryAllPages. Defaults
+    // to limit=100 so non-paginating callers behave as before.
+    const limit = Math.min(
+      Math.max(parseInt(c.req.query("limit") ?? "100", 10) || 100, 1),
+      200
+    );
+    const offset = Math.max(parseInt(c.req.query("offset") ?? "0", 10) || 0, 0);
     const rows = await db
       .select({
         id: platformListings.id,
@@ -2073,12 +2079,16 @@ app.get("/v1/listings", async (c) => {
       .leftJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(platformListings.tenantId, tids))
       .orderBy(desc(platformListings.updatedAt))
-      .limit(100);
-    const withSample = rows.map((r) => ({
+      // Fetch one extra row to detect whether another page exists.
+      .limit(limit + 1)
+      .offset(offset);
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const withSample = page.map((r) => ({
       ...r,
       isSample: r.tenantId === SAMPLE_TENANT_ID,
     }));
-    return c.json({ listings: withSample });
+    return c.json({ listings: withSample, hasMore });
   } catch (err) {
     console.error("[/v1/listings]", err);
     return c.json({ listings: [], error: err instanceof Error ? err.message : String(err) }, 500);

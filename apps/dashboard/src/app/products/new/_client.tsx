@@ -419,6 +419,12 @@ export default function NewProductPageInner() {
       pollAbortRef.current?.abort();
       const ctrl = new AbortController();
       pollAbortRef.current = ctrl;
+      let pollFailures = 0;
+      // ~5 consecutive misses (12.5s) before we surface a problem. The launch
+      // runs server-side via the queue, so a blip in status polling doesn't
+      // mean the generation died — but a sustained failure must not leave the
+      // bar frozen with no explanation (it previously swallowed every error).
+      const MAX_POLL_FAILURES = 5;
       const poll = async (): Promise<void> => {
         while (!ctrl.signal.aborted) {
           await new Promise((r) => setTimeout(r, 2500));
@@ -427,6 +433,7 @@ export default function NewProductPageInner() {
             const status = await apiFetch<{
               run: { id: string; status: string; currentPhase?: string | null };
             }>(`/v1/launches/${launch.run_id}`);
+            pollFailures = 0;
             const run = status.run;
             const phase = run.currentPhase ?? run.status ?? "uploading";
             const elapsed = Date.now() - startedAt;
@@ -470,6 +477,18 @@ export default function NewProductPageInner() {
           } catch (pollErr) {
             if (ctrl.signal.aborted) return;
             console.warn("[launch-poll]", pollErr);
+            pollFailures += 1;
+            if (pollFailures >= MAX_POLL_FAILURES) {
+              toast.error(
+                "Lost connection while tracking progress — your product is still generating. Check the Library in a minute.",
+              );
+              setLaunchStage({
+                kind: "error",
+                message:
+                  "Couldn't track generation progress. It's likely still running — open the Library to check.",
+              });
+              return;
+            }
           }
         }
       };
