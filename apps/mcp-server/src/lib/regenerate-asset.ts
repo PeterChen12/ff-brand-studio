@@ -19,6 +19,7 @@ import {
   platformAssets,
   productVariants,
   products,
+  productReferences,
   imageQaJudgments,
   type PlatformAsset,
 } from "../db/schema.js";
@@ -129,6 +130,17 @@ export async function regenerateAsset(
     .limit(1);
   if (!product) return { ok: false, reason: "not_found" };
 
+  // The seller's ORIGINAL photo — passed as a second reference so identity
+  // stays pinned to the REAL product across regens. Without it, each regen
+  // anchors only on the previous generated image, so repeated regens drift
+  // further from the actual product (compounding any earlier hallucination).
+  const [origRef] = await db
+    .select({ r2Url: productReferences.r2Url })
+    .from(productReferences)
+    .where(eq(productReferences.productId, product.id))
+    .limit(1);
+  const originalRefUrl = origRef?.r2Url ?? null;
+
   // Charge wallet up-front; refund if FAL throws.
   try {
     await chargeWallet(db, {
@@ -167,8 +179,9 @@ export async function regenerateAsset(
     instructionLines.join("\n") ||
     "- Improve overall quality; remove any halo, artifacts, or distortion.";
 
-  const identityLine =
-    "Keep the product's real identity — exact shape, color, pattern, finish, and hardware — matching the reference image. Do not invent a different product.";
+  const identityLine = originalRefUrl
+    ? "Keep the product's real identity — exact shape, color, pattern, finish, and hardware. The SECOND reference image is the real product photo: match its identity exactly, but use it ONLY for identity — ignore its background and framing. Do not invent a different product."
+    : "Keep the product's real identity — exact shape, color, pattern, finish, and hardware — matching the reference image. Do not invent a different product.";
   const langLine =
     "The operator may write in English or Chinese; follow their intent exactly.";
 
@@ -192,11 +205,13 @@ export async function regenerateAsset(
         operatorInstruction,
       ].join("\n");
 
-  // Single reference to the current image: it anchors the product's identity
-  // while leaving the model free to act on the operator's instruction. (The
-  // prior dual self-reference over-anchored the composition, which contributed
-  // to "nothing changed" on background/scene requests.)
+  // First reference = the current image (carries the composition to edit);
+  // second = the original product photo (identity anchor, see above). We do
+  // NOT duplicate the current image (the prior dual SELF-reference over-
+  // anchored composition and caused "nothing changed" on background requests);
+  // a distinct original is an identity signal, not a composition lock.
   const currentUrl = asset.r2Url;
+  const regenImageUrls = originalRefUrl ? [currentUrl, originalRefUrl] : [currentUrl];
   let res: Response;
   try {
     res = await fetch("https://fal.run/fal-ai/gemini-3-pro-image-preview/edit", {
@@ -207,7 +222,7 @@ export async function regenerateAsset(
       },
       body: JSON.stringify({
         prompt,
-        image_urls: [currentUrl],
+        image_urls: regenImageUrls,
         num_images: 1,
         output_format: "png",
       }),

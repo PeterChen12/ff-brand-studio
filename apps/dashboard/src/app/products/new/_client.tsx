@@ -793,6 +793,11 @@ function LaunchProgressButton({
   canSubmit: boolean;
   stage: LaunchStage;
 }) {
+  // High-water mark so the bar never animates backward if a poll ever reports
+  // an out-of-order (lower-%) phase. Scoped to the launching phase and reset
+  // otherwise, so a second launch in the same session starts fresh.
+  const highWaterRef = useRef(0);
+
   if (stage.kind === "idle") {
     return (
       <Button type="submit" disabled={!canSubmit}>
@@ -858,12 +863,20 @@ function LaunchProgressButton({
     return Math.min(95, Math.max(floor, interpolatePercent(elapsedMs)));
   }
 
-  const percent =
+  const rawPercent =
     stage.kind === "launching"
       ? launchPercent(stage.phase, stage.elapsedMs)
       : stage.kind === "creating"
         ? PHASE_PERCENT.creating
         : 5;
+  let percent = rawPercent;
+  if (stage.kind === "launching") {
+    percent = Math.max(highWaterRef.current, rawPercent);
+    highWaterRef.current = percent;
+  } else {
+    // Pre-launch (uploading/creating) — reset so the next run isn't pinned.
+    highWaterRef.current = 0;
+  }
   const label =
     stage.kind === "launching"
       ? (PHASE_LABEL[stage.phase] ?? "Working…")

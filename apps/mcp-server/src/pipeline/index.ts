@@ -162,7 +162,7 @@ export async function runProductionPipeline(
   // server work begins — best-of-input scoring + the quality gate below are
   // the slow opening stretch a polling client would otherwise see pinned.
   await setPhase("passthrough");
-  const sourceR2Key = await pickBestReference(env, ctx.referenceR2Keys).catch(
+  const sourceR2Key: string = await pickBestReference(env, ctx.referenceR2Keys).catch(
     (err) => {
       // If best-of scoring fails (R2 read error, decoder crash) we fall
       // back to the first reference rather than aborting — losing the
@@ -172,6 +172,11 @@ export async function runProductionPipeline(
       return ctx.referenceR2Keys[0];
     }
   );
+  // Pin the REAL product photo on ctx so refine anchors identity to it and the
+  // identity judge compares against it — not the gpt-image-2 cleanup output,
+  // which is a generative re-draw of the product (the laundering that let
+  // wrong-color / wrong-detail renders pass as "accurate").
+  ctx.originalReferenceR2Key = sourceR2Key;
   // Score the selected reference for the abort gate. We re-fetch the
   // buffer here because pickBestReference may have used a sampled subset.
   try {

@@ -471,6 +471,8 @@ export async function runLaunchPipeline(
         // can fall back to keyword matching on free-form descriptions when
         // the category is "other".
         description: product.description ?? null,
+        colorsHex: product.colorsHex ?? null,
+        materials: product.materials ?? null,
         kind: (product.kind ?? "compact_square") as KindType,
         referenceR2Keys,
         features,

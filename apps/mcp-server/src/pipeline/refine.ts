@@ -16,8 +16,37 @@ export const REFINE_COST_CENTS = 30;
 // Phase G · G12 — bump this whenever the prompt builder, model, or
 // reference shape changes. The cache hash includes it so stale outputs
 // stop hitting on the next deploy without manual eviction.
-const REFINE_CACHE_VERSION = 1;
+// v2: added PRODUCT FACTS grounding block + original-photo identity anchor.
+const REFINE_CACHE_VERSION = 2;
 const REFINE_MODEL_ID = "fal:gemini-3-pro-image-preview";
+
+// Ground the render in the product's real attributes. The deriver prompts are
+// generic per-kind templates (name + category only); without this, the model
+// has no textual signal for the real palette / materials / specifics and must
+// infer everything from the (often low-quality) reference image — a major
+// source of "looks plausible but isn't the product". The facts are for
+// rendering accuracy only; we explicitly forbid drawing them as text since the
+// negative-prompt block bans all in-image text.
+function groundingBlock(ctx: PipelineCtx): string {
+  const facts: string[] = [];
+  if (ctx.colorsHex && ctx.colorsHex.length > 0) {
+    facts.push(`Real product colors (hex): ${ctx.colorsHex.slice(0, 6).join(", ")}`);
+  }
+  if (ctx.materials && ctx.materials.length > 0) {
+    facts.push(`Materials / finish: ${ctx.materials.join(", ").slice(0, 200)}`);
+  }
+  if (ctx.description && ctx.description.trim()) {
+    facts.push(
+      `Description: ${ctx.description.trim().replace(/\s+/g, " ").slice(0, 600)}`,
+    );
+  }
+  if (facts.length === 0) return "";
+  return [
+    "",
+    "── PRODUCT FACTS (use ONLY to render the real product accurately — do NOT draw any of this text in the image) ──",
+    ...facts,
+  ].join("\n");
+}
 
 async function sha256Hex(input: string): Promise<string> {
   const bytes = new TextEncoder().encode(input);
@@ -31,9 +60,10 @@ async function refineCacheKey(
   tenantId: string,
   prompt: string,
   studioR2Key: string,
-  cropR2Key: string
+  cropR2Key: string,
+  originalR2Key: string
 ): Promise<string> {
-  const seed = `${REFINE_CACHE_VERSION}|${REFINE_MODEL_ID}|${prompt}|${studioR2Key}|${cropR2Key}`;
+  const seed = `${REFINE_CACHE_VERSION}|${REFINE_MODEL_ID}|${prompt}|${studioR2Key}|${cropR2Key}|${originalR2Key}`;
   const hash = await sha256Hex(seed);
   // Tenant-scoped path — never share cached outputs across tenants even
   // when the hash matches; that'd be a privacy leak (one tenant could
@@ -72,16 +102,41 @@ export async function refineCall(
     category: ctx.category,
     angle: opts.angle,
   };
-  const prompt = opts.promptOverride ?? deriver.refinePrompt(promptArgs);
-
   const studioUrl = publicUrl(env, studioR2Key);
   const cropUrl = publicUrl(env, cropR2Key);
+  // Identity anchor: the seller's REAL photo (pre-cleanup). studio + crop lead
+  // framing; the original pins shape/color/pattern/finish so the cleanup's
+  // generative re-draw can't drift the identity. Listed last so it informs
+  // identity without overriding the white-background framing the prompt asks
+  // for. Absent on the env-less unit-test path → falls back to [studio, crop].
+  const originalUrl = ctx.originalReferenceR2Key
+    ? publicUrl(env, ctx.originalReferenceR2Key)
+    : null;
+
+  // When the original is included as a 3rd reference, tell the model explicitly
+  // it's an identity-only signal — the original is the seller's as-shot photo
+  // and may have a cluttered/colored background, props, or other items; without
+  // this the edit model can bleed that background into the studio output.
+  const originalRefNote = originalUrl
+    ? "\n\nThe THIRD reference image is the seller's real product photo. Match its product identity EXACTLY (shape, proportions, color, pattern, finish, hardware, logos physically on the product). Use it ONLY for identity — IGNORE its background, props, lighting, and framing; render the product on the clean background described above."
+    : "";
+
+  const prompt =
+    (opts.promptOverride ?? deriver.refinePrompt(promptArgs)) +
+    groundingBlock(ctx) +
+    originalRefNote;
 
   // Phase G · G12 — check the content-addressable cache before paying
   // FAL. Same (prompt, refs, model, version) produces same output, so a
   // re-run of the same crop in a retry/replay returns instantly. Cache
   // misses + fresh outputs still get written to the cache below.
-  const cacheKey = await refineCacheKey(ctx.tenantId, prompt, studioR2Key, cropR2Key);
+  const cacheKey = await refineCacheKey(
+    ctx.tenantId,
+    prompt,
+    studioR2Key,
+    cropR2Key,
+    ctx.originalReferenceR2Key ?? "",
+  );
   try {
     const cached = await env.R2.get(cacheKey);
     if (cached) {
@@ -110,7 +165,9 @@ export async function refineCall(
 
   const body = {
     prompt,
-    image_urls: [studioUrl, cropUrl],
+    image_urls: originalUrl
+      ? [studioUrl, cropUrl, originalUrl]
+      : [studioUrl, cropUrl],
     num_images: 1,
     output_format: "png",
   };

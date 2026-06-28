@@ -27,8 +27,17 @@ export interface PipelineCtx {
    *  on free-form / "other" categories. Optional; falls back to
    *  category-only matching when absent. */
   description?: string | null;
+  /** Dominant product colors (hex). Injected into the image prompt so the
+   *  model renders the real palette instead of inventing one. */
+  colorsHex?: string[] | null;
+  /** Product materials / finish (one or more), for prompt grounding. */
+  materials?: string[] | null;
   /** Raw supplier image R2 keys, attached at product creation. */
   referenceR2Keys: string[];
+  /** Best ORIGINAL supplier reference (pre-cleanup), set by the orchestrator
+   *  after pickBestReference. Anchors the refine + the identity judge to the
+   *  REAL product instead of gpt-image-2's re-synthesized cleanup output. */
+  originalReferenceR2Key?: string;
   /** Bound at the orchestrator level so steps don't refetch the row. */
   features: TenantFeatures;
   /** Ceiling — pipeline halts before charging if next step would exceed. */

@@ -86,6 +86,39 @@ export async function refineWithIteration(
       ? Math.min(10, Math.max(1, Math.floor(featureMaxIters)))
       : DEFAULT_MAX_ITERS;
 
+  // Compare identity against the seller's REAL product photo(s) — not the
+  // cleanup output (a generative re-draw). Prefer the orchestrator-pinned best
+  // original; fall back to all originals, then to the passed reference.
+  const originalRefUrls = (
+    ctx.originalReferenceR2Key
+      ? [ctx.originalReferenceR2Key]
+      : ctx.referenceR2Keys.length > 0
+        ? ctx.referenceR2Keys
+        : [input.referenceR2Key]
+  )
+    .slice(0, 4)
+    .map((k) => r2KeyToPublicUrl(env, k));
+
+  const shipOutput = (
+    finalR2Key: string,
+    iters: number,
+    clipScore: number | null,
+    verdict: Verdict | null,
+    fair: boolean,
+  ): IterateOutput => ({
+    asset: {
+      cropName: input.cropTag,
+      finalR2Key,
+      iters,
+      clipScore,
+      verdict,
+      fair,
+      totalCostCents: totalCost,
+      history,
+    },
+    costCents: totalCost,
+  });
+
   while (iter < maxIters) {
     if (budget < REFINE_COST_CENTS) {
       // Out of money — return what we have (or report error if we have nothing).
@@ -124,42 +157,31 @@ export async function refineWithIteration(
     // deriver default. Lets brands tighten/loosen by product class.
     const threshold =
       ctx.features.clip_threshold_overrides?.[ctx.kind] ?? deriver.clipThreshold;
-    if (score !== null && score >= threshold) {
-      // Pass — ship.
-      return {
-        asset: {
-          cropName: input.cropTag,
-          finalR2Key: stepRes.outputR2Key,
-          iters: iter,
-          clipScore: score,
-          verdict: null,
-          fair: false,
-          totalCostCents: totalCost,
-          history,
-        },
-        costCents: totalCost,
-      };
-    }
+    const clipPassed = score !== null && score >= threshold;
 
-    // Below threshold (or CLIP unavailable) — escalate to dual-judge once per crop.
-    if (lastVerdict === null) {
-      if (budget < VISION_COST_CENTS) break;
-      if (!env.ANTHROPIC_API_KEY) break;
+    // Identity verification against the seller's REAL product photo(s). CLIP is
+    // only a cheap proxy, and this judge previously compared the output against
+    // the cleanup re-draw — so wrong-color / wrong-detail renders that matched
+    // the cleanup shipped as "accurate". Now: judge once per crop against the
+    // ORIGINALS, and a CLIP pass alone is NOT sufficient to ship. When vision
+    // is genuinely unavailable we fall back to trusting CLIP rather than
+    // blocking the launch.
+    if (lastVerdict === null && env.ANTHROPIC_API_KEY && budget >= VISION_COST_CENTS) {
       const dual = await judgeImage({
         generated_image_url: r2KeyToPublicUrl(env, stepRes.outputR2Key),
-        reference_image_urls: [r2KeyToPublicUrl(env, input.referenceR2Key)],
+        reference_image_urls: originalRefUrls,
         slot_label: input.cropTag,
         category: ctx.category,
         api_key: env.ANTHROPIC_API_KEY,
       });
-      // Differentiate infra failure (don't poison iter-2 prompt) from
-      // a real rejection with usable visual critique.
+      // Differentiate infra failure (don't poison the next prompt with error
+      // strings) from a real rejection with usable visual critique.
       const infraFailure =
         ("fetch_error" in (dual.metrics ?? {})) ||
         dual.reasons.some((r) => r.includes("crashed:"));
       if (infraFailure) {
-        // Vision unavailable — fall through to "ship best with FAIR" below
-        // without amending the prompt with error strings.
+        // Vision down — trust CLIP if it passed, else ship best as FAIR.
+        if (clipPassed) return shipOutput(stepRes.outputR2Key, iter, score, null, false);
         break;
       }
       totalCost += dual.cost_cents;
@@ -170,27 +192,17 @@ export async function refineWithIteration(
         details: {},
       };
       history[history.length - 1].verdict = lastVerdict;
-
       if (lastVerdict.verdict === "pass") {
-        // CLIP false negative — dual-judge approved; ship.
-        return {
-          asset: {
-            cropName: input.cropTag,
-            finalR2Key: stepRes.outputR2Key,
-            iters: iter,
-            clipScore: score,
-            verdict: lastVerdict,
-            fair: false,
-            totalCostCents: totalCost,
-            history,
-          },
-          costCents: totalCost,
-        };
+        return shipOutput(stepRes.outputR2Key, iter, score, lastVerdict, false);
       }
+      // Identity rejected — fall through to the specialist re-refine below.
+    } else if (clipPassed && lastVerdict?.verdict !== "fail") {
+      // No vision available (no key / no budget) and CLIP passed — ship on the
+      // cheap signal rather than blocking the launch.
+      return shipOutput(stepRes.outputR2Key, iter, score, lastVerdict ?? null, false);
     }
 
-    // Vision said fail — amend prompt via the Phase F · Iter 04 defect
-    // router. Routes the rejection reasons to a specialist prompt prefix
+    // Re-refine — route the rejection reasons to a specialist prompt prefix
     // (text/bg/cropped/color/geometry) instead of one generic append.
     // Specialist prompts target the specific failure mode the model just
     // exhibited; net effect: ~30% fewer iterations to FAIR.
