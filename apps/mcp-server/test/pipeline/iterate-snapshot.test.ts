@@ -83,11 +83,11 @@ beforeEach(() => {
 });
 
 describe("refineWithIteration — golden master (inline loop)", () => {
-  it("scenario 1 — CLIP pass on first iter, identity judge confirms → ship", async () => {
-    // Updated 2026-06-28: a CLIP pass alone no longer ships. We now confirm
-    // identity against the ORIGINAL product photo on every CLIP-pass candidate
-    // (the judge previously compared against the laundered cleanup output and
-    // was skipped entirely on a CLIP pass).
+  it("scenario 1 — passes on first iter (CLIP above threshold) → ship, no judge", async () => {
+    // A CLIP pass ships directly. The identity judge is NOT run on the CLIP-pass
+    // path (it over-rejected faithful hero crops in live testing); accuracy is
+    // anchored at the source via the original-photo reference in refine.ts. The
+    // judge guards the CLIP-FAIL path (scenario 2) against the originals.
     refineCallMock.mockResolvedValueOnce({
       status: "ok",
       outputR2Key: "out/iter-1.png",
@@ -95,12 +95,6 @@ describe("refineWithIteration — golden master (inline loop)", () => {
       metadata: {},
     });
     clipMock.mockResolvedValueOnce(0.92); // > 0.78 threshold for compact_square
-    judgeMock.mockResolvedValueOnce({
-      approved: true,
-      reasons: [],
-      cost_cents: 2,
-      metrics: {},
-    });
 
     const out = await refineWithIteration(fakeEnv, fakeCtx, baseInput);
     expect("error" in out ? out.error : null).toBeNull();
@@ -109,10 +103,10 @@ describe("refineWithIteration — golden master (inline loop)", () => {
     expect(out.asset.fair).toBe(false);
     expect(out.asset.finalR2Key).toBe("out/iter-1.png");
     expect(out.asset.clipScore).toBe(0.92);
-    expect(out.costCents).toBe(32); // 30 refine + 2 identity judge
+    expect(out.costCents).toBe(30);
     expect(out.asset.history.length).toBe(1);
     expect(refineCallMock).toHaveBeenCalledTimes(1);
-    expect(judgeMock).toHaveBeenCalledTimes(1);
+    expect(judgeMock).not.toHaveBeenCalled();
   });
 
   it("scenario 2 — CLIP fail then dual-judge approve (false-negative)", async () => {
@@ -154,19 +148,11 @@ describe("refineWithIteration — golden master (inline loop)", () => {
     });
     clipMock.mockResolvedValueOnce(0.60); // < threshold
     clipMock.mockResolvedValueOnce(0.85); // pass
-    // iter 1: CLIP fails → judge escalation rejects → re-refine.
+    // iter 1: CLIP fails → judge escalation (vs originals) rejects → re-refine.
+    // iter 2: CLIP passes → ships directly (no judge on the CLIP-pass path).
     judgeMock.mockResolvedValueOnce({
       approved: false,
       reasons: ["background not pure white"],
-      cost_cents: 2,
-      metrics: {},
-    });
-    // iter 2: CLIP passes → identity judge re-runs on the new candidate and
-    // confirms (updated 2026-06-28: every CLIP-pass candidate is re-judged, so
-    // an iter that fixed the earlier defect can still ship clean).
-    judgeMock.mockResolvedValueOnce({
-      approved: true,
-      reasons: [],
       cost_cents: 2,
       metrics: {},
     });
@@ -177,8 +163,8 @@ describe("refineWithIteration — golden master (inline loop)", () => {
     expect(out.asset.fair).toBe(false);
     expect(out.asset.finalR2Key).toBe("out/iter-2.png");
     expect(out.asset.clipScore).toBe(0.85);
-    expect(out.costCents).toBe(64); // 30 + 2 + 30 + 2
-    expect(judgeMock).toHaveBeenCalledTimes(2);
+    expect(out.costCents).toBe(62); // 30 + 2 + 30
+    expect(judgeMock).toHaveBeenCalledTimes(1);
   });
 
   it("scenario 4 — all iters fail → FAIR ship with best", async () => {

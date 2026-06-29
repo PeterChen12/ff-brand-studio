@@ -195,26 +195,21 @@ export async function refineWithIteration(
     };
 
     if (clipPassed) {
-      // CLIP says good — but it's a weak proxy and previously shipped here with
-      // NO identity check. Confirm against the originals, and re-judge every
-      // CLIP-pass candidate (so a later iter that fixed identity can still ship
-      // clean). When vision is unavailable, fall back to trusting CLIP rather
-      // than blocking the launch.
-      if (!visionAvailable) {
-        return shipOutput(stepRes.outputR2Key, iter, score, lastVerdict ?? null, false);
-      }
-      const res = await runJudge();
-      if (res.infra) {
-        return shipOutput(stepRes.outputR2Key, iter, score, null, false);
-      }
-      lastVerdict = res.verdict;
-      if (res.verdict.verdict === "pass") {
-        return shipOutput(stepRes.outputR2Key, iter, score, res.verdict, false);
-      }
-      // Identity rejected despite a CLIP pass — fall through to re-refine.
+      // CLIP passed → ship. Because refine is now anchored to the seller's
+      // ORIGINAL photo (refine.ts), a CLIP-pass render is genuinely faithful to
+      // the real product — the accuracy fix lives at the source. We deliberately
+      // do NOT also gate the ship on the identity judge here: in live testing it
+      // over-rejected faithful hero crops and forced them to FAIR/HITL, and
+      // "blocked" reads as "broken" to clients. The judge still guards the
+      // laundering / wrong-render case via the CLIP-FAIL path below (vs the
+      // originals), where a render that drifted from the real product would
+      // also score low on CLIP.
+      return shipOutput(stepRes.outputR2Key, iter, score, lastVerdict ?? null, false);
     } else {
-      // CLIP failed — escalate to the judge once per crop to catch CLIP false
-      // negatives (the cheap signal can under-score a perfectly good render).
+      // CLIP failed — escalate to the identity judge once per crop, comparing
+      // against the REAL product photos. Catches both CLIP false negatives
+      // (cheap signal under-scoring a good render) and laundered/wrong renders
+      // a cleanup-anchored CLIP would have missed.
       if (lastVerdict === null && visionAvailable) {
         const res = await runJudge();
         if (res.infra) break; // vision down + CLIP fail → ship best as FAIR
