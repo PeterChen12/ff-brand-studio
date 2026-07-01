@@ -22,7 +22,11 @@ import { auditEvent } from "./audit.js";
 
 const KEY_PREFIX = "ff_live_";
 const SECRET_BYTES = 32;
-const CACHE_TTL_SECONDS = 60;
+// 1 hour. The key→tenant mapping is effectively immutable, and revocation
+// explicitly deletes this cache entry (see revokeApiKey), so a long TTL stays
+// correct. It also keeps KV put ops well under the free-tier 1000/day limit:
+// a 60s TTL meant ~1 write/min per hot key (~1440/day) → over the cap.
+const CACHE_TTL_SECONDS = 3600;
 
 export interface IssueResult {
   /** Full key — only returned ONCE on issuance. */
@@ -157,7 +161,7 @@ export interface ApiKeyResolution {
  * Verify a Bearer token of shape `ff_live_*`. Returns null if invalid,
  * unknown, or revoked.
  *
- * Cached in SESSION_KV by prefix → {tenantId, hash, id} for 60s. Cache
+ * Cached in SESSION_KV by prefix → {tenantId, hash, id} for 1h. Cache
  * stores the hash too so we still hash-compare on cache hit (the cache
  * just saves the SQL round trip, not the comparison work).
  */
@@ -201,7 +205,7 @@ export async function verifyApiKey(
     JSON.stringify({ tenantId: row.tenantId, hash: row.hash, id: row.id }),
     { expirationTtl: CACHE_TTL_SECONDS }
   );
-  // fire-and-forget; one update per minute per key, not per request,
+  // fire-and-forget; at most one update per hour per key, not per request,
   // because the cache short-circuits subsequent requests in the window
   void db
     .update(apiKeys)
